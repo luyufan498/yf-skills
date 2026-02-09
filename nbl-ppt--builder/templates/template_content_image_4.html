@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 四图布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.0.0/css/all.min.css" rel="stylesheet"/>
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+  .image-placeholder-1 {
+    background: linear-gradient(135deg, #E3F2FD 0%, #BBDEFB 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0B3BD3;
+    font-size: 10pt;
+    font-weight: 500;
+  }
+  .image-placeholder-2 {
+    background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #388E3C;
+    font-size: 10pt;
+    font-weight: 500;
+  }
+  .image-placeholder-3 {
+    background: linear-gradient(135deg, #FFF3E0 0%, #FFE0B2 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #F57C00;
+    font-size: 10pt;
+    font-weight: 500;
+  }
+  .image-placeholder-4 {
+    background: linear-gradient(135deg, #F3E5F5 0%, #E1BEE7 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7B1FA2;
+    font-size: 10pt;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 四图布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-20 -left-20 w-[200px] h-[200px] rounded-full opacity-5 bg-[#0B3BD3]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 图片说明 -->
+  <div class="absolute left-[17px] top-[60px]">
+    <p class="text-[12pt] text-[#666]">{{图片说明}}</p>
+  </div>
+
+  <!-- 四图展示区 -->
+  <div class="absolute left-[17px] right-[17px] top-[100px] bottom-[60px] grid grid-cols-2 gap-3">
+    <!-- 图片1 -->
+    <div class="bg-white rounded-2xl p-3 card-shadow">
+      <div class="image-placeholder-1 rounded-lg mb-2 h-[140px] flex items-center justify-center">
+        <div class="text-center">
+          <i class="fas fa-image text-2xl mb-1"></i>
+          <p class="text-[9pt]">{{图片1路径}}</p>
+        </div>
+      </div>
+      <p class="text-[10pt] font-medium text-[#202665] text-center">{{图片1说明}}</p>
+    </div>
+
+    <!-- 图片2 -->
+    <div class="bg-white rounded-2xl p-3 card-shadow">
+      <div class="image-placeholder-2 rounded-lg mb-2 h-[140px] flex items-center justify-center">
+        <div class="text-center">
+          <i class="fas fa-image text-2xl mb-1"></i>
+          <p class="text-[9pt]">{{图片2路径}}</p>
+        </div>
+      </div>
+      <p class="text-[10pt] font-medium text-[#202665] text-center">{{图片2说明}}</p>
+    </div>
+
+    <!-- 图片3 -->
+    <div class="bg-white rounded-2xl p-3 card-shadow">
+      <div class="image-placeholder-3 rounded-lg mb-2 h-[140px] flex items-center justify-center">
+        <div class="text-center">
+          <i class="fas fa-image text-2xl mb-1"></i>
+          <p class="text-[9pt]">{{图片3路径}}</p>
+        </div>
+      </div>
+      <p class="text-[10pt] font-medium text-[#202665] text-center">{{图片3说明}}</p>
+    </div>
+
+    <!-- 图片4 -->
+    <div class="bg-white rounded-2xl p-3 card-shadow">
+      <div class="image-placeholder-4 rounded-lg mb-2 h-[140px] flex items-center justify-center">
+        <div class="text-center">
+          <i class="fas fa-image text-2xl mb-1"></i>
+          <p class="text-[9pt]">{{图片4路径}}</p>
+        </div>
+      </div>
+      <p class="text-[10pt] font-medium text-[#202665] text-center">{{图片4说明}}</p>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">13</span>
+  </div>
+</div>
+
+</body>
+</html>

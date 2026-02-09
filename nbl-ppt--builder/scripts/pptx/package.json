@@ -1,0 +1,17 @@
+{
+  "name": "nbl-ppt-builder-pptx",
+  "version": "1.0.0",
+  "description": "HTML to PowerPoint converter for NBL PPT Builder",
+  "scripts": {
+    "install": "npm install",
+    "generate": "node generate_pptx.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^3.12.0",
+    "playwright": "^1.48.0",
+    "sharp": "^0.33.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

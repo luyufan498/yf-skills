@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>首页 - Tailwind CSS 版本</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 首页 slide -->
+<div class="slide-container mx-auto">
+  <!-- SVG 首页装饰图（包含背景图、装饰三角形、装饰条、菱形） -->
+  <div class="absolute right-0 top-0 w-[555px] h-[540px]">
+    <img src="images/home_decoration.svg" class="w-full h-full object-contain" alt="首页装饰">
+  </div>
+
+  <!-- LOGO（左上角） -->
+  <div class="absolute left-[9px] top-[10px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 左侧蓝色矩形（汇报人背景） -->
+  <div class="absolute left-[77px] top-[327px] w-[168px] h-[36px] bg-[#0B3BD3]"></div>
+
+  <!-- 标题区域（建议：控制在10个字以内） -->
+  <div class="absolute left-[76px] top-[206px]">
+    <h1 class="text-[36pt] font-bold text-[#202665] leading-tight">{{标题}}</h1>
+  </div>
+
+  <!-- 副标题区域（可选：需要带副标题时使用，不需要可删除此区域） -->
+  <div class="absolute left-[76px] top-[270px]">
+    <p class="text-[14pt] font-medium text-[#0B3BD3]">{{副标题}}</p>
+  </div>
+
+  <!-- 汇报人 -->
+  <div class="absolute left-[85px] top-[336px]">
+    <p class="text-[9pt] text-white">汇报人：{{汇报人姓名}}</p>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">1</span>
+  </div>
+</div>
+
+</body>
+</html>

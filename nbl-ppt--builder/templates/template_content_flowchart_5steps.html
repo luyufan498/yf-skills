@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 5步骤流程图布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.0.0/css/all.min.css" rel="stylesheet"/>
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 5步骤流程图布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-20 -left-20 w-[250px] h-[250px] rounded-full opacity-5 bg-[#0B3BD3]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 页面标题区 -->
+  <div class="absolute left-[17px] top-[80px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[13.5pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!-- 流程图区域（五步骤） -->
+  <div class="absolute left-[25px] right-[25px] top-[135px] bottom-[100px] flex items-center">
+    <div class="w-full">
+      <div class="flex items-center justify-between gap-2">
+        <!-- 步骤1 -->
+        <div class="flex-1 flex flex-col items-center">
+          <div class="w-14 h-14 rounded-full bg-[#0B3BD3] flex items-center justify-center mb-2 shadow-lg">
+            <span class="text-xl font-black text-white">1</span>
+          </div>
+          <div class="bg-white rounded-lg p-2 card-shadow w-full text-center">
+            <h4 class="text-[10pt] font-bold mb-0.5 text-[#0B3BD3]">{{步骤1标题}}</h4>
+            <p class="text-[8pt] text-[#666] leading-tight">{{步骤1描述}}</p>
+          </div>
+        </div>
+
+        <!-- 箭头 -->
+        <div class="flex items-center px-0.5">
+          <i class="fas fa-arrow-right text-lg text-[#1D4FED]"></i>
+        </div>
+
+        <!-- 步骤2 -->
+        <div class="flex-1 flex flex-col items-center">
+          <div class="w-14 h-14 rounded-full bg-[#1D4FED] flex items-center justify-center mb-2 shadow-lg">
+            <span class="text-xl font-black text-white">2</span>
+          </div>
+          <div class="bg-white rounded-lg p-2 card-shadow w-full text-center">
+            <h4 class="text-[10pt] font-bold mb-0.5 text-[#0B3BD3]">{{步骤2标题}}</h4>
+            <p class="text-[8pt] text-[#666] leading-tight">{{步骤2描述}}</p>
+          </div>
+        </div>
+
+        <!-- 箭头 -->
+        <div class="flex items-center px-0.5">
+          <i class="fas fa-arrow-right text-lg text-[#1D4FED]"></i>
+        </div>
+
+        <!-- 步骤3 -->
+        <div class="flex-1 flex flex-col items-center">
+          <div class="w-14 h-14 rounded-full bg-[#0B3BD3] flex items-center justify-center mb-2 shadow-lg">
+            <span class="text-xl font-black text-white">3</span>
+          </div>
+          <div class="bg-white rounded-lg p-2 card-shadow w-full text-center">
+            <h4 class="text-[10pt] font-bold mb-0.5 text-[#0B3BD3]">{{步骤3标题}}</h4>
+            <p class="text-[8pt] text-[#666] leading-tight">{{步骤3描述}}</p>
+          </div>
+        </div>
+
+        <!-- 箭头 -->
+        <div class="flex items-center px-0.5">
+          <i class="fas fa-arrow-right text-lg text-[#1D4FED]"></i>
+        </div>
+
+        <!-- 步骤4 -->
+        <div class="flex-1 flex flex-col items-center">
+          <div class="w-14 h-14 rounded-full bg-[#1D4FED] flex items-center justify-center mb-2 shadow-lg">
+            <span class="text-xl font-black text-white">4</span>
+          </div>
+          <div class="bg-white rounded-lg p-2 card-shadow w-full text-center">
+            <h4 class="text-[10pt] font-bold mb-0.5 text-[#0B3BD3]">{{步骤4标题}}</h4>
+            <p class="text-[8pt] text-[#666] leading-tight">{{步骤4描述}}</p>
+          </div>
+        </div>
+
+        <!-- 箭头 -->
+        <div class="flex items-center px-0.5">
+          <i class="fas fa-arrow-right text-lg text-[#1D4FED]"></i>
+        </div>
+
+        <!-- 步骤5 -->
+        <div class="flex-1 flex flex-col items-center">
+          <div class="w-14 h-14 rounded-full bg-[#202665] flex items-center justify-center mb-2 shadow-lg">
+            <span class="text-xl font-black text-white">5</span>
+          </div>
+          <div class="bg-white rounded-lg p-2 card-shadow w-full text-center">
+            <h4 class="text-[10pt] font-bold mb-0.5 text-[#202665]">{{步骤5标题}}</h4>
+            <p class="text-[8pt] text-[#666] leading-tight">{{步骤5描述}}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部说明 -->
+  <div class="absolute left-[30px] right-[30px] bottom-[60px]">
+    <div class="bg-[#f8f9ff] rounded-xl p-3 flex items-start gap-2 border-l-4 border-[#1D4FED]">
+      <i class="fas fa-lightbulb text-[#1D4FED] mt-0.5 text-sm"></i>
+      <p class="text-[10pt] text-[#1a1a2e]">
+        <strong>说明：</strong>{{流程图的整体说明文字，解释各步骤之间的关系和整体流程的意义}}
+      </p>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">8</span>
+  </div>
+</div>
+
+</body>
+</html>

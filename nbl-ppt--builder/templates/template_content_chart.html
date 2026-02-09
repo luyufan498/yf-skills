@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 数据图表布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.0/dist/echarts.min.js"></script>
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 数据图表布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-24 -left-24 w-[200px] h-[200px] rounded-full opacity-5 bg-[#0B3BD3]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 页面标题区 -->
+  <div class="absolute left-[17px] top-[80px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[20pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!-- 图表区域 -->
+  <div class="absolute left-[17px] top-[140px] right-[17px] bottom-[60px] bg-white rounded-2xl p-5 card-shadow">
+    <div class="h-full flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-[15pt] font-bold text-[#202665]">{{图表标题}}</h3>
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <div class="w-2.5 h-2.5 rounded-full bg-[#0B3BD3]"></div>
+            <span class="text-[9pt] text-[#666]">{{数据系列1}}</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <div class="w-2.5 h-2.5 rounded-full bg-[#7986CB]"></div>
+            <span class="text-[9pt] text-[#666]">{{数据系列2}}</span>
+          </div>
+        </div>
+      </div>
+      <div class="flex-1" id="chart-container" style="min-height: 280px;"></div>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">9</span>
+  </div>
+</div>
+
+<script>
+  // 图表配置
+  var chartDom = document.getElementById('chart-container');
+  if (chartDom) {
+    var myChart = echarts.init(chartDom);
+    var option = {
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        borderColor: '#0B3BD3',
+        borderWidth: 1,
+        textStyle: {
+          color: '#1a1a2e'
+        }
+      },
+      legend: {
+        data: ['{{数据系列1}}', '{{数据系列2}}'],
+        top: 0,
+        textStyle: {
+          color: '#1a1a2e',
+          fontSize: 11
+        }
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        top: '15%',
+        containLabel: true
+      },
+      xAxis: {
+        type: 'category',
+        data: ['{{类别1}}', '{{类别2}}', '{{类别3}}', '{{类别4}}', '{{类别5}}', '{{类别6}}'],
+        axisLine: {
+          lineStyle: {
+            color: '#ddd'
+          }
+        },
+        axisLabel: {
+          color: '#666',
+          fontSize: 10
+        }
+      },
+      yAxis: {
+        type: 'value',
+        axisLine: {
+          show: false
+        },
+        axisTick: {
+          show: false
+        },
+        axisLabel: {
+          color: '#666',
+          fontSize: 10
+        },
+        splitLine: {
+          lineStyle: {
+            color: '#f0f0f0'
+          }
+        }
+      },
+      series: [
+        {
+          name: '{{数据系列1}}',
+          type: 'bar',
+          data: [120, 200, 150, 80, 70, 110],
+          itemStyle: {
+            color: '#0B3BD3',
+            borderRadius: [4, 4, 0, 0]
+          },
+          barWidth: '30%'
+        },
+        {
+          name: '{{数据系列2}}',
+          type: 'bar',
+          data: [80, 120, 180, 120, 90, 140],
+          itemStyle: {
+            color: '#7986CB',
+            borderRadius: [4, 4, 0, 0]
+          },
+          barWidth: '30%'
+        }
+      ]
+    };
+    myChart.setOption(option);
+    window.addEventListener('resize', function() {
+      myChart.resize();
+    });
+  }
+</script>
+
+</body>
+</html>

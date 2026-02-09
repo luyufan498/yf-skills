@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+"""
+思源笔记命令行工具 - 主入口
+"""
+
+import sys
+import argparse
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from core.router import CommandRouter
+from core.exceptions import SiyuanError
+from core.config import Config
+
+
+def create_parser():
+    """创建命令行参数解析器"""
+    parser = argparse.ArgumentParser(
+        prog="siyuan",
+        description="思源笔记命令行工具",
+        epilog="""
+示例:
+  siyuan nb list                      列出所有笔记本
+  siyuan nb list --tree               以树状结构显示
+  siyuan doc show <doc-id>            查看文档内容
+  siyuan doc list <notebook>          列出笔记本的文档
+  siyuan blk update <id> "新内容"     更新块内容
+  siyuan query search "关键词"        搜索包含关键词的块
+  siyuan export md <doc-id>           导出文档为 Markdown
+
+更多信息请参考: https://github.com/siyuan-note/siyuan
+        """
+    )
+
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='%(prog)s 1.0.0'
+    )
+
+    # 子命令
+    subparsers = parser.add_subparsers(
+        dest='module',
+        help='模块名称',
+        metavar='<module>'
+    )
+
+    # 笔记本模块
+    nb_parser = subparsers.add_parser(
+        'nb',
+        help='笔记本操作 (notebook 的简写)',
+        aliases=['notebook']
+    )
+    nb_subparsers = nb_parser.add_subparsers(dest='action', help='动作')
+
+    # nb list
+    list_nb = nb_subparsers.add_parser('list',
+        help='列出所有笔记本',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan nb list                      列出所有笔记本（表格形式）
+  siyuan nb list --tree               以树状结构显示
+  siyuan nb list --show-docs          显示每个笔记本及其文档列表
+  siyuan nb list --show-docs --tree   以树状结构显示所有文档
+  siyuan nb list --format json       以 JSON 格式输出
+        """
+    )
+    list_nb.add_argument('--tree', action='store_true', help='以树状结构显示')
+    list_nb.add_argument('--format', choices=['text', 'json'], default='text', help='输出格式')
+    list_nb.add_argument('--show-docs', action='store_true', help='显示文档数量')
+
+    # nb create
+    create_nb = nb_subparsers.add_parser('create',
+        help='创建笔记本',
+        epilog="示例: siyuan nb create \"我的笔记本\""
+    )
+    create_nb.add_argument('name', help='笔记本名称')
+
+    # nb remove
+    remove_nb = nb_subparsers.add_parser('remove',
+        help='删除笔记本',
+        epilog="示例: siyuan nb remove \"我的笔记本\"  # 支持使用笔记本名称或 ID"
+    )
+    remove_nb.add_argument('notebook', help='笔记本 ID 或名称')
+    remove_nb.add_argument('-y', '--yes', action='store_true', help='跳过确认直接删除')
+
+    # nb rename
+    rename_nb = nb_subparsers.add_parser('rename',
+        help='重命名笔记本',
+        epilog="示例: siyuan nb rename \"旧名称\" \"新名称\""
+    )
+    rename_nb.add_argument('notebook', help='笔记本 ID 或名称')
+    rename_nb.add_argument('name', help='新名称')
+
+    # nb open
+    open_nb = nb_subparsers.add_parser('open',
+        help='打开笔记本',
+        epilog="示例: siyuan nb open \"我的笔记本\""
+    )
+    open_nb.add_argument('notebook', help='笔记本 ID 或名称')
+
+    # nb close
+    close_nb = nb_subparsers.add_parser('close',
+        help='关闭笔记本',
+        epilog="示例: siyuan nb close \"我的笔记本\""
+    )
+    close_nb.add_argument('notebook', help='笔记本 ID 或名称')
+
+    # nb conf
+    conf_nb = nb_subparsers.add_parser('conf',
+        help='笔记本配置',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan nb conf "我的笔记本" get           # 获取配置
+  siyuan nb conf "我的笔记本" set --key icon --value "📚"  # 设置配置
+        """
+    )
+    conf_nb.add_argument('notebook', help='笔记本 ID 或名称')
+    conf_nb.add_argument('operation', choices=['get', 'set'], help='操作')
+    conf_nb.add_argument('--key', help='配置键')
+    conf_nb.add_argument('--value', help='配置值')
+
+    # 文档模块
+    doc_parser = subparsers.add_parser(
+        'doc',
+        help='文档操作 (document 的简写)',
+        aliases=['document']
+    )
+    doc_subparsers = doc_parser.add_subparsers(dest='action', help='动作')
+
+    # doc show
+    show_doc = doc_subparsers.add_parser('show',
+        help='查看文档内容',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan doc show 20240101120000-abc123     # 查看文档内容
+  siyuan doc show 20240101120000-abc123 --format json  # JSON 格式
+        """
+    )
+    show_doc.add_argument('doc_id', help='文档 ID')
+    show_doc.add_argument('--format', choices=['text', 'json'], default='text', help='输出格式')
+
+    # doc info
+    info_doc = doc_subparsers.add_parser('info',
+        help='查看文档元信息',
+        epilog="示例: siyuan doc info 20240101120000-abc123"
+    )
+    info_doc.add_argument('doc_id', help='文档 ID')
+
+    # doc cat
+    cat_doc = doc_subparsers.add_parser('cat',
+        help='在终端显示文档内容',
+        epilog="示例: siyuan doc cat 20240101120000-abc123  # 仅输出文档内容"
+    )
+    cat_doc.add_argument('doc_id', help='文档 ID')
+
+    # doc create
+    create_doc = doc_subparsers.add_parser('create',
+        help='创建文档',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan doc create "我的笔记本" "/" --title "标题" --content "内容"
+  siyuan doc create "我的笔记本" "/父文档" --title "子标题"
+  siyuan doc create "我的笔记本" "不存在的路径" --title "标题" --force  # 强制创建
+        """
+    )
+    create_doc.add_argument('notebook', help='笔记本名称')
+    create_doc.add_argument('path', help='文档路径（父文档路径，如 "/" 或 "/父文档"）')
+    create_doc.add_argument('--title', help='文档标题')
+    create_doc.add_argument('--content', help='文档内容')
+    create_doc.add_argument('--force', action='store_true', help='强制创建，跳过父路径验证')
+
+    # doc rename
+    rename_doc = doc_subparsers.add_parser('rename',
+        help='重命名文档',
+        epilog="示例: siyuan doc rename 20240101120000-abc123 \"新标题\""
+    )
+    rename_doc.add_argument('doc_id', help='文档 ID')
+    rename_doc.add_argument('new_title', help='新标题')
+
+    # doc move
+    move_doc = doc_subparsers.add_parser('move',
+        help='移动文档',
+        epilog="示例: siyuan doc move 20240101120000-abc123 --to 20240101120000-def456  # 移动到另一个父文档下"
+    )
+    move_doc.add_argument('doc_id', help='文档 ID')
+    move_doc.add_argument('--to', required=True, help='目标 ID')
+
+    # doc remove
+    remove_doc = doc_subparsers.add_parser('remove',
+        help='删除文档',
+        epilog="示例: siyuan doc remove 20240101120000-abc123"
+    )
+    remove_doc.add_argument('doc_id', help='文档 ID')
+    remove_doc.add_argument('-y', '--yes', action='store_true', help='跳过确认，直接删除')
+
+    # doc list
+    list_doc = doc_subparsers.add_parser('list',
+        help='列出文档',
+        epilog="""
+示例:
+  siyuan doc list "我的笔记本"           # 列出该笔记本的所有文档
+  siyuan doc list "我的笔记本" --tree   # 以树状结构显示
+  siyuan doc list "我的笔记本" --filter "测试"  # 过滤包含"测试"的文档
+        """
+    )
+    list_doc.add_argument('notebook', help='笔记本名称')
+    list_doc.add_argument('--tree', action='store_true', help='以树状结构显示')
+    list_doc.add_argument('--filter', help='过滤关键词')
+
+    # 块模块
+    blk_parser = subparsers.add_parser(
+        'blk',
+        help='块操作 (block 的简写)',
+        aliases=['block']
+    )
+    blk_subparsers = blk_parser.add_subparsers(dest='action', help='动作')
+
+    # blk show
+    show_blk = blk_subparsers.add_parser('show',
+        help='查看块信息',
+        epilog="""
+示例:
+  siyuan blk show 20240101120000-abc123
+  siyuan blk show 20240101120000-abc123 --format json
+        """
+    )
+    show_blk.add_argument('block_id', help='块 ID')
+    show_blk.add_argument('--format', choices=['text', 'json'], default='text', help='输出格式')
+
+    # blk info
+    info_blk = blk_subparsers.add_parser('info',
+        help='查看块元信息',
+        epilog="示例: siyuan blk info 20240101120000-abc123"
+    )
+    info_blk.add_argument('block_id', help='块 ID')
+
+    # blk update
+    update_blk = blk_subparsers.add_parser('update',
+        help='更新块内容',
+        epilog="示例: siyuan blk update 20240101120000-abc123 --content \"新内容\""
+    )
+    update_blk.add_argument('block_id', help='块 ID')
+    update_blk.add_argument('--content', required=True, help='新内容')
+
+    # blk append
+    append_blk = blk_subparsers.add_parser('append',
+        help='追加子块',
+        epilog="示例: siyuan blk append 20240101120000-abc123 --content \"子块内容\""
+    )
+    append_blk.add_argument('parent_id', help='父块 ID')
+    append_blk.add_argument('--content', required=True, help='内容')
+
+    # blk prepend
+    prepend_blk = blk_subparsers.add_parser('prepend',
+        help='前置子块',
+        epilog="示例: siyuan blk prepend 20240101120000-abc123 --content \"前置块内容\""
+    )
+    prepend_blk.add_argument('parent_id', help='父块 ID')
+    prepend_blk.add_argument('--content', required=True, help='内容')
+
+    # blk move
+    move_blk = blk_subparsers.add_parser('move',
+        help='移动块',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan blk move 20240101120000-abc123 --to 20240101120000-def456
+  siyuan blk move 20240101120000-abc123 --to 20240101120000-def456 --after 20240101120000-xyz789
+        """
+    )
+    move_blk.add_argument('block_id', help='块 ID')
+    move_blk.add_argument('--to', required=True, help='目标父块 ID')
+    move_blk.add_argument('--after', help='前一个块 ID')
+
+    # blk delete
+    delete_blk = blk_subparsers.add_parser('delete',
+        help='删除块',
+        epilog="示例: siyuan blk delete 20240101120000-abc123"
+    )
+    delete_blk.add_argument('block_id', help='块 ID')
+    delete_blk.add_argument('-y', '--yes', action='store_true', help='跳过确认，直接删除')
+
+    # blk attr
+    attr_blk = blk_subparsers.add_parser('attr',
+        help='块属性操作',
+        epilog="""
+示例:
+  siyuan blk attr 20240101120000-abc123 get --key id
+  siyuan blk attr 20240101120000-abc123 set --key custom --value "自定义值"
+  siyuan blk attr 20240101120000-abc123 unset --key custom
+        """
+    )
+    attr_blk.add_argument('block_id', help='块 ID')
+    attr_blk.add_argument('action', choices=['get', 'set', 'unset'], help='操作')
+    attr_blk.add_argument('--key', help='属性键')
+    attr_blk.add_argument('--value', help='属性值')
+
+    # 查询模块
+    query_parser = subparsers.add_parser('query', help='查询和搜索')
+    query_subparsers = query_parser.add_subparsers(dest='action', help='动作')
+
+    sql_query = query_subparsers.add_parser('sql',
+        help='执行 SQL 查询',
+        epilog="""
+示例:
+  siyuan query sql "SELECT * FROM blocks WHERE type='d' LIMIT 10"
+  siyuan query sql "SELECT * FROM blocks WHERE content LIKE '%测试%'" --format json
+        """
+    )
+    sql_query.add_argument('stmt', help='SQL 语句')
+    sql_query.add_argument('--format', choices=['text', 'json'], default='text', help='输出格式')
+
+    # query search
+    search_query = query_subparsers.add_parser('search',
+        help='搜索内容',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  siyuan query search "关键词"                     # 全局搜索
+  siyuan query search "关键词" --notebook "我的笔记本"  # 指定笔记本
+  siyuan query search "RDMA" --type d  # 只搜索文档
+  siyuan query search "测试" --limit 5  # 限制返回数量
+        """
+    )
+    search_query.add_argument('keyword', help='搜索关键词')
+    search_query.add_argument('--notebook', help='笔记本名称')
+    search_query.add_argument('--type', help='块类型')
+    search_query.add_argument('--limit', type=int, default=10, help='返回数量限制')
+    # query attr
+    attr_query = query_subparsers.add_parser('attr',
+        help='按属性查询',
+        epilog="""
+示例:
+  siyuan query attr "custom-prop" "value"                    # 全局查找
+  siyuan query attr "status" "todo" --notebook "我的笔记本"   # 指定笔记本
+        """
+    )
+    attr_query.add_argument('key', help='属性键')
+    attr_query.add_argument('value', help='属性值')
+    attr_query.add_argument('--notebook', help='笔记本名称')
+
+    # query recent
+    recent_query = query_subparsers.add_parser('recent',
+        help='最近更新',
+        epilog="""
+示例:
+  siyuan query recent          # 最近更新的 20 个块
+  siyuan query recent --limit 50  # 最近更新的 50 个块
+        """
+    )
+    recent_query.add_argument('--limit', type=int, default=20, help='返回数量限制')
+
+    # 资源文件模块
+    asset_parser = subparsers.add_parser('asset', help='资源文件操作')
+    asset_subparsers = asset_parser.add_subparsers(dest='action', help='动作')
+
+    # asset upload
+    upload_asset = asset_subparsers.add_parser('upload',
+        help='上传文件',
+        epilog="""
+示例:
+  siyuan asset upload /path/to/image.png                       # 上传到默认路径
+  siyuan asset upload /path/to/file.pdf --to "/assets/docs/"      # 指定目标路径
+        """
+    )
+    upload_asset.add_argument('file', help='文件路径')
+    upload_asset.add_argument('--to', default='/assets/', help='目标路径')
+
+    # asset download
+    download_asset = asset_subparsers.add_parser('download',
+        help='下载文件',
+        epilog="""
+示例:
+  siyuan asset download image.png                        # 下载到当前目录的 assets/
+  siyuan asset download /assets/photo.jpg               # 下载 assets 中的文件
+  siyuan asset download image.png -o ~/Downloads/       # 指定输出目录
+  siyuan asset download /data/notebook/doc.sy -o .      # 下载任意文件
+        """
+    )
+    download_asset.add_argument('path', help='文件路径（支持相对路径、assets路径或绝对路径）')
+    download_asset.add_argument('-o', '--output', help='输出路径（默认: ./assets/文件名）', default=None)
+
+    # 导出模块
+    export_parser = subparsers.add_parser('export', help='导出功能')
+    export_subparsers = export_parser.add_subparsers(dest='action', help='动作')
+
+    # export md
+    md_export = export_subparsers.add_parser('md',
+        help='导出为 Markdown',
+        epilog="""
+示例:
+  siyuan export md 20240101120000-abc123
+  siyuan export md 20240101120000-abc123 --output ./document.md
+        """
+    )
+    md_export.add_argument('doc_id', help='文档 ID')
+    md_export.add_argument('--output', help='输出文件路径')
+
+    # export zip
+    zip_export = export_subparsers.add_parser('zip',
+        help='导出为 ZIP',
+        epilog="示例: siyuan export zip \"/文档路径1\" \"/文档路径2\" --name \"backup.zip\""
+    )
+    zip_export.add_argument('paths', nargs='+', help='路径列表')
+    zip_export.add_argument('--name', help='ZIP 文件名')
+
+
+    return parser
+
+
+def main():
+    """主函数"""
+    parser = create_parser()
+    args = parser.parse_args()
+
+    # 如果没有提供模块，显示帮助
+    if not args.module:
+        parser.print_help()
+        return 0
+
+    try:
+        # 创建路由器
+        router = CommandRouter()
+
+        # 准备参数
+        kwargs = vars(args)
+        module_name = kwargs.pop('module')
+        # list 命令不需要 action
+        if module_name == 'list':
+            action = None
+        else:
+            action = kwargs.pop('action')
+
+        # 如果没有提供 action（除了 list 命令），显示帮助
+        if action is None and module_name != 'list':
+            print(f"✗ 错误: 缺少子命令\n")
+            print(f"💡 提示: 使用 'python3 siyuan {module_name} --help' 查看可用命令\n")
+
+            # 尝试调用子命令的帮助
+            try:
+                # 使用系统调用显示帮助，这样可以看到完整的子命令列表
+                import subprocess
+                result = subprocess.run(
+                    ['python3', 'siyuan', module_name, '--help'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    print(result.stdout)
+            except:
+                pass
+
+            return 1
+
+        # 路由命令
+        router.route(module_name, action or '__call__', **kwargs)
+        return 0
+
+    except SiyuanError as e:
+        # 当没有提供 action 时，显示模块帮助
+        if "不支持命令" in str(e) and action is None:
+            parser = create_parser()
+            # 找到对应的子解析器
+            for action_name, subparsers in [
+                ('nb', [parser._subparsers._actions[0]] if parser._subparsers._actions else []),
+                ('notebook', [parser._subparsers._actions[0]] if parser._subparsers._actions else []),
+            ]:
+                try:
+                    subparser = next(sp for sp in parser._subparsers._actions if hasattr(sp, 'dest') and sp.dest == module_name)
+                    if subparser:
+                        subparser.print_help()
+                        return 0
+                except:
+                    pass
+            # 如果找不到特定帮助，显示通用帮助
+            print(f"✗ 错误: {e}")
+        else:
+            print(f"✗ 错误: {e}")
+            return 1
+    except KeyboardInterrupt:
+        print("\n操作已取消")
+        return 130
+    except Exception as e:
+        print(f"✗ 未预期的错误: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

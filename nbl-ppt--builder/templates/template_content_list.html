@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 列表布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 列表布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute top-20 right-20 w-20 h-20 rounded-full opacity-10 bg-[#0B3BD3]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 小标题 -->
+  <div class="absolute left-[17px] top-[75px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[13.5pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!-- 双列列表内容 -->
+  <!-- 备注：列表项数量可根据实际需要调整，删除或复制 <div class="flex items-baseline gap-2">...</div> 块即可 -->
+  <div class="absolute left-[20px] top-[120px] right-[20px] bottom-[100px] grid grid-cols-2 gap-6">
+    <!-- 左列 -->
+    <div class="bg-white rounded-xl p-5 card-shadow">
+      <h3 class="text-[12pt] font-bold text-[#0B3BD3] mb-4 pb-2 border-b border-[#0B3BD3] border-opacity-20">{{左列标题}}</h3>
+      <div class="space-y-3">
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#0B3BD3] font-medium">1.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{列表项1}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#1D4FED] font-medium">2.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{列表项2}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#202665] font-medium">3.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{列表项3}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#0B3BD3] font-medium">4.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{列表项4}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#1D4FED] font-medium">5.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{列表项5}}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右列 -->
+    <div class="bg-white rounded-xl p-5 card-shadow">
+      <h3 class="text-[12pt] font-bold text-[#1D4FED] mb-4 pb-2 border-b border-[#1D4FED] border-opacity-20">{{右列标题}}</h3>
+      <div class="space-y-3">
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#0B3BD3] font-medium">1.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{右列项1}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#1D4FED] font-medium">2.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{右列项2}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#202665] font-medium">3.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{右列项3}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#0B3BD3] font-medium">4.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{右列项4}}</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-[12pt] text-[#1D4FED] font-medium">5.</span>
+          <span class="text-[12pt] text-[#1a1a2e]">{{右列项5}}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部说明文字 -->
+  <div class="absolute left-[20px] right-[20px] bottom-[35px]">
+    <div class="bg-[#f8f9ff] rounded-lg p-3 border-l-4 border-[#1D4FED]">
+      <p class="text-[11pt] text-[#595959]">{{说明文字：这里是底部说明文字区域，可以用来添加备注或补充信息。}}</p>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">6</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 左右分栏布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 左右分栏布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -bottom-20 -left-20 w-[250px] h-[250px] rounded-full opacity-5 bg-[#1D4FED]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 页面标题区 -->
+  <div class="absolute left-[17px] top-[75px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[13.5pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!-- 左右分栏内容 -->
+  <div class="absolute left-[17px] top-[123px] right-[17px] bottom-[70px] grid grid-cols-2 gap-4">
+    <!-- 左侧内容 -->
+    <div class="bg-white rounded-2xl p-5 card-shadow">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-lg bg-[#0B3BD3] flex items-center justify-center">
+          <span class="text-white font-bold">A</span>
+        </div>
+        <h3 class="text-[15pt] font-bold text-[#0B3BD3]">{{左侧标题}}</h3>
+      </div>
+      <div class="space-y-3">
+        <p class="text-[12pt] leading-relaxed text-[#1a1a2e]">
+          {{左侧内容段落：详细描述左侧主题的相关内容。}}
+        </p>
+        <div class="bg-gray-50 rounded-xl p-3">
+          <h4 class="text-[11pt] font-bold mb-2 text-[#1a1a2e]">关键数据</h4>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[10pt] text-[#666]">{{指标1}}</span>
+              <span class="text-[12pt] font-bold text-[#0B3BD3]">{{数值1}}</span>
+            </div>
+            <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div class="h-full rounded-full bg-[#0B3BD3]" style="width: 75%;"></div>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-[10pt] text-[#666]">{{指标2}}</span>
+              <span class="text-[12pt] font-bold text-[#1D4FED]">{{数值2}}</span>
+            </div>
+            <div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div class="h-full rounded-full bg-[#1D4FED]" style="width: 60%;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧内容 -->
+    <div class="bg-white rounded-2xl p-5 card-shadow">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-lg bg-[#1D4FED] flex items-center justify-center">
+          <span class="text-white font-bold">B</span>
+        </div>
+        <h3 class="text-[15pt] font-bold text-[#1D4FED]">{{右侧标题}}</h3>
+      </div>
+      <div class="space-y-3">
+        <p class="text-[12pt] leading-relaxed text-[#1a1a2e]">
+          {{右侧内容段落：详细描述右侧主题的相关内容。}}
+        </p>
+        <div class="space-y-2">
+          <div class="flex items-start gap-2 p-2 rounded-lg bg-[#f0f4ff]">
+            <div class="w-6 h-6 rounded-full bg-[#1D4FED] flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[9pt] font-bold text-white">1</span>
+            </div>
+            <div>
+              <h5 class="text-[11pt] font-bold text-[#1a1a2e]">{{步骤1标题}}</h5>
+              <p class="text-[10pt] text-[#666]">{{步骤1描述}}</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-2 p-2 rounded-lg bg-[#f0f4ff]">
+            <div class="w-6 h-6 rounded-full bg-[#1D4FED] flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[9pt] font-bold text-white">2</span>
+            </div>
+            <div>
+              <h5 class="text-[11pt] font-bold text-[#1a1a2e]">{{步骤2标题}}</h5>
+              <p class="text-[10pt] text-[#666]">{{步骤2描述}}</p>
+            </div>
+          </div>
+          <div class="flex items-start gap-2 p-2 rounded-lg bg-[#f0f4ff]">
+            <div class="w-6 h-6 rounded-full bg-[#1D4FED] flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[9pt] font-bold text-white">3</span>
+            </div>
+            <div>
+              <h5 class="text-[11pt] font-bold text-[#1a1a2e]">{{步骤3标题}}</h5>
+              <p class="text-[10pt] text-[#666]">{{步骤3描述}}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">4</span>
+  </div>
+</div>
+
+</body>
+</html>

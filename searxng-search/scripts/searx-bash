@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# SearXNG search helper script (Bash version)
+# Usage: searx-bash <query> [OPTIONS]
+
+set -euo pipefail
+
+# Default values
+QUERY=""
+SERVER="${SEARXNG_URL:-http://localhost:8888}"
+CATEGORY="general"
+LIMIT=10
+ENGINES=""
+RAW_JSON=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --server|-s)
+      SERVER="$2"
+      shift 2
+      ;;
+    --category|-c)
+      CATEGORY="$2"
+      shift 2
+      ;;
+    --limit|-l)
+      LIMIT="$2"
+      shift 2
+      ;;
+    --engines|-e)
+      ENGINES="$2"
+      shift 2
+      ;;
+    --json)
+      RAW_JSON=true
+      shift
+      ;;
+    --help|-h)
+      cat << 'EOF'
+Usage: searx-bash <query> [OPTIONS]
+
+Search using SearXNG server
+
+Options:
+  --server, -s       SearXNG server URL (default: http://localhost:8888)
+  --category, -c     Search category (default: general)
+  --limit, -l        Max results (default: 10)
+  --engines, -e      Specific engine(s) to use
+  --json             Output raw JSON
+  --help, -h         Show this help
+
+Environment:
+  SEARXNG_URL        Default server URL
+
+Examples:
+  searx-bash tokio --category cargo
+  searx-bash 'machine learning' --category it
+  searx-bash express --server http://192.168.100.2:38080 --category packages
+  export SEARXNG_URL=http://192.168.100.2:38080
+
+Common categories:
+  general, cargo, packages, it, repos, apps, science, news, images, videos
+EOF
+      exit 0
+      ;;
+    *)
+      QUERY="$QUERY $1"
+      shift
+      ;;
+  esac
+done
+
+# Trim leading/trailing spaces
+QUERY=$(echo "$QUERY" | xargs)
+
+if [[ -z "$QUERY" ]]; then
+  cat << 'EOF'
+Usage: searx-bash <query> [OPTIONS]
+
+Search using SearXNG server
+
+Options:
+  --server, -s       SearXNG server URL (default: http://localhost:8888)
+  --category, -c     Search category (default: general)
+  --limit, -l        Max results (default: 10)
+  --engines, -e      Specific engine(s) to use
+  --json             Output raw JSON
+  --help, -h         Show this help
+
+Environment:
+  SEARXNG_URL        Default server URL
+
+Examples:
+  searx-bash tokio --category cargo
+  searx-bash 'machine learning' --category it
+  searx-bash express --server http://192.168.100.2:38080 --category packages
+
+Common categories:
+  general, cargo, packages, it, repos, apps, science, news, images, videos
+EOF
+  exit 1
+fi
+
+# Remove trailing slash from server
+SERVER="${SERVER%/}"
+
+# URL encode query
+ENCODED_QUERY=$(printf '%s' "$QUERY" | jq -sRr '@uri')
+
+# Build URL
+URL="${SERVER}/search?q=${ENCODED_QUERY}&format=json"
+
+if [[ "$CATEGORY" != "general" ]]; then
+  URL="${URL}&categories=${CATEGORY}"
+fi
+
+if [[ -n "$ENGINES" ]]; then
+  URL="${URL}&engines=${ENGINES}"
+fi
+
+# Make request
+RESPONSE=$(curl -s "$URL")
+
+if [[ "$RAW_JSON" == "true" ]]; then
+  echo "$RESPONSE"
+  exit 0
+fi
+
+# Parse and display results
+if ! command -v jq &> /dev/null; then
+  echo "Error: jq is required for formatted output. Install with: apt install jq or brew install jq"
+  echo "Or use --json flag for raw output."
+  exit 1
+fi
+
+# Use single jq command to format output
+jq -r --arg limit "$LIMIT" '
+  .results[0:($limit | tonumber)] | .[] |
+  (.title) + "\n" +
+  "  URL: " + .url + "\n" +
+  "  Engines: " + (.engines | join(", ")) +
+  (if .content != null then "\n  " + .content else "" end) +
+  "\n"
+' <<< "$RESPONSE"
+
+# Show result count
+TOTAL_COUNT=$(jq -r '.results | length' <<< "$RESPONSE")
+echo "Showing $(jq -r --arg limit "$LIMIT" '[.results[0:($limit | tonumber)] | .[]] | length' <<< "$RESPONSE") of $TOTAL_COUNT results"

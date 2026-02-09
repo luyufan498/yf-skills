@@ -1,0 +1,233 @@
+---
+name: nbl-ppt-builder
+description: >-
+  专门用于构建 NBL 企业 PPT 的 Skill。
+  当用户要求创建 PPT、演示文稿、幻灯片时使用。
+  包含 NBL 企业的标准模板、配色方案和内容规范。
+  触发场景：制作PPT、创建演示文稿、PPT模板、企业介绍
+trigger_keywords:
+  - 制作 PPT
+  - NBL PPT
+version: 1.0
+---
+
+你现在是 NBL 企业 PPT 构建专家。
+
+## 核心原则
+
+使用 `templates/` 目录中的 HTML 模板文件作为基础，严格遵循 Tailwind CSS 设计规范和蓝色系配色（#0B3BD3、#1D4FED、#202665）。
+
+**重要提示**：使用多个子代理分工协作，分别完成流程中的资料分析、PPT规划、单页HTML生成、最终校验等子任务。
+
+## Scripts 环境
+
+SKILL 使用 `scripts/` 目录下的工具脚本进行页面验证和 PPTX 生成。
+
+### 环境要求
+
+- Python 3.13+
+- Node.js 18+（用于 PPTX 生成）
+- uv（用于 Python 依赖管理）
+- Playwright（浏览器自动化，Python 和 Node.js 各需安装）
+
+### 首次安装
+
+**Python 环境（验证脚本）：**
+```bash
+cd .claude/skills/nbl-ppt--builder/scripts
+uv sync
+uv run playwright install chromium
+```
+
+**Node.js 环境（PPTX 生成）：**
+```bash
+cd .claude/skills/nbl-ppt--builder/scripts/pptx
+npm install
+```
+
+### 详细说明
+
+- 📖 完整使用说明请参考 `scripts/README.md`
+- 📁 `validate_with_playwright.py` - 检测内容是否溢出幻灯片
+- 📁 `merge_ppt_pages.py` - 合并多个 HTML 页面
+- 📁 `pptx/generate_pptx.js` - 生成 PowerPoint (.pptx) 文件，📖 详细说明参考 `pptx/README.md`
+
+## PPT 构建流程
+
+### 0. 准备工作
+
+在开始构建 PPT 之前，先创建工作目录并准备图片资源：
+
+#### 创建工作目录
+
+根据 PPT 主题创建工作目录，格式为：`ppt_{主题}/`
+- 示例：`ppt_季度总结/`、`ppt_产品介绍/`
+- **原则**：简洁明确，便于识别，无需包含日期
+
+#### 复制图片资源
+
+将 `templates/images/` 目录下的所有图片复制到工作目录的 `images/` 文件夹：
+- `logo.png` - Logo
+- `home_decoration.svg` - 首页装饰（包含背景图、三角形、装饰条、菱形）
+- `toc_decoration.svg` - 目录页装饰
+- `end_decoration.svg` - 结束页装饰
+
+如果有其他图片也一并复制，不要遗漏。
+
+
+### 1. 信息收集
+
+首先向用户确认以下信息：
+- **汇报人姓名**：显示在封面页
+- **PPT 主题/标题**：封面页和目录页使用
+- **汇报目的**：内部汇报、对外介绍、培训展示等
+- **目标受众**：内部团队、外部客户、领导层等
+- **提供材料**：用户需要提供的文字、数据、图片等资料
+
+### 2. 材料分析与页面规划
+
+**使用子代理/子任务完成此步骤。**
+
+分析用户提供的材料，将其整理成多个章节，每个章节包含多个内容页。页数控制在 8-20 页之间。
+
+详细的规划方法、目录页规则、章节结构示例、内容页分配原则、页数规划建议等都请参考 `reference/PPT规划说明.md`。
+
+**子代理任务要求：**
+调用子代理时，**必须传递完整的工作目录路径**作为参数，子代理在工作目录下生成 `PPT规划.md` 文件，按照参考文件中的模板和格式要求，列出每一页PPT需要包含的详细信息。注意不要遗漏目录页和结尾页，这些页不用计入正文页数。
+
+此步骤完成后，等待用户确认规划是否符合要求。
+
+
+### 3. 内容确认与迭代
+
+完成章节和内容页初步规划后，向用户展示 PPT 规划文件，确认是否符合要求。如果用户要求调整，根据反馈重新规划，直到满意。
+
+### 4. 子代理内容生成（核心步骤）
+
+每个内容页调用一个独立的子代理，**调用时必须传递完整的工作目录路径**作为参数。
+
+子代理负责：
+
+1. **接收工作目录**：从获取完整的工作目录路径（如 `/home/user/ppt_UEC拥塞控制/`）
+2. **分析内容**：读取该页面的内容信息（页码、标题、文字、数据、图片等）
+3. **选择模板**：参考 `reference/HTML页面生成说明.md` 中的"选择模板的原则"，根据内容类型、信息密度、视觉重点等因素选择最合适的模板，如果是章节目录页，需要把当前的章节也告知子代理方便高亮对应的文字。
+4. **查看模板文件**：直接读取模板 HTML 文件了解占位符和使用方法
+5. **生成 HTML**：基于选择的模板，替换所有占位符，设置正确页码
+6. **保存文件**：使用页码命名格式（如 `03_背景介绍.html`），保存到**接收的工作目录**中
+7. **即时检测**：调用检测脚本验证页面质量包括（Playwright检测 + PPTX预检测），根据检测结果处理（ok 继续下一页、error 调整后重试）
+
+详细的工作流程、文件命名规范、检测步骤等请参考 `reference/HTML页面生成说明.md` 中的"子代理工作流程"部分。
+
+**技术注意事项**：模板占位符替换、颜色格式、PPT转换限制等内容请参考 `reference/HTML页面生成说明.md` 中的"PPT 转换技术注意事项"部分。
+
+### 5. 最终检查与整合
+
+#### 子代理最终检查流程
+
+所有内容页生成完成后，调用专用的最终检查子代理进行全面的页面质量验证，**调用时必须传递完整的工作目录路径**作为参数。
+
+注意：步骤中重复进行 Playwright 检查和 PPTX 预检，主要是为了防范单页生成过程中检测步骤执行不完整的情况。
+
+执行以下步骤：
+
+1. **接收工作目录**：获取完整的工作目录路径
+2. **页面完整性检查**：检查是否包含完整的PPT结构
+   - 封面页（01）
+   - 总目录页
+   - 章节目录页（根据规划）
+   - 内容页（根据规划）
+   - 结束页（可选，通常最后一页）
+   - 检查页码是否连续，是否与规划一致，如果有遗漏需要发起子代理或者子任务补足页码，并最终调整页码
+3. **逐页 Playwright 检测**：遍历工作目录中所有 HTML 文件，调用 `validate_with_playwright.py` 脚本，收集每个页面的状态（ok/warning/error）
+
+   **批量检测所有页面命令**：
+   ```bash
+   cd .claude/skills/nbl-ppt--builder/scripts
+   for file in /path/to/ppt/*.html; do
+       uv run python validate_with_playwright.py "$file"
+   done
+   ```
+
+4. **批量 PPTX 预检**：调用 `generate_pptx.js --check` 对整个工作目录进行综合检测
+
+   **批量预检命令**：
+   ```bash
+   cd .claude/skills/nbl-ppt--builder/scripts/pptx
+   node generate_pptx.js --check /path/to/ppt_{主题}
+   ```
+
+   **检测内容**：
+   | 检查项 | 说明 | 修复方式 |
+   |--------|------|----------|
+   | HTML 尺寸验证 | 是否匹配 16:9 布局 | 调整页面尺寸 |
+   | 内容溢出检测 | 是否超出幻灯片边界 | 调整内容 |
+   | 未包装文本 | DIV 中是否有未包装的文本 | 用 P/H1-H6/UL/OL 包装 |
+   | 手动列表符号 | 文本是否以列表符号开头 | 使用 UL/OL 标签 |
+   | 行内元素边距 | SPAN 等是否有 margin | 将 margin 移到父级元素 |
+   | CSS 渐变 | 是否使用了 CSS 渐变 | 改为图片 |
+   | 背景图片 | DIV 是否使用背景图片 | 使用 IMG 标签 |
+   | 占位符尺寸 | 是否有宽或高为 0 | 检查布局 CSS |
+   | 文本元素样式 | P/H1-H6 是否有 background/border/shadow | 改为 DIV 包裹 |
+
+5. **汇总结果**：统计 ok/warning/error 数量，识别问题页面，检查模板多样性
+6. **生成报告**：输出验证结果报告，决定是否可以继续整合
+
+**完整性检查处理**：
+- ✅ 所有必要页面齐全 → 继续执行下一步检测
+- ⚠️ 缺少必要页面或页码不连续 → 需要报告缺失页面，并说明需要重新规划或补充生成对应页面
+
+根据结果处理：
+- ✅ 全部通过 → 可以继续整合输出
+- ⚠️ 有警告 → 可以继续，需关注警告项
+- ❌ 有错误 → 需要修复页面后重新检查
+
+详细的检查流程、验证脚本调用、问题处理流程等请参考 `reference/HTML页面生成说明.md` 中的"页面检测与生成"部分。
+
+### 6. 整合与输出
+
+#### 合并 HTML
+
+使用 `scripts/merge_ppt_pages.py` 脚本将所有页面按页码顺序合并：
+
+```bash
+cd .claude/skills/nbl-ppt--builder/scripts
+python merge_ppt_pages.py -d ppt_主题/
+```
+
+脚本会自动查找所有按页码命名的 HTML 文件并生成 `merged_presentation.html`。
+
+#### 生成 PowerPoint (.pptx)
+
+使用 `scripts/pptx/generate_pptx.js` 脚本转换为标准 PowerPoint 文件：
+
+```bash
+cd .claude/skills/nbl-ppt--builder/scripts/pptx
+node generate_pptx.js <work_dir> [output_file]
+```
+
+**参数说明：**
+- `work_dir`（必需）：包含 HTML 文件的工作目录路径
+- `output_file`（可选）：指定输出的 .pptx 文件名（默认为 `presentation.pptx`）
+  - **注意**：输出的 .pptx 文件保存在当前工作目录（`scripts/pptx/`），而非指定的 `work_dir`
+
+**示例：**
+```bash
+# 指定输出文件名，保存到工作目录
+node generate_pptx.js /path/to/ppt_主题  /path/to/ppt_主题/UEC演示.pptx
+```
+
+**输出格式：**
+- `.pptx` 标准格式，兼容 PowerPoint、Google Slides、Keynote
+- 准确保留页面布局、文字样式、图片位置
+- 16:9 宽屏格式
+
+#### 生成 PDF
+
+在合并后的 HTML 文件中，可通过浏览器打印功能导出为 PDF。
+
+## 文档引用
+
+| 文档 | 内容 |
+|------|------|
+| `reference/HTML页面生成说明.md` | 模板清单、选择模板的原则、子代理工作流程、页面检测与生成、技术注意事项 |
+| `reference/PPT规划说明.md` | PPT规划方法、目录页规则、章节结构示例、内容页分配原则 |

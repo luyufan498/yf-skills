@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>目录页 - Tailwind CSS 版本</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 目录页 slide -->
+<div class="slide-container mx-auto">
+  <!-- SVG 目录页装饰图 -->
+  <img src="images/toc_decoration.svg" class="absolute top-0 right-0 h-[540px] w-auto object-contain" alt="目录页装饰">
+
+  <!-- LOGO（左上角） -->
+  <div class="absolute left-[9px] top-[10px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 目录标题和 CONTENTS 容器 -->
+  <div class="absolute left-[39px] top-[184px] flex items-center gap-[6px]">
+    <!-- 目录标题 -->
+    <h1 class="text-[36pt] font-normal text-black leading-tight">目<br>录</h1>
+
+    <!-- CONTENTS 竖排文字 -->
+    <p class="text-[13.5pt] text-black" style="writing-mode: vertical-rl;">CONTENTS</p>
+  </div>
+
+  <!-- 目录项列表 -->
+  <div class="absolute left-[144px] top-[149px]">
+    <div class="space-y-[18px]">
+      <!-- 目录项1 当前的对应的Section标题，需要蓝色高亮显示 -->
+      <div class="flex items-baseline gap-[8px]">
+        <span class="text-[15.375pt] text-[#0B3BD3]">1.</span>
+        <span class="text-[15pt] text-[#0B3BD3]">{{目录项1}}</span>
+      </div>
+      <!-- 目录项2 -->
+      <div class="flex items-baseline gap-[8px]">
+        <span class="text-[15.375pt] text-black">2.</span>
+        <span class="text-[15pt] text-black">{{目录项2}}</span>
+      </div>
+      <!-- 目录项3 -->
+      <div class="flex items-baseline gap-[8px]">
+        <span class="text-[15.375pt] text-black">3.</span>
+        <span class="text-[15pt] text-black">{{目录项3}}</span>
+      </div>
+      <!-- 目录项4 -->
+      <div class="flex items-baseline gap-[8px]">
+        <span class="text-[15.375pt] text-black">4.</span>
+        <span class="text-[15pt] text-black">{{目录项4}}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#B9B9B9]">2</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -6,7 +6,7 @@ set -euo pipefail
 
 # Default values
 QUERY=""
-SERVER="${SEARXNG_URL:-http://localhost:8888}"
+SERVER="${SEARXNG_URL:-}"
 CATEGORY="general"
 LIMIT=10
 ENGINES=""
@@ -42,7 +42,7 @@ Usage: searx-bash <query> [OPTIONS]
 Search using SearXNG server
 
 Options:
-  --server, -s       SearXNG server URL (default: http://localhost:8888)
+  --server, -s       SearXNG server URL (required)
   --category, -c     Search category (default: general)
   --limit, -l        Max results (default: 10)
   --engines, -e      Specific engine(s) to use
@@ -50,7 +50,7 @@ Options:
   --help, -h         Show this help
 
 Environment:
-  SEARXNG_URL        Default server URL
+  SEARXNG_URL        SearXNG server URL (required)
 
 Examples:
   searx-bash tokio --category cargo
@@ -80,7 +80,7 @@ Usage: searx-bash <query> [OPTIONS]
 Search using SearXNG server
 
 Options:
-  --server, -s       SearXNG server URL (default: http://localhost:8888)
+  --server, -s       SearXNG server URL (required)
   --category, -c     Search category (default: general)
   --limit, -l        Max results (default: 10)
   --engines, -e      Specific engine(s) to use
@@ -88,7 +88,7 @@ Options:
   --help, -h         Show this help
 
 Environment:
-  SEARXNG_URL        Default server URL
+  SEARXNG_URL        SearXNG server URL (required)
 
 Examples:
   searx-bash tokio --category cargo
@@ -98,6 +98,16 @@ Examples:
 Common categories:
   general, cargo, packages, it, repos, apps, science, news, images, videos
 EOF
+  exit 1
+fi
+
+# Check if server is set
+if [[ -z "$SERVER" ]]; then
+  echo "Error: SearXNG server URL not set."
+  echo ""
+  echo "Please set it using one of the following methods:"
+  echo "  1. Use --server option: searx-bash <query> --server http://your-searx-server:8888"
+  echo "  2. Set SEARXNG_URL environment variable: export SEARXNG_URL=http://your-searx-server:8888"
   exit 1
 fi
 

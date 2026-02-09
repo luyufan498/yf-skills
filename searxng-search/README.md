@@ -12,7 +12,7 @@ SearXNG 是一个尊重隐私的元搜索引擎，聚合来自多个搜索引擎
 
 ## 快速开始
 
-**1. 设置服务器地址（如果使用远程服务）：**
+**1. 设置服务器地址（必须）：**
 ```bash
 export SEARXNG_URL=http://your-server:port
 # 或在每个命令中使用 --server 标志
@@ -55,7 +55,7 @@ curl -s "http://your-server:port/search?q=express&format=json&categories=package
 searx-bash <query> [OPTIONS]
 
 Options:
-  --server, -s       SearXNG 服务器地址（默认：$SEARXNG_URL 或 http://localhost:8888）
+  --server, -s       SearXNG 服务器地址（必须设置）
   --category, -c     搜索类别（默认：general）
   --limit, -l        最大结果数（默认：10）
   --json             输出原始 JSON
@@ -70,15 +70,13 @@ Environment:
 
 **示例：**
 ```bash
-# 本地服务器（默认）
-searx-bash tokio --category cargo
-
-# 通过标志指定远程服务器
+# 通过标志指定服务器
 searx-bash 'machine learning' --server http://192.168.100.2:38080 --category it
 
-# 通过环境变量指定远程服务器
+# 通过环境变量设置服务器（推荐用于多次使用）
 export SEARXNG_URL=http://192.168.100.2:38080
 searx-bash docker --category packages --limit 5
+searx-bash tokio --category cargo
 ```
 
 ## 可用类别

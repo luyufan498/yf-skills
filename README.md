@@ -10,7 +10,7 @@
 
 | 技能名称 | 描述 | 触发关键词 |
 |---------|------|-----------|
-| **nbl-ppt--builder** | 专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范 | 制作 PPT、创建演示文稿、PPT 模板、企业介绍 |
+| **nbl-ppt-builder** | 专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范 | 制作 PPT、创建演示文稿、PPT 模板、企业介绍 |
 | **searxng-search** | 使用 SearXNG 实例增强的 Web 和软件包仓库搜索 | 搜索、查找 |
 | **siyuan-notes** | 思源笔记全功能命令行工具，支持笔记本、文档和块操作 | 思源、笔记 |
 | **skill-creator-dev** | 用于在 workspace 创建新技能开发环境的工具 | 创建技能、技能开发 |
@@ -52,7 +52,7 @@
 
 **目录结构：**
 ```
-nbl-ppt--builder/
+nbl-ppt-builder/
 ├── SKILL.md                          # 技能核心定义
 ├── README.md                         # 详细说明
 ├── scripts/                          # 辅助脚本
@@ -65,7 +65,7 @@ nbl-ppt--builder/
     └── PPT规划说明.md
 ```
 
-详细说明请参见 [nbl-ppt--builder/README.md](nbl-ppt--builder/README.md)
+详细说明请参见 [nbl-ppt-builder/README.md](nbl-ppt-builder/README.md)
 
 ### searxng-search
 

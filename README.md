@@ -14,6 +14,7 @@
 | **searxng-search** | 使用 SearXNG 实例增强的 Web 和软件包仓库搜索 | 搜索、查找 |
 | **siyuan-notes** | 思源笔记全功能命令行工具，支持笔记本、文档和块操作 | 思源、笔记 |
 | **skill-creator-dev** | 用于在 workspace 创建新技能开发环境的工具 | 创建技能、技能开发 |
+| **stock-market-data** | 中国股市数据查询，支持A股、港股、美股实时行情和K线数据 | 股票、行情、K线、实时股价 |
 
 ## 快速开始
 
@@ -32,10 +33,11 @@
 
 ```bash
 # 示例：
-"帮我制作一个季度业务汇报的 PPT"         # 触发 nbl-ppt--builder
+"帮我制作一个季度业务汇报的 PPT"         # 触发 nbl-ppt-builder
 "搜索 tokio 这个 crate"                   # 触发 searxng-search
 "列出思源笔记中的所有文档"                # 触发 siyuan-notes
 "帮我创建一个新的技能开发环境"            # 触发 skill-creator-dev
+"查询平安银行的实时股价"                  # 触发 stock-market-data
 ```
 
 ## 技能详情
@@ -138,6 +140,39 @@ scripts/init_skill.py <skill-name> --path <output-directory>
 ```
 
 详细文档请参见 [skill-creator-dev/SKILL.md](skill-creator-dev/SKILL.md)
+
+### stock-market-data
+
+中国股市数据查询技能，提供 A股、港股、美股市场的实时数据查询能力。
+
+**支持的市场：**
+- A股市场：上海证券交易所(SH)、深圳证券交易所(SZ)、北京证券交易所(BJ)
+- 港股市场：香港交易所(HK)
+- 美股市场：NASDAQ、NYSE
+
+**核心功能：**
+- 实时股价查询（支持多只股票批量查询）
+- K线历史数据（日K/周K/月K/分钟K线）
+- 分时走势数据
+- 市场新闻聚合（财联社、新浪、TradingView）
+- 股票代码搜索
+
+**快速使用：**
+```bash
+# 查询实时股价
+python3 scripts/fetch_realtime_stock.py sh600000
+
+# 获取K线数据
+python3 scripts/fetch_kline_data.py sh600000 -t day -c 30
+
+# 获取市场新闻
+python3 scripts/fetch_market_news.py -n 20 --source all -f simple
+
+# 搜索股票代码
+python3 scripts/search_stock_code.py 平安银行 -n 5
+```
+
+详细文档请参见 [stock-market-data/SKILL.md](stock-market-data/SKILL.md)
 
 ## 开发指南
 

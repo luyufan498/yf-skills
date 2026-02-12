@@ -258,25 +258,21 @@ ppt_{主题}/
 
 **在生成 HTML 页面后立即进行单页检测**：
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
-uv run python validate_with_playwright.py /path/to/page.html
+uv run python scripts/validate_with_playwright.py /path/to/page.html
 ```
 
 **示例**：
 ```bash
 # 检测特定页面
-uv run python validate_with_playwright.py /path/to/ppt_主题/03_背景介绍.html
-
-# 批量检测所有页面
-for file in /path/to/ppt/*.html; do
-    uv run python validate_with_playwright.py "$file"
-done
+uv run python scripts/validate_with_playwright.py /path/to/ppt_主题/03_背景介绍.html  -o /path/to/ppt/ppt_主题/tmp/03_背景介绍_validation_report.json
 ```
 
 **注意**：
+- 命令应在 nbl-ppt-builder SKILL 目录下执行
 - 必须使用 `uv run` 调用 Python 验证脚本
-- 路径必须是绝对路径或相对于 `scripts/` 目录的完整路径
-- 工作目录为 `scripts/` 目录
+- 路径必须是绝对路径或相对于 SKILL 目录的完整路径
+- `-o` 参数可选，用于指定输出报告路径
+- 如果输出路径不存在，应该创建路径
 
 **返回值**：
 | 返回值 | 状态 | 处理方式 |
@@ -314,11 +310,10 @@ done
 对每一页生成的 HTML 文件进行快速检查（每页生成后必须要检测语法是否符合要求）：
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts/pptx
-node generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.html
+node scripts/pptx/generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.html
 ```
 
-**注意**：批量汇总检测由最终检查子代理执行，详细说明请参考 SKILL.md 的"最终检查与整合"章节。
+**注意**：命令应在 nbl-ppt-builder SKILL 目录下执行。批量汇总检测由最终检查子代理执行，详细说明请参考 SKILL.md 的"最终检查与整合"章节。
 
 **检测内容**：
 | 检查项 | 说明 | 修复方式 |
@@ -335,7 +330,7 @@ node generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.html
 
 **检测通过后生成 PPT**：
 ```bash
-node generate_pptx.js /path/to/ppt_{主题} [输出文件名.pptx]
+node scripts/pptx/generate_pptx.js /path/to/ppt_{主题} [输出文件名.pptx]
 ```
 
 ### 检测报告格式

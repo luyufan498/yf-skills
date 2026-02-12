@@ -17,7 +17,9 @@ version: 1.0
 
 ## Scripts 环境
 
-SKILL 使用 `scripts/` 目录下的工具脚本进行页面验证和 PPTX 生成。
+SKILL 使用本 SKILL 目录下 `scripts/` 目录中的工具脚本进行页面验证和 PPTX 生成。
+
+**注意**：所有脚本命令均应在 nbl-ppt-builder SKILL 目录（即本文件所在目录）下执行。
 
 ### 环境要求
 
@@ -28,23 +30,22 @@ SKILL 使用 `scripts/` 目录下的工具脚本进行页面验证和 PPTX 生�
 
 ### 首次安装
 
+在 nbl-ppt-builder skill 目录下执行以下命令：
+
 **Python 环境（验证脚本）：**
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
-uv sync
-uv run playwright install chromium
+cd scripts && uv sync && uv run playwright install chromium
 ```
 
 **Node.js 环境（PPTX 生成）：**
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts/pptx
-npm install
+cd scripts/pptx && npm install
 ```
 
 ### 详细说明
 
 - 📖 完整使用说明请参考 `scripts/README.md`
-- 📁 `validate_with_playwright.py` - 检测内容是否溢出幻灯片
+- 📁 `validate_with_playwright.py` - 批量检测 PPT 内容溢出、卡片重叠、内部滚动条等问题
 - 📁 `merge_ppt_pages.py` - 合并多个 HTML 页面
 - 📁 `pptx/generate_pptx.js` - 生成 PowerPoint (.pptx) 文件，📖 详细说明参考 `pptx/README.md`
 
@@ -138,18 +139,24 @@ npm install
 
    **批量检测所有页面命令**：
    ```bash
-   cd .claude/skills/nbl-ppt--builder/scripts
-   for file in /path/to/ppt/*.html; do
-       uv run python validate_with_playwright.py "$file"
-   done
+   uv run python scripts/validate_with_playwright.py /path/to/ppt/ -o /path/to/ppt/validation_report.json
    ```
+
+   **参数说明**：
+   - 第一个参数：要检测的 HTML 文件或目录路径（支持多个文件/目录）
+   - `-o` 或 `--output`：可选，指定输出报告的 JSON 文件路径
+
+   **检测内容**：
+   - 内容溢出幻灯片底部（16:9 比例，高度 540px）
+   - 卡片之间的重叠
+   - 卡片内部垂直滚动条（内容超出卡片高度）
+   - 卡片内部水平滚动条（内容超出卡片宽度）
 
 4. **批量 PPTX 预检**：调用 `generate_pptx.js --check` 对整个工作目录进行综合检测
 
    **批量预检命令**：
    ```bash
-   cd .claude/skills/nbl-ppt--builder/scripts/pptx
-   node generate_pptx.js --check /path/to/ppt_{主题}
+   node scripts/pptx/generate_pptx.js --check /path/to/ppt_{主题}
    ```
 
    **检测内容**：
@@ -186,8 +193,7 @@ npm install
 使用 `scripts/merge_ppt_pages.py` 脚本将所有页面按页码顺序合并：
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
-python merge_ppt_pages.py -d ppt_主题/
+python scripts/merge_ppt_pages.py -d ppt_主题/
 ```
 
 脚本会自动查找所有按页码命名的 HTML 文件并生成 `merged_presentation.html`。
@@ -197,8 +203,7 @@ python merge_ppt_pages.py -d ppt_主题/
 使用 `scripts/pptx/generate_pptx.js` 脚本转换为标准 PowerPoint 文件：
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts/pptx
-node generate_pptx.js <work_dir> [output_file]
+node scripts/pptx/generate_pptx.js <work_dir> [output_file]
 ```
 
 **参数说明：**
@@ -209,7 +214,7 @@ node generate_pptx.js <work_dir> [output_file]
 **示例：**
 ```bash
 # 指定输出文件名，保存到工作目录
-node generate_pptx.js /path/to/ppt_主题  /path/to/ppt_主题/UEC演示.pptx
+node scripts/pptx/generate_pptx.js /path/to/ppt_主题  /path/to/ppt_主题/UEC演示.pptx
 ```
 
 **输出格式：**

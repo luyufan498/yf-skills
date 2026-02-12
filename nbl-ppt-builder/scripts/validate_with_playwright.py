@@ -250,6 +250,98 @@ def get_css_selector(el):
         return el.tag_name.lower()
 
 
+def collect_html_files(paths):
+    """收集所有要检测的 HTML 文件"""
+    html_files = []
+
+    for path in paths:
+        p = Path(path)
+        if p.is_file():
+            if p.suffix.lower() == '.html':
+                html_files.append(p)
+        elif p.is_dir():
+            # 收集目录下所有 HTML 文件
+            html_files.extend(sorted(p.glob("*.html")))
+
+    return html_files
+
+
+def print_single_file_result(html_file, issues):
+    """打印单个文件的检测结果"""
+    print(f"\n{'='*60}")
+    print(f"📄 文件: {html_file}")
+    print(f"{'='*60}")
+
+    if not issues:
+        print("✅ 正常 - 未发现内容问题")
+        return "ok"
+
+    # 统计不同类型的问题
+    overflow_count = sum(1 for i in issues if i["category"] == "content_overflow")
+    overlap_count = sum(1 for i in issues if i["category"] == "card_overlap")
+    inner_scroll_v_count = sum(1 for i in issues if i["category"] == "inner_scroll_vertical")
+    inner_scroll_h_count = sum(1 for i in issues if i["category"] == "inner_scroll_horizontal")
+
+    print(f"⚠️  发现 {len(issues)} 个问题:")
+    if overflow_count > 0:
+        print(f"  - 内容溢出幻灯片: {overflow_count} 个")
+    if overlap_count > 0:
+        print(f"  - 卡片重叠: {overlap_count} 个")
+    if inner_scroll_v_count > 0:
+        print(f"  - 卡片内部垂直滚动: {inner_scroll_v_count} 个")
+    if inner_scroll_h_count > 0:
+        print(f"  - 卡片内部水平滚动: {inner_scroll_h_count} 个")
+    print()
+
+    for i, issue in enumerate(issues, 1):
+        # 根据问题类型选择图标
+        if issue["category"] == "card_overlap":
+            issue_type = "📌"
+        elif issue["category"] == "inner_scroll_vertical":
+            issue_type = "📜⬇️"
+        elif issue["category"] == "inner_scroll_horizontal":
+            issue_type = "📜➡️"
+        else:
+            issue_type = "⬇️"
+
+        print(f"  {issue_type} {i}. {issue['description']}")
+        details = issue.get("details", {})
+
+        # 显示元素标识信息（适用于所有类型）
+        element_id = details.get("element_id", "")
+        position = details.get("position", "")
+        if element_id:
+            print(f"      元素: {element_id}")
+        if position:
+            print(f"      页面坐标: {position}")
+
+        if issue["category"] == "content_overflow":
+            print(f"      卡片尺寸: 顶部={details['card_top']:.0f}px, 高度={details['card_height']:.0f}px")
+            print(f"      底部边界: {details['card_bottom']:.0f}px > 幻灯片 (540px)")
+            print(f"      溢出量: {details['overflow']:.0f}px")
+        elif issue["category"] == "card_overlap":
+            card1 = details["card1"]
+            card2 = details["card2"]
+            print(f"      元素1: {card1.get('element_id', '未命名')}")
+            print(f"        位置: (x={card1['left']:.0f}, y={card1['top']:.0f}, 宽={card1['width']:.0f}, 高={card1['height']:.0f})")
+            print(f"      元素2: {card2.get('element_id', '未命名')}")
+            print(f"        位置: (x={card2['left']:.0f}, y={card2['top']:.0f}, 宽={card2['width']:.0f}, 高={card2['height']:.0f})")
+            print(f"      重叠面积: {details['overlap_area']:.0f}px²")
+        elif issue["category"] == "inner_scroll_vertical":
+            print(f"      卡片尺寸: 可视高度={details['client_height']:.0f}px")
+            print(f"      内容高度: {details['scroll_height']:.0f}px > 可视高度")
+            print(f"      溢出量: {details['overflow']:.0f}px")
+        elif issue["category"] == "inner_scroll_horizontal":
+            print(f"      卡片尺寸: 可视宽度={details['client_width']:.0f}px")
+            print(f"      内容宽度: {details['scroll_width']:.0f}px > 可视宽度")
+            print(f"      溢出量: {details['overflow']:.0f}px")
+        print()
+
+    # 返回状态
+    has_high = any(issue["severity"] == "high" for issue in issues)
+    return "error" if has_high else "warning"
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -257,8 +349,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  # 检测单个文件
   python validate_with_playwright.py presentation.html
-  python validate_with_playwright.py /path/to/slides.html
+
+  # 检测多个文件
+  python validate_with_playwright.py slide1.html slide2.html slide3.html
+
+  # 检测整个目录
+  python validate_with_playwright.py /path/to/ppt_slides/
+
+  # 混合检测文件和目录
+  python validate_with_playwright.py slide1.html /path/to/slides/
+
+  # 指定输出报告路径
+  python validate_with_playwright.py /path/to/slides/ -o /path/to/report.json
 
 检测内容:
   - 内容溢出幻灯片底部 (16:9 比例, 高度 540px)
@@ -277,105 +381,122 @@ def main():
 """
     )
     parser.add_argument(
-        "html_file",
-        help="要验证的 HTML 文件路径"
+        "paths",
+        nargs="+",
+        help="要验证的 HTML 文件或目录路径（支持多个文件/目录）"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default=None,
+        help="输出报告的 JSON 文件路径（不指定则不输出 JSON 文件）"
     )
 
     args = parser.parse_args()
-    html_file = args.html_file
 
-    if not Path(html_file).exists():
-        print(f"❌ 文件不存在: {html_file}")
+    # 收集所有 HTML 文件
+    html_files = collect_html_files(args.paths)
+
+    if not html_files:
+        print("❌ 未找到任何 HTML 文件")
         sys.exit(1)
 
-    print(f"检测文件: {html_file}")
+    print(f"🔍 开始检测 {len(html_files)} 个文件...")
     print()
 
-    issues = check_scroll_with_playwright(html_file)
-
-    if not issues:
-        print("✅ 正常 - 未发现内容问题")
-        result = {"file": html_file, "status": "ok", "issues": []}
-        exit_code = 0
-    else:
-        # 统计不同类型的问题
-        overflow_count = sum(1 for i in issues if i["category"] == "content_overflow")
-        overlap_count = sum(1 for i in issues if i["category"] == "card_overlap")
-        inner_scroll_v_count = sum(1 for i in issues if i["category"] == "inner_scroll_vertical")
-        inner_scroll_h_count = sum(1 for i in issues if i["category"] == "inner_scroll_horizontal")
-
-        print(f"⚠️  发现 {len(issues)} 个问题:")
-        if overflow_count > 0:
-            print(f"  - 内容溢出幻灯片: {overflow_count} 个")
-        if overlap_count > 0:
-            print(f"  - 卡片重叠: {overlap_count} 个")
-        if inner_scroll_v_count > 0:
-            print(f"  - 卡片内部垂直滚动: {inner_scroll_v_count} 个")
-        if inner_scroll_h_count > 0:
-            print(f"  - 卡片内部水平滚动: {inner_scroll_h_count} 个")
-        print()
-
-        for i, issue in enumerate(issues, 1):
-            # 根据问题类型选择图标
-            if issue["category"] == "card_overlap":
-                issue_type = "📌"
-            elif issue["category"] == "inner_scroll_vertical":
-                issue_type = "📜⬇️"
-            elif issue["category"] == "inner_scroll_horizontal":
-                issue_type = "📜➡️"
-            else:
-                issue_type = "⬇️"
-
-            print(f"  {issue_type} {i}. {issue['description']}")
-            details = issue.get("details", {})
-
-            # 显示元素标识信息（适用于所有类型）
-            element_id = details.get("element_id", "")
-            position = details.get("position", "")
-            if element_id:
-                print(f"      元素: {element_id}")
-            if position:
-                print(f"      页面坐标: {position}")
-
-            if issue["category"] == "content_overflow":
-                print(f"      卡片尺寸: 顶部={details['card_top']:.0f}px, 高度={details['card_height']:.0f}px")
-                print(f"      底部边界: {details['card_bottom']:.0f}px > 幻灯片 (540px)")
-                print(f"      溢出量: {details['overflow']:.0f}px")
-            elif issue["category"] == "card_overlap":
-                card1 = details["card1"]
-                card2 = details["card2"]
-                print(f"      元素1: {card1.get('element_id', '未命名')}")
-                print(f"        位置: (x={card1['left']:.0f}, y={card1['top']:.0f}, 宽={card1['width']:.0f}, 高={card1['height']:.0f})")
-                print(f"      元素2: {card2.get('element_id', '未命名')}")
-                print(f"        位置: (x={card2['left']:.0f}, y={card2['top']:.0f}, 宽={card2['width']:.0f}, 高={card2['height']:.0f})")
-                print(f"      重叠面积: {details['overlap_area']:.0f}px²")
-            elif issue["category"] == "inner_scroll_vertical":
-                print(f"      卡片尺寸: 可视高度={details['client_height']:.0f}px")
-                print(f"      内容高度: {details['scroll_height']:.0f}px > 可视高度")
-                print(f"      溢出量: {details['overflow']:.0f}px")
-            elif issue["category"] == "inner_scroll_horizontal":
-                print(f"      卡片尺寸: 可视宽度={details['client_width']:.0f}px")
-                print(f"      内容宽度: {details['scroll_width']:.0f}px > 可视宽度")
-                print(f"      溢出量: {details['overflow']:.0f}px")
-            print()
-
-        # 只对 high 级别的问题返回错误码
-        has_high = any(issue["severity"] == "high" for issue in issues)
-        result = {
-            "file": html_file,
-            "status": "error" if has_high else "warning",
-            "issues": issues,
+    # 批量检测结果
+    all_results = []
+    summary = {
+        "total_files": len(html_files),
+        "ok_files": 0,
+        "warning_files": 0,
+        "error_files": 0,
+        "total_issues": 0,
+        "issues_by_category": {
+            "content_overflow": 0,
+            "card_overlap": 0,
+            "inner_scroll_vertical": 0,
+            "inner_scroll_horizontal": 0,
         }
-        exit_code = 2 if has_high else 1
+    }
 
-    # 保存 JSON
-    with open("validation_report.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
+    for html_file in html_files:
+        issues = check_scroll_with_playwright(str(html_file))
+        status = print_single_file_result(html_file, issues)
 
-    print(f"✅ 报告已保存: validation_report.json")
+        # 统计
+        if status == "ok":
+            summary["ok_files"] += 1
+        elif status == "warning":
+            summary["warning_files"] += 1
+        else:
+            summary["error_files"] += 1
+
+        summary["total_issues"] += len(issues)
+        for issue in issues:
+            cat = issue.get("category", "")
+            if cat in summary["issues_by_category"]:
+                summary["issues_by_category"][cat] += 1
+
+        all_results.append({
+            "file": str(html_file),
+            "status": status,
+            "issue_count": len(issues),
+            "issues": issues
+        })
+
+    # 打印汇总报告
+    print("\n" + "=" * 60)
+    print("📊 检测汇总报告")
+    print("=" * 60)
+    print(f"  检测文件总数: {summary['total_files']}")
+    print(f"  ✅ 正常文件: {summary['ok_files']}")
+    print(f"  ⚠️  警告文件: {summary['warning_files']}")
+    print(f"  ❌ 错误文件: {summary['error_files']}")
+    print()
+    print(f"  问题总数: {summary['total_issues']}")
+    if summary["issues_by_category"]["content_overflow"] > 0:
+        print(f"    - 内容溢出幻灯片: {summary['issues_by_category']['content_overflow']}")
+    if summary["issues_by_category"]["card_overlap"] > 0:
+        print(f"    - 卡片重叠: {summary['issues_by_category']['card_overlap']}")
+    if summary["issues_by_category"]["inner_scroll_vertical"] > 0:
+        print(f"    - 卡片内部垂直滚动: {summary['issues_by_category']['inner_scroll_vertical']}")
+    if summary["issues_by_category"]["inner_scroll_horizontal"] > 0:
+        print(f"    - 卡片内部水平滚动: {summary['issues_by_category']['inner_scroll_horizontal']}")
+
+    # 列出有问题的文件
+    problem_files = [r for r in all_results if r["status"] != "ok"]
+    if problem_files:
+        print()
+        print("📋 问题文件列表:")
+        for r in problem_files:
+            status_icon = "❌" if r["status"] == "error" else "⚠️"
+            print(f"  {status_icon} {Path(r['file']).name} ({r['issue_count']} 个问题)")
+
+    # 保存 JSON 报告（仅当指定输出路径时）
+    if args.output:
+        result = {
+            "summary": summary,
+            "files": all_results
+        }
+
+        output_path = Path(args.output)
+        # 确保输出目录存在
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+        print()
+        print(f"✅ 报告已保存: {output_path}")
     print()
 
-    sys.exit(exit_code)
+    # 退出码
+    if summary["error_files"] > 0:
+        sys.exit(2)
+    elif summary["warning_files"] > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":

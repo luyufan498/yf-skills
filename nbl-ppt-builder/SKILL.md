@@ -136,11 +136,11 @@ cd scripts/pptx && npm install
    - 内容页（根据规划）
    - 结束页（必选，通常最后一页）
    - 检查页码是否连续，是否与规划一致，如果有遗漏需要发起子代理或者子任务补足页码，并最终调整页码
-3. **逐页 Playwright 检测**：遍历工作目录中所有 HTML 文件，调用 `validate_with_playwright.py` 脚本，收集每个页面的状态（ok/warning/error）
+3. **批量 Playwright 检测**：遍历工作目录中所有 HTML 文件，调用 `validate_with_playwright.py` 脚本，收集每个页面的状态（ok/warning/error）
 
    **批量检测所有页面命令**：
    ```bash
-   uv run python scripts/validate_with_playwright.py /path/to/ppt/ -o /path/to/ppt/validation_report.json
+   uv run python scripts/validate_with_playwright.py /path/to/ppt/ -o /path/to/ppt/tmp/validation_report.json
    ```
 
    **参数说明**：

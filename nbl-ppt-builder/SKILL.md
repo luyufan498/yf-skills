@@ -140,7 +140,7 @@ cd scripts/pptx && npm install
 
    **批量检测所有页面命令**：
    ```bash
-   uv run python scripts/validate_with_playwright.py /path/to/ppt/ -o /path/to/ppt/tmp/validation_report.json
+   cd  path/to/scripts && uv run validate_with_playwright.py /path/to/ppt/ -o /path/to/ppt/tmp/validation_report.json
    ```
 
    **参数说明**：
@@ -157,7 +157,7 @@ cd scripts/pptx && npm install
 
    **批量预检命令**：
    ```bash
-   node scripts/pptx/generate_pptx.js --check /path/to/ppt_{主题}
+   cd  path/to/scripts && node pptx/generate_pptx.js --check /path/to/ppt_{主题}
    ```
 
    **检测内容**：
@@ -194,7 +194,7 @@ cd scripts/pptx && npm install
 使用 `scripts/merge_ppt_pages.py` 脚本将所有页面按页码顺序合并：
 
 ```bash
-python scripts/merge_ppt_pages.py -d ppt_主题/
+cd  path/to/scripts && uv run merge_ppt_pages.py -d ppt_主题/
 ```
 
 脚本会自动查找所有按页码命名的 HTML 文件并生成 `merged_presentation.html`。
@@ -204,7 +204,7 @@ python scripts/merge_ppt_pages.py -d ppt_主题/
 使用 `scripts/pptx/generate_pptx.js` 脚本转换为标准 PowerPoint 文件：
 
 ```bash
-node scripts/pptx/generate_pptx.js <work_dir> [output_file]
+cd  path/to/scripts && node pptx/generate_pptx.js <work_dir> [output_file]
 ```
 
 **参数说明：**
@@ -215,7 +215,7 @@ node scripts/pptx/generate_pptx.js <work_dir> [output_file]
 **示例：**
 ```bash
 # 指定输出文件名，保存到工作目录
-node scripts/pptx/generate_pptx.js /path/to/ppt_主题  /path/to/ppt_主题/UEC演示.pptx
+cd  path/to/scripts && node pptx/generate_pptx.js /path/to/ppt_主题  /path/to/ppt_主题/UEC演示.pptx
 ```
 
 **输出格式：**

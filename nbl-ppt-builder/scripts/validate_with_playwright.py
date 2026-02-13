@@ -37,60 +37,155 @@ async def detect_with_playwright_async(html_file):
         # 等待页面完全加载
         await page.wait_for_load_state("domcontentloaded", timeout=10000)
 
-        # 只检测主卡片（使用 .card-shadow），避免检测内部容器如 .rounded-xl
-        card_selectors = [".card-shadow"]
+        # 获取 .slide-container 容器的位置（作为参考点）
+        container_box = await page.evaluate("""
+            () => {
+                const container = document.querySelector('.slide-container');
+                if (!container) return null;
+                const rect = container.getBoundingClientRect();
+                return {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height
+                };
+            }
+        """)
+
+        if not container_box:
+            await browser.close()
+            return []
+
+        # 检测所有绝对定位的同级元素（包括卡片和底部说明框等）
+        # 策略：查找 .slide-container 下所有绝对定位的 div 元素
         cards = []
 
-        for selector in card_selectors:
-            elements = await page.query_selector_all(selector)
-            for element in elements:
-                box = await element.bounding_box()
-                if box:
-                    # 获取元素本身的标识信息（标签名 + class）
-                    element_info = await element.evaluate("""
-                        el => {
-                            // 获取元素本身的标签和完整 class
-                            const tagName = el.tagName.toLowerCase();
-                            const className = el.className || '';
-                            return {
-                                tagName: tagName,
-                                className: className,
-                                // 生成简洁的元素标识：标签名 + class
-                                elementId: tagName + (className ? '.' + className.trim().split(/\\s+/).join('.') : '')
-                            };
+        # 查找所有绝对定位的直接子元素
+        absolute_elements = await page.evaluate("""
+            () => {
+                const container = document.querySelector('.slide-container');
+                if (!container) return [];
+
+                const children = Array.from(container.children);
+                const absoluteDivs = children.filter(el => {
+                    // 只检测 div 元素
+                    if (el.tagName.toLowerCase() !== 'div') return false;
+
+                    // 获取计算样式，检查是否为绝对定位
+                    const style = window.getComputedStyle(el);
+                    if (style.position !== 'absolute') return false;
+
+                    // 排除装饰性元素（pointer-events: none 或完全透明）
+                    if (style.pointerEvents === 'none' || style.opacity === '0') return false;
+
+                    // 排除包含 "pointer-events-none" 类的元素
+                    if (el.classList.contains('pointer-events-none')) return false;
+
+                    // 排除纯装饰性的分隔线（高度或宽度很小）
+                    const rect = el.getBoundingClientRect();
+                    if (rect.height < 3 || rect.width < 3) return false;
+
+                    // 排除纯装饰性的背景块（没有文字内容的背景色块）
+                    // 判断条件：没有子文本节点或文本为空，且设置了背景
+                    const textContent = el.textContent.trim();
+                    const hasText = textContent.length > 0;
+                    const hasBackground = style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+                                         style.backgroundColor !== 'transparent';
+                    const hasChildren = el.children.length > 0;
+
+                    // 如果元素没有文本、没有子元素、但有背景色，认为是装饰性背景块
+                    if (!hasText && !hasChildren && hasBackground) {
+                        return false;
+                    }
+
+                    // 排除只包含图片的装饰性元素
+                    // 判断条件：子元素只有img标签，没有其他文字内容
+                    if (hasChildren && !hasText) {
+                        const childElements = Array.from(el.children);
+                        const onlyHasImages = childElements.every(child =>
+                            child.tagName.toLowerCase() === 'img' ||
+                            (child.tagName.toLowerCase() === 'div' && child.children.length === 0)
+                        );
+                        // 如果只包含图片或空div，认为是装饰性元素
+                        if (onlyHasImages) {
+                            return false;
                         }
-                    """)
+                    }
 
-                    tag_name = element_info.get("tagName", "div")
-                    class_name = element_info.get("className", "")
-                    element_id = element_info.get("elementId", "div")
-                    # 通过位置去重，避免同一个元素被多次匹配
-                    if not any(abs(c["box"]["x"] - box["x"]) < 1 and abs(c["box"]["y"] - box["y"]) < 1 for c in cards):
-                        element_name = await element.evaluate("el => el.className")
+                    // 排除页码元素（通常在右下角，只包含数字或很小的区域）
+                    // 页码元素通常高度小于30px，且包含数字文本
+                    if (rect.height < 30 && rect.width < 50) {
+                        const text = el.textContent.trim();
+                        // 如果只包含数字和少量文字，认为是页码
+                        if (/^[\\d\\s]+$/.test(text) && text.length < 10) {
+                            return false;
+                        }
+                    }
 
-                        # 检测元素内部滚动条
-                        scroll_info = await element.evaluate("""
-                            el => {
-                                return {
-                                    scrollHeight: el.scrollHeight,
-                                    clientHeight: el.clientHeight,
-                                    scrollWidth: el.scrollWidth,
-                                    clientWidth: el.clientWidth,
-                                    hasVerticalScroll: el.scrollHeight > el.clientHeight,
-                                    hasHorizontalScroll: el.scrollWidth > el.clientWidth,
-                                    verticalOverflow: el.scrollHeight - el.clientHeight,
-                                    horizontalOverflow: el.scrollWidth - el.clientWidth
-                                };
-                            }
-                        """)
+                    return true;
+                });
 
-                        cards.append({
-                            "element": element,
-                            "box": box,
-                            "element_id": element_id,
-                            "tag_name": tag_name,
-                            "scroll_info": scroll_info
-                        })
+                // 返回元素的索引，用于后续获取 bounding box
+                return absoluteDivs.map((el, idx) => {
+                    // 生成唯一标识
+                    const classes = el.className || '';
+                    const classList = classes.trim().split(/\\s+/).slice(0, 3).join('.');
+                    return {
+                        index: Array.from(container.children).indexOf(el),
+                        className: classes,
+                        elementId: 'div' + (classList ? '.' + classList : '')
+                    };
+                });
+            }
+        """)
+
+        # 获取每个元素的 bounding box 和滚动信息
+        for elem_info in absolute_elements:
+            index = elem_info["index"]
+            element_id = elem_info["elementId"]
+            class_name = elem_info["className"]
+
+            # 获取该索引位置的元素
+            element = await page.query_selector(f".slide-container > div:nth-child({index + 1})")
+            if not element:
+                continue
+
+            box = await element.bounding_box()
+            if not box:
+                continue
+
+            # 计算相对于 .slide-container 的位置（而不是相对于viewport）
+            relative_box = {
+                "x": box["x"] - container_box["x"],
+                "y": box["y"] - container_box["y"],
+                "width": box["width"],
+                "height": box["height"]
+            }
+
+            # 检测元素内部内容是否溢出容器
+            scroll_info = await element.evaluate("""
+                el => {
+                    return {
+                        scrollHeight: el.scrollHeight,
+                        clientHeight: el.clientHeight,
+                        scrollWidth: el.scrollWidth,
+                        clientWidth: el.clientWidth,
+                        hasVerticalOverflow: el.scrollHeight > el.clientHeight,
+                        hasHorizontalOverflow: el.scrollWidth > el.clientWidth,
+                        verticalOverflow: el.scrollHeight - el.clientHeight,
+                        horizontalOverflow: el.scrollWidth - el.clientWidth
+                    };
+                }
+            """)
+
+            cards.append({
+                "element": element,
+                "box": relative_box,  # 使用相对于容器的位置
+                "element_id": element_id,
+                "tag_name": "div",
+                "scroll_info": scroll_info,
+                "class_name": class_name
+            })
 
         # 检测卡片之间的重叠
         for i in range(len(cards)):
@@ -157,43 +252,43 @@ async def detect_with_playwright_async(html_file):
                     },
                 })
 
-        # 检测卡片内部滚动条（内容溢出卡片容器）
+        # 检测卡片内部内容溢出容器
         for card in cards:
             scroll_info = card.get("scroll_info", {})
             element_id = card.get("element_id", "未命名元素")
 
-            # 检测垂直滚动条
-            if scroll_info.get("hasVerticalScroll", False):
+            # 检测垂直内容溢出
+            if scroll_info.get("hasVerticalOverflow", False):
                 vertical_overflow = scroll_info.get("verticalOverflow", 0)
                 issues.append({
                     "type": "C",
-                    "category": "inner_scroll_vertical",
+                    "category": "inner_content_overflow_vertical",
                     "severity": "high",
-                    "description": f"卡片内部垂直滚动条: 内容溢出 {vertical_overflow:.0f}px，需要滚动查看",
+                    "description": f"卡片内部内容垂直溢出: 内容超出容器 {vertical_overflow:.0f}px",
                     "details": {
                         "card_top": card["box"]["y"],
                         "card_height": card["box"]["height"],
-                        "scroll_height": scroll_info.get("scrollHeight", 0),
-                        "client_height": scroll_info.get("clientHeight", 0),
+                        "content_height": scroll_info.get("scrollHeight", 0),
+                        "container_height": scroll_info.get("clientHeight", 0),
                         "overflow": vertical_overflow,
                         "element_id": element_id,
                         "position": f"({card['box']['x']:.0f}, {card['box']['y']:.0f})",
                     },
                 })
 
-            # 检测水平滚动条
-            if scroll_info.get("hasHorizontalScroll", False):
+            # 检测水平内容溢出
+            if scroll_info.get("hasHorizontalOverflow", False):
                 horizontal_overflow = scroll_info.get("horizontalOverflow", 0)
                 issues.append({
                     "type": "D",
-                    "category": "inner_scroll_horizontal",
+                    "category": "inner_content_overflow_horizontal",
                     "severity": "high",
-                    "description": f"卡片内部水平滚动条: 内容溢出 {horizontal_overflow:.0f}px，需要滚动查看",
+                    "description": f"卡片内部内容水平溢出: 内容超出容器 {horizontal_overflow:.0f}px",
                     "details": {
                         "card_left": card["box"]["x"],
                         "card_width": card["box"]["width"],
-                        "scroll_width": scroll_info.get("scrollWidth", 0),
-                        "client_width": scroll_info.get("clientWidth", 0),
+                        "content_width": scroll_info.get("scrollWidth", 0),
+                        "container_width": scroll_info.get("clientWidth", 0),
                         "overflow": horizontal_overflow,
                         "element_id": element_id,
                         "position": f"({card['box']['x']:.0f}, {card['box']['y']:.0f})",
@@ -279,8 +374,8 @@ def print_single_file_result(html_file, issues):
     # 统计不同类型的问题
     overflow_count = sum(1 for i in issues if i["category"] == "content_overflow")
     overlap_count = sum(1 for i in issues if i["category"] == "card_overlap")
-    inner_scroll_v_count = sum(1 for i in issues if i["category"] == "inner_scroll_vertical")
-    inner_scroll_h_count = sum(1 for i in issues if i["category"] == "inner_scroll_horizontal")
+    inner_scroll_v_count = sum(1 for i in issues if i["category"] == "inner_content_overflow_vertical")
+    inner_scroll_h_count = sum(1 for i in issues if i["category"] == "inner_content_overflow_horizontal")
 
     print(f"⚠️  发现 {len(issues)} 个问题:")
     if overflow_count > 0:
@@ -297,9 +392,9 @@ def print_single_file_result(html_file, issues):
         # 根据问题类型选择图标
         if issue["category"] == "card_overlap":
             issue_type = "📌"
-        elif issue["category"] == "inner_scroll_vertical":
+        elif issue["category"] == "inner_content_overflow_vertical":
             issue_type = "📜⬇️"
-        elif issue["category"] == "inner_scroll_horizontal":
+        elif issue["category"] == "inner_content_overflow_horizontal":
             issue_type = "📜➡️"
         else:
             issue_type = "⬇️"
@@ -327,13 +422,13 @@ def print_single_file_result(html_file, issues):
             print(f"      元素2: {card2.get('element_id', '未命名')}")
             print(f"        位置: (x={card2['left']:.0f}, y={card2['top']:.0f}, 宽={card2['width']:.0f}, 高={card2['height']:.0f})")
             print(f"      重叠面积: {details['overlap_area']:.0f}px²")
-        elif issue["category"] == "inner_scroll_vertical":
-            print(f"      卡片尺寸: 可视高度={details['client_height']:.0f}px")
-            print(f"      内容高度: {details['scroll_height']:.0f}px > 可视高度")
+        elif issue["category"] == "inner_content_overflow_vertical":
+            print(f"      容器尺寸: 高度={details['container_height']:.0f}px")
+            print(f"      内容高度: {details['content_height']:.0f}px > 容器高度")
             print(f"      溢出量: {details['overflow']:.0f}px")
-        elif issue["category"] == "inner_scroll_horizontal":
-            print(f"      卡片尺寸: 可视宽度={details['client_width']:.0f}px")
-            print(f"      内容宽度: {details['scroll_width']:.0f}px > 可视宽度")
+        elif issue["category"] == "inner_content_overflow_horizontal":
+            print(f"      容器尺寸: 宽度={details['container_width']:.0f}px")
+            print(f"      内容宽度: {details['content_width']:.0f}px > 容器宽度")
             print(f"      溢出量: {details['overflow']:.0f}px")
         print()
 
@@ -367,8 +462,8 @@ def main():
 检测内容:
   - 内容溢出幻灯片底部 (16:9 比例, 高度 540px)
   - 卡片之间的重叠
-  - 卡片内部垂直滚动条 (内容超出卡片高度)
-  - 卡片内部水平滚动条 (内容超出卡片宽度)
+  - 卡片内部内容垂直溢出 (内容超出卡片高度)
+  - 卡片内部内容水平溢出 (内容超出卡片宽度)
 
 输出:
   - 终端显示检测结果的详细信息
@@ -414,8 +509,8 @@ def main():
         "issues_by_category": {
             "content_overflow": 0,
             "card_overlap": 0,
-            "inner_scroll_vertical": 0,
-            "inner_scroll_horizontal": 0,
+            "inner_content_overflow_vertical": 0,
+            "inner_content_overflow_horizontal": 0,
         }
     }
 
@@ -458,10 +553,10 @@ def main():
         print(f"    - 内容溢出幻灯片: {summary['issues_by_category']['content_overflow']}")
     if summary["issues_by_category"]["card_overlap"] > 0:
         print(f"    - 卡片重叠: {summary['issues_by_category']['card_overlap']}")
-    if summary["issues_by_category"]["inner_scroll_vertical"] > 0:
-        print(f"    - 卡片内部垂直滚动: {summary['issues_by_category']['inner_scroll_vertical']}")
-    if summary["issues_by_category"]["inner_scroll_horizontal"] > 0:
-        print(f"    - 卡片内部水平滚动: {summary['issues_by_category']['inner_scroll_horizontal']}")
+    if summary["issues_by_category"]["inner_content_overflow_vertical"] > 0:
+        print(f"    - 卡片内部内容垂直溢出: {summary['issues_by_category']['inner_content_overflow_vertical']}")
+    if summary["issues_by_category"]["inner_content_overflow_horizontal"] > 0:
+        print(f"    - 卡片内部内容水平溢出: {summary['issues_by_category']['inner_content_overflow_horizontal']}")
 
     # 列出有问题的文件
     problem_files = [r for r in all_results if r["status"] != "ok"]

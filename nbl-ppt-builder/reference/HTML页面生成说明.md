@@ -258,13 +258,13 @@ ppt_{主题}/
 
 **在生成 HTML 页面后立即进行单页检测**：
 ```bash
-uv run python scripts/validate_with_playwright.py /path/to/page.html
+cd  path/to/scripts && uv run validate_with_playwright.py /path/to/page.html
 ```
 
 **示例**：
 ```bash
 # 检测特定页面
-uv run python scripts/validate_with_playwright.py /path/to/ppt_主题/03_背景介绍.html  -o /path/to/ppt/ppt_主题/tmp/03_背景介绍_validation_report.json
+cd  path/to/scripts && uv run validate_with_playwright.py /path/to/ppt_主题/03_背景介绍.html  -o /path/to/ppt/ppt_主题/tmp/03_背景介绍_validation_report.json
 ```
 
 **注意**：
@@ -284,7 +284,8 @@ uv run python scripts/validate_with_playwright.py /path/to/ppt_主题/03_背景�
 **检测项**：
 | 检查项 | 说明 | 修复方式 |
 |--------|------|----------|
-| 内容溢出 | 卡片内容超出幻灯片底部（540px） | 1. 缩小字体：<br>   - 章节标题（顶部突出标题）：保持不变<br>   - 页面标题：按比例缩小（13.5pt→12pt→10.5pt）<br>   - 正文段落：最多缩小1-2号（12pt→11pt→10pt）<br>   - 卡片标题：保持不变<br>2. 压缩文字：减少代码显示示例，精炼语言表达<br>3. 减少信息量：优先保留核心要点，删除次要内容 |
+| 内容溢出 | 卡片内容超出幻灯片底部（540px） | 1. 缩小字体：<br>   - 章节标题（顶部突出标题）：保持不变<br>   - 页面标题：按比例缩小（13.5pt→12pt→10.5pt）<br>   - 正文段落：最多缩小1-2号（12pt→11pt→10pt）<br>   - 卡片标题：保持不变<br>2. 压缩文字：减少代码显示示例，精炼语言表达<br>3. 减少信息量：优先保留核心要点，删除次要内容<br>4. **调整容器**：增加容器高度（如减小bottom值）<br>5. **减小内边距**：减小卡片的padding（如p-5→p-4） |
+| 卡片内部内容溢出 | 卡片内容超出容器高度（内容超出容器边界） | 1. **调整容器**：增加容器高度，确保不与其他元素重叠<br>   - 例如：`bottom-[70px]` → `bottom-[53px]` 增加17px<br>2. **减小内边距**：减小卡片padding（p-5→p-4→p-3）<br>3. 缩小字体：按比例缩小正文和标题<br>4. 压缩文字：精炼表达，删除冗余描述 |
 | 卡片重叠 | 两个或多个卡片区域重叠 | 调整布局，增加间距 |
 | 边界裁切 | 标题、页码等元素被裁切 | 调整垂直位置 |
 
@@ -310,7 +311,7 @@ uv run python scripts/validate_with_playwright.py /path/to/ppt_主题/03_背景�
 对每一页生成的 HTML 文件进行快速检查（每页生成后必须要检测语法是否符合要求）：
 
 ```bash
-node scripts/pptx/generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.html
+cd  path/to/scripts && node pptx/generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.html
 ```
 
 **注意**：命令应在 nbl-ppt-builder SKILL 目录下执行。批量汇总检测由最终检查子代理执行，详细说明请参考 SKILL.md 的"最终检查与整合"章节。
@@ -330,7 +331,7 @@ node scripts/pptx/generate_pptx.js --check /path/to/ppt_{主题}/页码_标题.h
 
 **检测通过后生成 PPT**：
 ```bash
-node scripts/pptx/generate_pptx.js /path/to/ppt_{主题} [输出文件名.pptx]
+cd  path/to/scripts &&  node pptx/generate_pptx.js /path/to/ppt_{主题} [输出文件名.pptx]
 ```
 
 ### 检测报告格式

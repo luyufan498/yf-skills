@@ -58,3 +58,6 @@ Thumbs.db
 *.tmp
 *.bak
 .cache/
+
+# Validation reports
+nbl-ppt-builder/scripts/validation_report.json

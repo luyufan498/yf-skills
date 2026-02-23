@@ -145,21 +145,26 @@ python3 siyuan export zip "/路径1" "/路径2" --name archive.zip
 ## 资源文件 (asset)
 
 ```bash
-# 上传文件
-python3 siyuan asset upload /path/to/file.png                       # 上传到默认路径
-python3 siyuan asset upload /path/to/file.pdf --to "/assets/docs/"  # 上传到指定路径
+# 上传文件（所有文件必须上传到 /assets 目录下）
+python3 siyuan asset upload /path/to/file.png                       # 上传到 /assets/ 目录
+python3 siyuan asset upload /path/to/file.pdf --to "/assets/docs/"  # 上传到 /assets/docs/ 子目录
 
-# 下载文件
+# 上传成功后会显示思源文档引用路径，可在文档中直接使用
+# 例如：![图片描述](assets/docs/file.pdf)
+
+# 下载文件（只允许下载 /assets 目录下的文件）
 python3 siyuan asset download image.png                            # 下载到当前目录的 assets/
 python3 siyuan asset download /assets/photo.jpg                    # 下载 assets 中的文件
-python3 siyuan asset download image.png -o ~/Downloads/            # 指定输出目录
-python3 siyuan asset download /data/notebook/doc.sy -o .           # 下载任意文件
+python3 siyuan asset download /assets/docs/file.pdf -o ~/Downloads/  # 指定输出目录
 ```
 
-**路径说明**：
+**路径限制**：
+- 上传和下载都只允许操作 `/assets` 目录（对应思源服务器的 `workspace/data/assets` 目录）
+- 所有附件和图片必须存放在此目录下，便于统一管理
+
+**下载路径格式**：
 - `image.png` - 相对路径，自动转换为 `/data/assets/image.png`
 - `/assets/photo.jpg` - assets 路径，自动转换为 `/data/assets/photo.jpg`
-- `/data/notebook/doc.sy` - 绝对路径，保持不变
 
 **安全限制**：
 - 不允许在 skill 安装目录中下载文件（避免污染项目代码）

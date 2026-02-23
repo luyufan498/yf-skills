@@ -25,12 +25,21 @@ class AssetCommand:
 
         Args:
             file: 文件路径
-            to: 目标路径
+            to: 目标路径（必须以 /assets 开头，文件将上传到思源的 workspace/data/assets 目录）
         """
         try:
             file_path = Path(file)
             if not file_path.exists():
                 print(f"✗ 文件不存在: {file}")
+                return
+
+            # 验证目标路径：必须是 /assets 开头的合法路径
+            to = to.strip()
+            if not to.startswith("/assets"):
+                print(f"✗ 无效的上传路径: {to}")
+                print(f"  上传路径必须以 /assets 开头")
+                print(f"  所有附件或者图片必须存放在思源的 workspace/data/assets 目录下")
+                print(f"  示例: --to /assets/ 或 --to /assets/docs/")
                 return
 
             # 调用 AssetClient.upload_file() 上传
@@ -39,7 +48,9 @@ class AssetCommand:
             if data.get("succMap"):
                 print(f"✓ 上传成功:")
                 for path, url in data["succMap"].items():
-                    print(f"  {path} → {url}")
+                    print(f"  本地文件: {file_path}")
+                    # 返回的 URL 已经是思源引用路径格式（如 assets/xxx.png）
+                    print(f"  思源文档引用路径: {url}")
             else:
                 print("✗ 上传失败")
 
@@ -60,27 +71,23 @@ class AssetCommand:
         """
         path = path.strip()
 
-        # 绝对路径（以 /data/ 开头）
-        if path.startswith("/data/"):
-            return path
-
-        # assets 相对路径
-        if path.startswith("/assets/"):
-            return "/data" + path
-
-        # 纯文件名
+        # 纯文件名（如 image.png）
         if not path.startswith("/"):
             return f"/data/assets/{path}"
 
-        # 其他情况（如 /foo/bar.png）
-        return f"/data/assets/{path.lstrip('/')}"
+        # assets 相对路径（如 /assets/image.png）
+        if path.startswith("/assets"):
+            return "/data" + path
+
+        # 其他路径不允许访问
+        return None
 
     def download(self, path: str, output: str = None):
         """
         下载资源文件
 
         Args:
-            path: 文件路径（支持相对路径、assets路径或绝对路径）
+            path: 文件路径（只允许 /assets 目录下的文件）
             output: 输出路径（可选，默认: ./assets/文件名）
         """
         # 检测是否在 skill 项目内部执行（仅在没有指定 output 时检查）
@@ -99,6 +106,14 @@ class AssetCommand:
         try:
             # 标准化路径
             api_path = self._normalize_path(path)
+
+            # 验证路径：必须是 /data/assets 下的文件
+            if api_path is None or not api_path.startswith("/data/assets"):
+                print(f"✗ 无效的下载路径: {path}")
+                print(f"  只允许下载 /assets 目录下的文件")
+                print(f"  示例: image.png 或 /assets/docs/file.pdf")
+                return
+
             print(f"正在下载: {Path(api_path).name}")
 
             # 调用 API 获取文件

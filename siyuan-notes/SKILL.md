@@ -8,8 +8,8 @@ description: 思源笔记全功能命令行工具，支持笔记本、文档和�
 ## 概述
 
 完整的思源笔记操作命令行接口。所有脚本位于 `scripts/` 目录下，运行需要：
-- 通过 `SIYUAN_ENDPOINT` 环境变量配置端点（默认: http://127.0.0.1:6806）
-- 通过 `SIYUAN_TOKEN` 环境变量设置 API token
+- 脚本使用 `SIYUAN_ENDPOINT` 环境变量配置的端点（如 http://127.0.0.1:6806）
+- 脚本使用 `SIYUAN_TOKEN` 环境变量配置的 API token
 
 获取 API token：思源设置 → 关于 → API token
 

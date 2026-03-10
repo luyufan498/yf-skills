@@ -20,7 +20,7 @@ class QuantAnalysis:
         """获取基本指标对比（单个或多个股票）"""
         return self.client.call_tool(
             self.service,
-            "commonBasic",
+            "common_basic_post",
             {"stock_codes": stock_codes}
         )
 
@@ -28,7 +28,7 @@ class QuantAnalysis:
         """两个股票对比指标"""
         return self.client.call_tool(
             self.service,
-            "commonIndicator",
+            "common_indicator_post",
             {
                 "report_type": report_type,
                 "stock_codes": stock_codes,
@@ -40,7 +40,7 @@ class QuantAnalysis:
         """获取股票行业信息"""
         return self.client.call_tool(
             self.service,
-            "commonIndustryInfo",
+            "common_industry_info_post",
             {"stock_codes": stock_codes}
         )
 
@@ -48,7 +48,7 @@ class QuantAnalysis:
         """获取股票所在行业所有指标前二"""
         return self.client.call_tool(
             self.service,
-            "commonIndustryTop2",
+            "common_industry_top2_get",
             {"stock_code": stock_code}
         )
 
@@ -56,7 +56,7 @@ class QuantAnalysis:
         """获取两个股票公共最近的报告期"""
         return self.client.call_tool(
             self.service,
-            "commonReportType",
+            "common_report_type_post",
             {"stock_codes": stock_codes}
         )
 
@@ -64,7 +64,7 @@ class QuantAnalysis:
         """获取单个股票PB/PE走势图"""
         return self.client.call_tool(
             self.service,
-            "commonTrend",
+            "common_trend_get",
             {"cycle": cycle, "stock_code": stock_code}
         )
 
@@ -72,7 +72,7 @@ class QuantAnalysis:
         """聚合查询"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorAggregation",
+            "major_indicator_aggregation_get",
             {"stock_code": stock_code}
         )
 
@@ -80,7 +80,7 @@ class QuantAnalysis:
         """获取银行专项指标"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorBank",
+            "major_indicator_bank_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -88,7 +88,7 @@ class QuantAnalysis:
         """获取现金流量表"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorCashflow",
+            "major_indicator_cashflow_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -96,7 +96,7 @@ class QuantAnalysis:
         """获取保险专项指标"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorInsurance",
+            "major_indicator_insurance_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -104,7 +104,7 @@ class QuantAnalysis:
         """获取资产负债表"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorLiabilty",
+            "major_indicator_liabilty_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -112,7 +112,7 @@ class QuantAnalysis:
         """获取主营业务构成饼图"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorMainBusiness",
+            "major_indicator_main_business_get",
             {"stock_code": stock_code}
         )
 
@@ -120,7 +120,7 @@ class QuantAnalysis:
         """获取利润表"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorProfit",
+            "major_indicator_profit_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -128,7 +128,7 @@ class QuantAnalysis:
         """获取证券专项指标"""
         return self.client.call_tool(
             self.service,
-            "majorIndicatorSecurities",
+            "major_indicator_securities_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -136,7 +136,7 @@ class QuantAnalysis:
         """分析股票的盈利能力"""
         return self.client.call_tool(
             self.service,
-            "analyzeProfitAbility",
+            "analyze_profit_ability_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -144,7 +144,7 @@ class QuantAnalysis:
         """分析股票的资本结构"""
         return self.client.call_tool(
             self.service,
-            "analyzeCapitalStructure",
+            "analyze_capital_structure_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 
@@ -152,7 +152,7 @@ class QuantAnalysis:
         """分析股票的现金流量"""
         return self.client.call_tool(
             self.service,
-            "analyzeCrashflow",
+            "analyze_cashflow_get",
             {"report_type": report_type, "stock_code": stock_code}
         )
 

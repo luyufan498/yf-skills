@@ -48,6 +48,7 @@ curl -s "http://your-server:port/search?q=express&format=json&categories=package
 | 搜索代码仓库 | `searx-bash "<query>" --category repos` | `repos` |
 | 搜索 IT 资源 | `searx-bash "<query>" --category it` | `it` |
 | 限制结果数量 | `searx-bash "<query>" --limit N` | - |
+| 按时间过滤 | `searx-bash "<query>" --time-range day/week/month/year` | - |
 
 ## 搜索辅助工具使用
 
@@ -58,6 +59,8 @@ Options:
   --server, -s       SearXNG 服务器地址（必须设置）
   --category, -c     搜索类别（默认：general）
   --limit, -l        最大结果数（默认：10）
+  --engines, -e      使用特定引擎
+  --time-range, -t   时间过滤：day/week/month/year
   --json             输出原始 JSON
   --help, -h         显示此帮助
 
@@ -77,6 +80,12 @@ searx-bash 'machine learning' --server http://192.168.100.2:38080 --category it
 export SEARXNG_URL=http://192.168.100.2:38080
 searx-bash docker --category packages --limit 5
 searx-bash tokio --category cargo
+
+# 按时间过滤搜索（最近一周）
+searx-bash "rust news" --time-range week
+
+# 按时间过滤搜索（最近一天）
+searx-bash "ai" --time-range day --limit 3
 ```
 
 ## 可用类别

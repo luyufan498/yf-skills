@@ -11,6 +11,7 @@ CATEGORY="general"
 LIMIT=10
 ENGINES=""
 RAW_JSON=false
+TIME_RANGE=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       RAW_JSON=true
       shift
       ;;
+    --time-range|-t)
+      TIME_RANGE="$2"
+      shift 2
+      ;;
     --help|-h)
       cat << 'EOF'
 Usage: searx-bash <query> [OPTIONS]
@@ -46,6 +51,7 @@ Options:
   --category, -c     Search category (default: general)
   --limit, -l        Max results (default: 10)
   --engines, -e      Specific engine(s) to use
+  --time-range, -t   Time filter: day/week/month/year
   --json             Output raw JSON
   --help, -h         Show this help
 
@@ -84,6 +90,7 @@ Options:
   --category, -c     Search category (default: general)
   --limit, -l        Max results (default: 10)
   --engines, -e      Specific engine(s) to use
+  --time-range, -t   Time filter: day/week/month/year
   --json             Output raw JSON
   --help, -h         Show this help
 
@@ -126,6 +133,10 @@ fi
 
 if [[ -n "$ENGINES" ]]; then
   URL="${URL}&engines=${ENGINES}"
+fi
+
+if [[ -n "$TIME_RANGE" ]]; then
+  URL="${URL}&time_range=${TIME_RANGE}"
 fi
 
 # Make request

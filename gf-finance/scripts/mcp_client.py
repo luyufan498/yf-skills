@@ -7,8 +7,14 @@
 import requests
 import json
 import sys
+import os
 
-CONFIG_FILE = "/home/catmouse/Github_Project/yf_skills/gf-finance/assets/mcp_config.json"
+# 使用动态路径：基于脚本位置查找配置文件
+# 脚本位置: gf-finance/scripts/mcp_client.py
+# 配置位置: gf-finance/assets/mcp_config.json
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+CONFIG_FILE = os.path.join(PROJECT_DIR, 'assets', 'mcp_config.json')
 
 class GFMCPClient:
     """广发证券 MCP 服务客户端"""

@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "gf_lhb": {
+      "type": "streamable-http",
+      "url": "https://mcp-api.gf.com.cn/server/mcp/lhb/mcp",
+      "description": "龙虎榜分析服务",
+      "headers": {
+        "Authorization": "Bearer 215148fb-cf40-49c0-b76e-0ea68bb5055d"
+      }
+    },
+    "gf_quant": {
+      "type": "streamable-http",
+      "url": "https://mcp-api.gf.com.cn/server/mcp/quant/mcp",
+      "description": "财务对比分析服务",
+      "headers": {
+        "Authorization": "Bearer 215148fb-cf40-49c0-b76e-0ea68bb5055d"
+      }
+    },
+    "gf_etf_rank": {
+      "type": "streamable-http",
+      "url": "https://mcp-api.gf.com.cn/server/mcp/etf_rank/mcp",
+      "description": "热门ETF榜单服务",
+      "headers": {
+        "Authorization": "Bearer 215148fb-cf40-49c0-b76e-0ea68bb5055d"
+      }
+    },
+    "gf_windmill": {
+      "type": "streamable-http",
+      "url": "https://mcp-api.gf.com.cn/server/mcp/windmill/mcp",
+      "description": "沪深指数估值分析服务",
+      "headers": {
+        "Authorization": "Bearer 215148fb-cf40-49c0-b76e-0ea68bb5055d"
+      }
+    }
+  },
+  "note": "示例Token仅用于测试，实际使用请通过广发通登录页面获取正式Token"
+}

@@ -12,10 +12,23 @@ SearXNG 是一个尊重隐私的元搜索引擎，它聚合来自多个搜索引
 
 ## 快速开始
 
-**1. 设置服务器地址（必需）：**
+**1. 检查服务器地址（必需）：**
+
+首先检查环境变量是否已配置：
+```bash
+echo $SEARXNG_URL
+```
+
+如果已输出服务器地址，则可直接使用。如果未配置，可通过以下方式设置：
+
+**方式一：临时设置（当前会话）**
 ```bash
 export SEARXNG_URL=http://your-server:port
-# 或者使用 --server 标志配合每条命令
+```
+
+**方式二：使用 --server 标志配合每条命令**
+```bash
+searx-bash "<query>" --server http://your-server:port
 ```
 
 **2. 使用搜索助手：**
@@ -122,6 +135,43 @@ searx-bash "query" --json
 # 使用 jq 过滤结果
 searx-bash "query" --json | jq '.results[0:5] | .[] | {title, url}'
 ```
+
+### 深度研究 - 访问搜索结果页面
+
+当搜索结果中发现感兴趣的页面时，可以使用以下工具访问和读取内容：
+
+**推荐工具（优先级按顺序）：**
+1. **agent-browser** ⭐ 推荐 - 自动化浏览器交互和内容提取
+2. **web-fetch/web-search** - 获取网页内容并进行分析
+3. **curl** - 直接获取页面原始内容
+
+**使用流程示例：**
+
+```bash
+# 1. 先用 SearXNG 搜索获取候选结果
+searx-bash "rust async framework" --category cargo
+
+# 2. 优先使用 agent-browser 访问和提取页面内容
+agent-browser open https://github.com/username/repo
+agent-browser wait --load networkidle
+agent-browser snapshot                      # 获取完整页面内容（推荐用于分析）
+agent-browser get title                    # 获取页面标题
+
+# 3. 使用 JSON 输出进行结构化解析
+agent-browser snapshot --json | jq '.accessibility_tree'
+
+# 4. 或使用 web-fetch 获取页面内容
+web-fetch "https://github.com/username/repo" "extract README content and key features"
+
+# 5. 简单场景使用 curl 快速读取
+curl -s "https://github.com/username/repo" | grep -A 10 "description"
+```
+
+**场景建议：**
+- 需要截图/交互操作 → agent-browser（优先）
+- 快速信息获取 → curl
+- 需要解析分析 → web-fetch + 提示词
+- 大量页面分析 → Explore 子代理 + agent-usage.md
 
 ## 服务器配置
 

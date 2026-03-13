@@ -1,13 +1,76 @@
 #!/usr/bin/env python3
 """
-PPT 页面验证器 - 使用 Playwright 真实检测滚动条和边界溢出
+PPT 页面验证器 - 使用 Playwright 真实检测滚动条和边界溢出 + CSS语法验证
 """
 
 import argparse
 import asyncio
 import sys
 import json
+import os
+import re
 from pathlib import Path
+
+# 保存原始工作目录（在import其他模块之前）
+ORIGINAL_CWD = Path(os.getcwd())
+
+
+# ==================== CSS 验证功能 ====================
+
+class CSSValidator:
+    """CSS语法验证器"""
+
+    def __init__(self):
+        # 定义Tailwind类名模式的正则表达式
+        self.tailwind_patterns = [
+            # 文本颜色: text-[#COLOR], text-COLOR
+            re.compile(r'text-\[#?([a-fA-F0-9]{3,8}|[a-z]+)\]'),
+            # 背景颜色: bg-[#COLOR], bg-COLOR
+            re.compile(r'bg-\[#?([a-fA-F0-9]{3,8}|[a-z]+)\]'),
+            # 字体大小: font-[SIZE]
+            re.compile(r'font-\[(\d+\.?\d*(pt|px|em|rem|%|%)?)\]'),
+            # 内边距: p-[SIZE], px-[SIZE], py-[SIZE], pl-[SIZE], pr-[SIZE], pt-[SIZE], pb-[SIZE]
+            re.compile(r'(?:p|px|py|pl|pr|pt|pb)-\[(\d+\.?\d*(px|em|rem|%))\]'),
+            # 外边距: m-[SIZE], mx-[SIZE], my-[SIZE], ml-[SIZE], mr-[SIZE], mt-[SIZE], mb-[SIZE]
+            re.compile(r'(?:m|mx|my|ml|mr|mt|mb)-\[(\d+\.?\d*(px|em|rem|%))\]'),
+            # 方括号格式的任意属性
+            re.compile(r'[a-zA-Z]+-\[[^\]]*\]'),
+        ]
+
+    def validate_html_file(self, html_file):
+        """
+        验证HTML文件中的CSS语法，返回错误列表
+        """
+        errors = []
+
+        with open(html_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        lines = content.split('\n')
+
+        for line_num, line in enumerate(lines, start=1):
+            # 匹配 style="..." 或 style='...'
+            match = re.search(r'style\s*=\s*["\']([^"\']+)["\']', line)
+            if match:
+                style_content = match.group(1)
+
+                # 快速检测Tailwind类名语法
+                for pattern in self.tailwind_patterns:
+                    if pattern.search(style_content):
+                        errors.append({
+                            "type": "E",
+                            "category": "css_syntax_error",
+                            "severity": "high",
+                            "description": f"CSS语法错误: 在style属性中使用了Tailwind class语法",
+                            "details": {
+                                "line": line_num,
+                                "context": match.group(0),
+                                "suggestion": "请使用标准CSS语法，例如: color: #0B3BD3 而不是 text-[#0B3BD3]"
+                            },
+                        })
+                        break  # 找到一个错误后就停止检查该style属性
+
+        return errors
 
 
 def check_scroll_with_playwright(html_file):
@@ -20,7 +83,11 @@ def check_scroll_with_playwright(html_file):
 
     except Exception as e:
         print(f"检测失败: {e}")
-        return []
+        script_dir = Path(__file__).parent
+        print(f"💡 使用绝对路径执行:")
+        print(f"   uv run --directory {script_dir} validate_with_playwright.py /path/to/slides/")
+        print(f"   或切换到项目目录: cd <项目目录> && uv run --directory {script_dir} validate_with_playwright.py slides/")
+        sys.exit(1)
 
 
 async def detect_with_playwright_async(html_file):
@@ -351,6 +418,7 @@ def collect_html_files(paths):
 
     for path in paths:
         p = Path(path)
+
         if p.is_file():
             if p.suffix.lower() == '.html':
                 html_files.append(p)
@@ -368,7 +436,7 @@ def print_single_file_result(html_file, issues):
     print(f"{'='*60}")
 
     if not issues:
-        print("✅ 正常 - 未发现内容问题")
+        print("✅ 正常 - 未发现问题")
         return "ok"
 
     # 统计不同类型的问题
@@ -376,6 +444,7 @@ def print_single_file_result(html_file, issues):
     overlap_count = sum(1 for i in issues if i["category"] == "card_overlap")
     inner_scroll_v_count = sum(1 for i in issues if i["category"] == "inner_content_overflow_vertical")
     inner_scroll_h_count = sum(1 for i in issues if i["category"] == "inner_content_overflow_horizontal")
+    css_syntax_count = sum(1 for i in issues if i["category"] == "css_syntax_error")
 
     print(f"⚠️  发现 {len(issues)} 个问题:")
     if overflow_count > 0:
@@ -386,6 +455,8 @@ def print_single_file_result(html_file, issues):
         print(f"  - 卡片内部垂直滚动: {inner_scroll_v_count} 个")
     if inner_scroll_h_count > 0:
         print(f"  - 卡片内部水平滚动: {inner_scroll_h_count} 个")
+    if css_syntax_count > 0:
+        print(f"  - CSS语法错误: {css_syntax_count} 个")
     print()
 
     for i, issue in enumerate(issues, 1):
@@ -396,13 +467,24 @@ def print_single_file_result(html_file, issues):
             issue_type = "📜⬇️"
         elif issue["category"] == "inner_content_overflow_horizontal":
             issue_type = "📜➡️"
+        elif issue["category"] == "css_syntax_error":
+            issue_type = "🎨"
         else:
             issue_type = "⬇️"
 
         print(f"  {issue_type} {i}. {issue['description']}")
         details = issue.get("details", {})
 
-        # 显示元素标识信息（适用于所有类型）
+        # CSS语法错误的特殊处理
+        if issue["category"] == "css_syntax_error":
+            print(f"      行号: {details.get('line', '?')}")
+            print(f"      上下文: {details.get('context', '')}")
+            if details.get('suggestion'):
+                print(f"      建议: {details['suggestion']}")
+            print()
+            continue
+
+        # 显示元素标识信息（适用于布局问题）
         element_id = details.get("element_id", "")
         position = details.get("position", "")
         if element_id:
@@ -440,7 +522,7 @@ def print_single_file_result(html_file, issues):
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description="PPT 页面验证器 - 使用 Playwright 检测 PPT 中的内容溢出和卡片重叠问题",
+        description="PPT 页面验证器 - 使用 Playwright 检测布局问题 + CSS语法验证",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
@@ -464,6 +546,7 @@ def main():
   - 卡片之间的重叠
   - 卡片内部内容垂直溢出 (内容超出卡片高度)
   - 卡片内部内容水平溢出 (内容超出卡片宽度)
+  - CSS语法错误 (Tailwind类名误用在style属性中)
 
 输出:
   - 终端显示检测结果的详细信息
@@ -511,12 +594,24 @@ def main():
             "card_overlap": 0,
             "inner_content_overflow_vertical": 0,
             "inner_content_overflow_horizontal": 0,
+            "css_syntax_error": 0,
         }
     }
 
+    # 创建CSS验证器
+    css_validator = CSSValidator()
+
     for html_file in html_files:
-        issues = check_scroll_with_playwright(str(html_file))
-        status = print_single_file_result(html_file, issues)
+        # 第一步: Layout检测 (Playwright)
+        layout_issues = check_scroll_with_playwright(str(html_file))
+
+        # 第二步: CSS语法检测
+        css_issues = css_validator.validate_html_file(str(html_file))
+
+        # 合并问题列表
+        all_issues = layout_issues + css_issues
+
+        status = print_single_file_result(html_file, all_issues)
 
         # 统计
         if status == "ok":
@@ -526,8 +621,8 @@ def main():
         else:
             summary["error_files"] += 1
 
-        summary["total_issues"] += len(issues)
-        for issue in issues:
+        summary["total_issues"] += len(all_issues)
+        for issue in all_issues:
             cat = issue.get("category", "")
             if cat in summary["issues_by_category"]:
                 summary["issues_by_category"][cat] += 1
@@ -535,8 +630,8 @@ def main():
         all_results.append({
             "file": str(html_file),
             "status": status,
-            "issue_count": len(issues),
-            "issues": issues
+            "issue_count": len(all_issues),
+            "issues": all_issues
         })
 
     # 打印汇总报告
@@ -557,6 +652,8 @@ def main():
         print(f"    - 卡片内部内容垂直溢出: {summary['issues_by_category']['inner_content_overflow_vertical']}")
     if summary["issues_by_category"]["inner_content_overflow_horizontal"] > 0:
         print(f"    - 卡片内部内容水平溢出: {summary['issues_by_category']['inner_content_overflow_horizontal']}")
+    if summary["issues_by_category"]["css_syntax_error"] > 0:
+        print(f"    - CSS语法错误: {summary['issues_by_category']['css_syntax_error']}")
 
     # 列出有问题的文件
     problem_files = [r for r in all_results if r["status"] != "ok"]

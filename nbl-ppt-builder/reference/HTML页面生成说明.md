@@ -269,7 +269,7 @@ cd  path/to/scripts && uv run validate_with_playwright.py /path/to/ppt_主题/03
 
 **注意**：
 - 命令应在 nbl-ppt-builder SKILL 目录下执行
-- 必须使用 `uv run` 调用 Python 验证脚本
+- 必须进入脚本目录后，使用 `uv run` 来触配置好的uv环境
 - 路径必须是绝对路径或相对于 SKILL 目录的完整路径
 - `-o` 参数可选，用于指定输出报告路径
 - 如果输出路径不存在，应该创建路径

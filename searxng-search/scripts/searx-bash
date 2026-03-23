@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# SearXNG search helper script (Bash version)
-# Usage: searx-bash <query> [OPTIONS]
+# SearXNG search helper script with smart engine selection and retry logic
 
-set -euo pipefail
+set -o pipefail
 
 # Default values
 QUERY=""
@@ -12,6 +11,11 @@ LIMIT=10
 ENGINES=""
 RAW_JSON=false
 TIME_RANGE=""
+MAX_RETRIES=2
+
+# Define preferred engines for random selection (multiple engines for better results)
+# Using multiple engines reduces chance of complete failure
+PREFERRED_ENGINES=("bing,yandex" "bing,baidu" "bing,360search" "bing,sogou" "yandex,sogou" "baidu,360search" "brave,yahoo" "yahoo,360search", "sogou,yahoo")
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -32,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       ENGINES="$2"
       shift 2
       ;;
+    --retries|-r)
+      MAX_RETRIES="$2"
+      shift 2
+      ;;
     --json)
       RAW_JSON=true
       shift
@@ -44,28 +52,30 @@ while [[ $# -gt 0 ]]; do
       cat << 'EOF'
 Usage: searx-bash <query> [OPTIONS]
 
-Search using SearXNG server
+Smart SearXNG search with automatic engine selection and retry logic
 
 Options:
   --server, -s       SearXNG server URL (required)
   --category, -c     Search category (default: general)
   --limit, -l        Max results (default: 10)
-  --engines, -e      Specific engine(s) to use
+  --engines, -e      Specific engine(s) to use (overrides auto-selection)
   --time-range, -t   Time filter: day/week/month/year
+  --retries, -r      Max retries with different engines (default: 2)
   --json             Output raw JSON
   --help, -h         Show this help
 
 Environment:
   SEARXNG_URL        SearXNG server URL (required)
 
-Examples:
-  searx-bash tokio --category cargo
-  searx-bash 'machine learning' --category it
-  searx-bash express --server http://192.168.100.2:38080 --category packages
-  export SEARXNG_URL=http://192.168.100.2:38080
+Features:
+  - Auto-selects from bing, baidu, 360search, sogou, yandex, qwant
+  - Retries with different engines on CAPTCHA/Suspended errors
+  - Clear error messages for AI agent debugging
 
-Common categories:
-  general, cargo, packages, it, repos, apps, science, news, images, videos
+Examples:
+  searx-bash "python tutorial" --limit 5
+  searx-bash "中科曙光" --category general
+  searx-bash "tokio" --engines bing --limit 10
 EOF
       exit 0
       ;;
@@ -76,98 +86,196 @@ EOF
   esac
 done
 
-# Trim leading/trailing spaces
 QUERY=$(echo "$QUERY" | xargs)
 
 if [[ -z "$QUERY" ]]; then
-  cat << 'EOF'
-Usage: searx-bash <query> [OPTIONS]
-
-Search using SearXNG server
-
-Options:
-  --server, -s       SearXNG server URL (required)
-  --category, -c     Search category (default: general)
-  --limit, -l        Max results (default: 10)
-  --engines, -e      Specific engine(s) to use
-  --time-range, -t   Time filter: day/week/month/year
-  --json             Output raw JSON
-  --help, -h         Show this help
-
-Environment:
-  SEARXNG_URL        SearXNG server URL (required)
-
-Examples:
-  searx-bash tokio --category cargo
-  searx-bash 'machine learning' --category it
-  searx-bash express --server http://192.168.100.2:38080 --category packages
-
-Common categories:
-  general, cargo, packages, it, repos, apps, science, news, images, videos
-EOF
+  echo "Error: Query is required."
   exit 1
 fi
 
-# Check if server is set
 if [[ -z "$SERVER" ]]; then
-  echo "Error: SearXNG server URL not set."
-  echo ""
-  echo "Please set it using one of the following methods:"
-  echo "  1. Use --server option: searx-bash <query> --server http://your-searx-server:8888"
-  echo "  2. Set SEARXNG_URL environment variable: export SEARXNG_URL=http://your-searx-server:8888"
+  echo "Error: SearXNG server URL not set. Use SEARXNG_URL environment variable or --server flag."
   exit 1
 fi
 
-# Remove trailing slash from server
-SERVER="${SERVER%/}"
+if ! command -v jq &> /dev/null; then
+  echo "Error: jq is required. Install with: apt install jq or brew install jq"
+  exit 1
+fi
 
-# URL encode query
+SERVER="${SERVER%/}"
 ENCODED_QUERY=$(printf '%s' "$QUERY" | jq -sRr '@uri')
 
-# Build URL
-URL="${SERVER}/search?q=${ENCODED_QUERY}&format=json"
+# Build URL function
+build_url() {
+  local eng="$1"
+  local url="${SERVER}/search?q=${ENCODED_QUERY}&format=json"
 
-if [[ "$CATEGORY" != "general" ]]; then
-  URL="${URL}&categories=${CATEGORY}"
+  if [[ -n "$eng" ]]; then
+    # Use 'engines' parameter (plural) for better results
+    url="${url}&engines=${eng}"
+  fi
+
+  if [[ "$CATEGORY" != "general" ]]; then
+    url="${url}&categories=${CATEGORY}"
+  fi
+
+  if [[ -n "$TIME_RANGE" ]]; then
+    url="${url}&time_range=${TIME_RANGE}"
+  fi
+
+  echo "$url"
+}
+
+# Check if engines are blocked
+check_blockages() {
+  local resp="$1"
+  local blocked=$(echo "$resp" | jq -r '.unresponsive_engines // []' | jq -r '.[]?.[1] // ""' | grep -iE "Suspended|CAPTCHA|access denied")
+  [[ -n "$blocked" ]]
+}
+
+# Get blocked engines
+get_blocked_engines() {
+  local resp="$1"
+  echo "$resp" | jq -r '.unresponsive_engines[]?.[0] // ""' 2>/dev/null
+}
+
+# Main search function with retry
+search_with_retry() {
+  local failed_engines=()
+  local attempt=0
+  local last_response=""
+
+  while (( attempt <= MAX_RETRIES )); do
+    local engine_to_use=""
+
+    if [[ -n "$ENGINES" ]]; then
+      engine_to_use="$ENGINES"
+    else
+      # Get available engines
+      local available=()
+      for engine in "${PREFERRED_ENGINES[@]}"; do
+        if [[ ! " ${failed_engines[*]} " =~ " ${engine} " ]]; then
+          available+=("$engine")
+        fi
+      done
+
+      if (( ${#available[@]} == 0 )); then
+        engine_to_use="${PREFERRED_ENGINES[0]}"
+      else
+        local idx=$((RANDOM % ${#available[@]}))
+        engine_to_use="${available[idx]}"
+      fi
+    fi
+
+    local url=$(build_url "$engine_to_use")
+
+    # Random delay
+    sleep $((1 + RANDOM % 2))
+
+    local response=$(curl -s "$url")
+    last_response="$response"
+
+    # Check for results
+    local result_count=$(echo "$response" | jq -r '.results | length' 2>/dev/null || echo "0")
+
+    if (( result_count > 0 )); then
+      echo "$response"
+      return 0
+    fi
+
+    # Check for blockages
+    if check_blockages "$response"; then
+      local blocked=$(get_blocked_engines "$response")
+      for blocked_eng in $blocked; do
+        if [[ ! " ${failed_engines[*]} " =~ " ${blocked_eng} " ]]; then
+          failed_engines+=("$blocked_eng")
+        fi
+      done
+
+      if [[ -n "$ENGINES" ]]; then
+        # User specified engines, return what we got
+        echo "$response"
+        return 1
+      fi
+
+      # Try another engine
+      ((attempt++))
+      continue
+    fi
+
+    # No results, no blockages - try another engine if not user specified
+    if [[ -z "$ENGINES" ]]; then
+      failed_engines+=("$engine_to_use")
+      ((attempt++))
+      continue
+    fi
+
+    # Return the response
+    echo "$response"
+    return 1
+  done
+
+  # All retries failed
+  echo "$last_response"
+  return 1
+}
+
+# Perform search
+RESPONSE=$(search_with_retry)
+search_status=$?
+
+if [[ $search_status -ne 0 || -z "$RESPONSE" ]]; then
+  echo "Error: Search failed after $MAX_RETRIES retries."
+  echo ""
+  echo "Query: $QUERY"
+
+  if [[ -n "$ENGINES" ]]; then
+    echo "Engines: $ENGINES"
+  else
+    echo "Engines attempted: bing, baidu, 360search, sogou, yandex, qwant"
+  fi
+
+  if check_blockages "$RESPONSE"; then
+    echo ""
+    echo "Blocked engines:"
+    echo "$RESPONSE" | jq -r '.unresponsive_engines[] | "  - \(.[0]): \(.[1])"'
+  fi
+
+  echo ""
+  echo "Solutions:"
+  echo "  1. Try: searx-bash --engines bing \"your query\""
+  echo "  2. Simplify search terms"
+  echo "  3. Wait and retry (rate limiting)"
+  exit 1
 fi
 
-if [[ -n "$ENGINES" ]]; then
-  URL="${URL}&engines=${ENGINES}"
-fi
-
-if [[ -n "$TIME_RANGE" ]]; then
-  URL="${URL}&time_range=${TIME_RANGE}"
-fi
-
-# Random delay 1-2 seconds to avoid rate limiting
-DELAY=$(awk 'BEGIN{srand(); print 1 + rand()}')
-sleep "$DELAY"
-
-# Make request
-RESPONSE=$(curl -s "$URL")
-
+# Output
 if [[ "$RAW_JSON" == "true" ]]; then
   echo "$RESPONSE"
   exit 0
 fi
 
-# Parse and display results
-if ! command -v jq &> /dev/null; then
-  echo "Error: jq is required for formatted output. Install with: apt install jq or brew install jq"
-  echo "Or use --json flag for raw output."
-  exit 1
+RESULT_COUNT=$(echo "$RESPONSE" | jq -r '.results | length')
+
+if [[ $RESULT_COUNT -eq 0 ]]; then
+  echo "No results found for: $QUERY"
+  exit 0
 fi
 
-# Use single jq command to format output
+# Display results
+echo "Results for: $QUERY"
+echo ""
+
 jq -r --arg limit "$LIMIT" '
   .results[0:($limit | tonumber)] | .[] |
   (.title) + "\n" +
   "  URL: " + .url + "\n" +
   "  Engines: " + (.engines | join(", ")) +
-  (if .content != null then "\n  " + .content else "" end) +
+  (if .content != null and (.content | length) > 0 then "\n  " + (.content | .[0:200]) + (if (.content | length) > 200 then "..." else "" end) else "" end) +
   "\n"
 ' <<< "$RESPONSE"
 
-# Show result count
-TOTAL_COUNT=$(jq -r '.results | length' <<< "$RESPONSE")
-echo "Showing $(jq -r --arg limit "$LIMIT" '[.results[0:($limit | tonumber)] | .[]] | length' <<< "$RESPONSE") of $TOTAL_COUNT results"
+SHOWN_COUNT=$(jq -r --arg limit "$LIMIT" '[.results[0:($limit | tonumber)] | .[]] | length' <<< "$RESPONSE")
+echo ""
+echo "Showing $SHOWN_COUNT of $RESULT_COUNT results"

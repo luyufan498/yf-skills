@@ -172,14 +172,30 @@ class KLineDataFetcher:
 
                     for item in day_data:
                         if item and len(item) >= 6:
+                            # 安全转换：只转换数字或字符串类型的值
+                            def safe_float(val):
+                                if val is None:
+                                    return None
+                                if isinstance(val, (int, float)):
+                                    return float(val)
+                                if isinstance(val, str):
+                                    try:
+                                        return float(val)
+                                    except (ValueError, TypeError):
+                                        return None
+                                if isinstance(val, dict):
+                                    # 尝试从字典中获取数字值
+                                    return list(val.values())[0] if val and val.values() else None
+                                return None
+
                             kline_list.append({
                                 'date': item[0],
-                                'open': float(item[1]) if item[1] else None,
-                                'close': float(item[2]) if item[2] else None,
-                                'high': float(item[3]) if item[3] else None,
-                                'low': float(item[4]) if item[4] else None,
-                                'volume': float(item[5]) if item[5] else None,
-                                'amount': float(item[6]) if len(item) > 6 and item[6] else None
+                                'open': safe_float(item[1]),
+                                'close': safe_float(item[2]),
+                                'high': safe_float(item[3]),
+                                'low': safe_float(item[4]),
+                                'volume': safe_float(item[5]),
+                                'amount': safe_float(item[6]) if len(item) > 6 else None
                             })
 
                     # 按日期升序排列

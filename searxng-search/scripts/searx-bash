@@ -15,7 +15,7 @@ MAX_RETRIES=2
 
 # Define preferred engines for random selection (multiple engines for better results)
 # Using multiple engines reduces chance of complete failure
-PREFERRED_ENGINES=("bing,yandex" "bing,baidu" "bing,360search" "bing,sogou" "yandex,sogou" "baidu,360search" "brave,yahoo" "yahoo,360search", "sogou,yahoo")
+PREFERRED_ENGINES=("yandex,sogou" "yandex,baidu" "yandex,360search" "yandex,brave" "yandex,yahoo" "sogou,baidu" "sogou,360search" "sogou,brave" "sogou,yahoo" "baidu,360search" "baidu,brave" "baidu,yahoo" "360search,brave" "360search,yahoo" "brave,yahoo")
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do

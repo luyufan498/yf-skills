@@ -68,7 +68,7 @@ Environment:
   SEARXNG_URL        SearXNG server URL (required)
 
 Features:
-  - Auto-selects from bing, baidu, 360search, sogou, yandex, qwant
+  - Auto-selects from 360search, baidu, yandex, sogou, brave, yahoo
   - Retries with different engines on CAPTCHA/Suspended errors
   - Clear error messages for AI agent debugging
 
@@ -233,7 +233,8 @@ if [[ $search_status -ne 0 || -z "$RESPONSE" ]]; then
   if [[ -n "$ENGINES" ]]; then
     echo "Engines: $ENGINES"
   else
-    echo "Engines attempted: bing, baidu, 360search, sogou, yandex, qwant"
+    local attempted="${failed_engines[*]:-}"
+    echo "Engines attempted: ${attempted:-auto-selected engines from preferred list}"
   fi
 
   if check_blockages "$RESPONSE"; then
@@ -244,7 +245,7 @@ if [[ $search_status -ne 0 || -z "$RESPONSE" ]]; then
 
   echo ""
   echo "Solutions:"
-  echo "  1. Try: searx-bash --engines bing \"your query\""
+  echo "  1. Try: searx-bash --engines 360search \"your query\""
   echo "  2. Simplify search terms"
   echo "  3. Wait and retry (rate limiting)"
   exit 1

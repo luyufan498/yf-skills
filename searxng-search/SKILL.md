@@ -1,7 +1,6 @@
 ---
 name: searxng-search
 description: Enhanced web and package repository search using SearXNG instance
-version: 1.0.0
 ---
 
 # SearXNG 搜索

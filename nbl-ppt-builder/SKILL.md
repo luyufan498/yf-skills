@@ -2,10 +2,6 @@
 name: nbl-ppt-builder
 description: 专门用于构建 NBL 企业 PPT 的 Skill，包含标准模板、配色方案和内容规范。当用户要求创建 PPT、演示文稿、幻灯片时触发：制作PPT、创建演示文稿、PPT模板、企业介绍
 allowed-tools: Bash,Read,Edit,Glob
-trigger_keywords:
-  - 制作 PPT
-  - NBL PPT
-version: 1.0
 ---
 
 你现在是 NBL 企业 PPT 构建专家。

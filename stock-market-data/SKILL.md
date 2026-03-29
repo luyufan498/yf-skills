@@ -17,19 +17,27 @@ description: 提供中国A股、香港港股和美国NASDAQ市场的实时股票
 
 ## 使用方式
 
+📂 注意：脚本位置是基于当前说明文档的相对路径，执行前务必切换(cd)正确的路径
+
+⚠️ **依赖说明**: A股/港股数据无需额外依赖，美股数据需要yfinance库（建议使用UV环境安装）。详细配置请参考 `references/uv-environment-setup.md`
+
 ### 1. 查询实时股价
 
 **单只股票查询**:
 ```bash
+# A股/港股（无需额外依赖）
 python3 scripts/fetch_realtime_stock.py sh600000
 python3 scripts/fetch_realtime_stock.py sz000001
 python3 scripts/fetch_realtime_stock.py hk00700
-python3 scripts/fetch_realtime_stock.py gb_aapl  # 美股
+
+# 美股（需要UV环境）
+uv run python3 scripts/fetch_realtime_stock.py AAPL
 ```
 
 **多只股票批量查询**:
 ```bash
-python3 scripts/fetch_realtime_stock.py sh600000 sz000001 hk00700 gb_aapl gb_goog
+python3 scripts/fetch_realtime_stock.py sh600000 sz000001 hk00700
+uv run python3 scripts/fetch_realtime_stock.py AAPL TSLA NVDA
 ```
 
 **返回数据格式**:
@@ -53,12 +61,22 @@ python3 scripts/fetch_realtime_stock.py sh600000 sz000001 hk00700 gb_aapl gb_goo
 
 ### 2. 获取K线历史数据
 
-**分时数据** (每分钟tick数据):
+**A股/港股 - 分时数据** (每分钟tick数据):
 ```bash
 python3 scripts/fetch_kline_data.py sh600000 -t minute -c 10    # 最近10分钟的分时数据
+python3 scripts/fetch_kline_data.py hk00700 -t minute -c 10     # 港股分时数据
 ```
 
-**日K数据** (前复权):
+**美股 - K线历史数据** (需要 UV 环境):
+```bash
+# 注意：美股数据需要先安装UV环境，详见 references/uv-environment-setup.md
+uv run python3 scripts/fetch_kline_data.py AAPL -t day -c 30      # AAPL 最近30个交易日
+uv run python3 scripts/fetch_kline_data.py TSLA -t week -c 20     # TSLA 最近20周
+uv run python3 scripts/fetch_kline_data.py TSLA -t 60min -c 8     # TSLA 最近8根60分钟K线
+uv run python3 scripts/fetch_kline_data.py SPX -t day -c 5        # 标普500指数数据
+```
+
+**A股/港股 - 日K数据** (前复权):
 ```bash
 python3 scripts/fetch_kline_data.py sh600000 -t day -c 30     # 最近30个交易日
 ```
@@ -74,8 +92,8 @@ python3 scripts/fetch_kline_data.py sh600000 -t month -c 12   # 最近12个月
 python3 scripts/fetch_kline_data.py sh600000 -t 5min -c 48    # 最近48根5分钟K线
 python3 scripts/fetch_kline_data.py sh600000 -t 10min -c 24   # 最近24根10分钟K线
 python3 scripts/fetch_kline_data.py sh600000 -t 15min -c 16   # 最近16根15分钟K线
-python3 scripts/fetch_kline_data.py sh600000 -t 30min -c 8     # 最近8根30分钟K线
-python3 scripts/fetch_kline_data.py sh600000 -t 60min -c 4     # 最近4根60分钟K线
+python3 scripts/fetch_kline_data.py sh600000 -t 30min -c 8    # 最近8根30分钟K线
+python3 scripts/fetch_kline_data.py sh600000 -t 60min -c 4    # 最近4根60分钟K线
 ```
 
 **获取完整汇总** (包含所有周期的数据):
@@ -85,11 +103,11 @@ python3 scripts/fetch_kline_data.py sh600000 --summary
 
 **参数说明**:
 - `-t/--type`: 数据类型
-  - `minute`: 分时数据（每分钟tick数据）
-  - `5min`/`10min`/`15min`/`30min`/`60min`: 分钟K线（根据分时数据采样生成）
-  - `day`: 日K线（前复权）
-  - `week`: 周K线（前复权）
-  - `month`: 月K线（前复权）
+  - `minute`: 分时数据（每分钟tick数据，A股/港股）
+  - `5min`/`10min`/`15min`/`30min`/`60min`: 分钟K线（根据分时数据采样生成，A股/港股）
+  - `day`: 日K线（前复权，所有市场）
+  - `week`: 周K线（前复权，所有市场）
+  - `month`: 月K线（前复权，所有市场）
 - `-c/--count`: 返回数据条数
   - 分时数据: 返回最近N分钟的数据
   - K线数据: 返回最近N条K线
@@ -162,12 +180,13 @@ python3 scripts/search_stock_code.py --guide
 
 ### K线数据
 
-- **数据源**: 腾讯证券 Web接口
-- **接口**: `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get`
+- **数据源**:
+  - **A股/港股**: 腾讯证券 Web接口 (`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get`) - 无需额外依赖
+  - **美股**: YFinance (免费，无需API Key) - 需要yfinance和pandas库
 - **复权类型**: 前复权 (qfq)
 - **支持的周期**: 5min/10min/15min/30min/60min/day/week/month
-- **支持市场**: A股（sh/sz/bj）、港股（hk）
-  - **注意**: 美股（gb_开头）不支持K线数据，仅支持分时数据
+- **支持市场**: A股（sh/sz/bj）、港股（hk）、美股（gb_开头或纯字母代码）
+  - **注意**: 美股K线数据使用YFinance获取，支持完整的历史数据
 - **分钟K线说明**: 5min/10min/15min/30min/60min 基于分时数据采样生成，数据格式包含 `time` 字段，与分时数据格式一致
 
 ### 市场新闻
@@ -306,6 +325,40 @@ python3 scripts/search_stock_code.py --guide
 - 建议添加适当的请求间隔，避免频繁请求
 - 部分数据可能有延迟（1-3分钟）
 - 港股、美股数据可能受限（访问频率、数据完整性）
+
+## 依赖环境配置
+
+### 功能依赖对比
+
+| 功能 | 市场类型 | 外部依赖 | 是否需要环境配置 |
+|------|----------|----------|------------------|
+| 实时股价查询 | A股/港股 | requests | ❌ 不需要 |
+| K线数据 (日K/周K/月K) | A股/港股 | requests | ❌ 不需要 |
+| 分时数据/分钟K线 | A股/港股 | requests | ❌ 不需要 |
+| 市场新闻查询 | 全市场 | requests | ❌ 不需要 |
+| 股票代码搜索 | 全市场 | requests | ❌ 不需要 |
+| K线数据 (日K/周K/月K) | 美股 | yfinance, pandas | ✅ **需要** |
+| K线数据 (分钟K线) | 美股 | yfinance, pandas | ✅ **需要** |
+
+### 环境配置
+
+**如需使用美股数据，请配置UV环境**：
+
+```bash
+# 1. 创建虚拟环境
+uv venv
+
+# 2. 安装依赖
+uv pip install -e ./scripts
+```
+
+详细配置步骤和常见问题解答，请参考：`references/uv-environment-setup.md`
+
+### 获取完整汇总** (包含所有周期的数据):
+```bash
+python3 scripts/fetch_kline_data.py sh600000 --summary
+uv run python3 scripts/fetch_kline_data.py AAPL --summary  # 美股汇总需要UV环境
+```
 
 ## 调试和错误处理
 

@@ -13,6 +13,7 @@ import json
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime
+import os
 
 
 class KLineDataFetcher:
@@ -101,6 +102,31 @@ class KLineDataFetcher:
             print(f"Error fetching minute data for {stock_code}: {e}")
             return {'code': stock_code, 'date': '', 'data': []}
 
+    def _is_us_stock(self, stock_code: str) -> bool:
+        """
+        判断是否为美股代码
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            是否为美股
+        """
+        code = stock_code.strip()
+
+        # 明确的美股标识
+        if code.lower().startswith(('gb_', 'us')):
+            return True
+
+        # 纯字母代码（1-5个字母）且不以数字开头，判定为美股
+        # 排除 SPX, DJI, IXIC, VIX, RUT, NDX 等美股指数
+        if code.replace('.', '').replace('-', '').isalpha() and len(code) <= 5:
+            # 确保不是A股的常见模式
+            if not code.lower().startswith(('sh', 'sz', 'bj', 'hk')):
+                return True
+
+        return False
+
     def fetch_kline_data(self, stock_code: str, kline_type: str = 'day', count: int = 120) -> List[dict]:
         """
         获取K线数据
@@ -116,6 +142,10 @@ class KLineDataFetcher:
             K线数据列表
             对于基于分时采样的K线，格式与分时数据一致，包含 'time' 字段
         """
+        # 美股使用 YFinance 专用处理
+        if self._is_us_stock(stock_code):
+            return self._fetch_us_stock_kline(stock_code, kline_type, count)
+
         # 分钟级K线需要基于分时数据采样
         minute_kline_map = {
             '5min': 5,
@@ -205,6 +235,150 @@ class KLineDataFetcher:
 
         except Exception as e:
             print(f"Error fetching K-line data for {stock_code}: {e}")
+            return []
+
+    def _fetch_us_stock_kline(self, stock_code: str, kline_type: str = 'day', count: int = 120) -> List[dict]:
+        """
+        使用 YFinance 获取美股K线数据
+
+        Args:
+            stock_code: 美股代码
+            kline_type: K线类型
+            count: 数据条数
+
+        Returns:
+            K线数据列表
+        """
+        try:
+            import yfinance as yf
+            from datetime import timedelta
+        except ImportError:
+            print("Error: yfinance library not installed. Use: pip install yfinance")
+            return []
+
+        # 转换代码格式
+        code = stock_code.upper().strip()
+
+        # 去除前缀
+        if code.startswith('GB_'):
+            code = code[3:]
+        elif code.startswith('US'):
+            code = code[2:]
+
+        # 去除可能的后缀
+        code = code.replace('.OQ', '').replace('.N', '').replace('.PK', '')
+
+        # 美股指数映射
+        index_map = {
+            'SPX': '^GSPC',      # 标普500
+            'DJI': '^DJI',       # 道琼斯
+            'IXIC': '^IXIC',     # 纳斯达克
+            'VIX': '^VIX',       # 波动率指数
+            'RUT': '^RUT',       # 罗素2000
+            'NDX': '^NDX',       # 纳斯达克100
+        }
+
+        yf_symbol = index_map.get(code, code)
+
+        # 映射K线类型到yfinance period
+        # 注意：YFinance 的周K是 '1wk'，不是 'week'
+        period_map = {
+            'day': '1d',
+            'week': '1wk',
+            'month': '1mo',
+            '5min': '5m',
+            '15min': '15m',
+            '30min': '30m',
+            '60min': '1h',
+        }
+
+        yf_period = period_map.get(kline_type, '1d')
+
+        # 计算起始日期
+        end_date = datetime.now()
+
+        if kline_type in ['5min', '15min', '30min', '60min']:
+            # 分钟数据：获取最近30天
+            start_date = end_date - timedelta(days=30)
+        elif kline_type == 'week':
+            # 周数据：获取最近6个月
+            start_date = end_date - timedelta(days=180)
+        elif kline_type == 'month':
+            # 月数据：获取最近2年
+            start_date = end_date - timedelta(days=730)
+        else:  # day
+            if count <= 30:
+                start_date = end_date - timedelta(days=45)
+            elif count <= 90:
+                start_date = end_date - timedelta(days=120)
+            else:
+                start_date = end_date - timedelta(days=365 * 2)
+
+        try:
+            print(f"Using YFinance for US stock {stock_code} ({yf_symbol}) - {kline_type} data...")
+
+            # 使用 yfinance 下载数据
+            import pandas as pd
+            df = yf.download(
+                tickers=yf_symbol,
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
+                interval=yf_period,
+                progress=False,
+                auto_adjust=True,
+                prepost=True,
+            )
+
+            if df.empty:
+                print(f"Warning: No data found for {stock_code} ({yf_symbol})")
+                return []
+
+            # 正确处理 MultiIndex 数据结构（参考原项目的实现）
+            if isinstance(df.columns, pd.MultiIndex):
+                # 取第一级列名（Price level: Close, High, Low, etc.）
+                df.columns = df.columns.get_level_values(0)
+
+            # 重置索引，将日期从索引变为列
+            df = df.reset_index()
+
+            # 转换为标准格式
+            kline_list = []
+
+            for _, row in df.iterrows():
+                date_value = row.get('Date') if 'Date' in row else row.get('Datetime')
+
+                kline_item = {
+                    'date': date_value.strftime('%Y-%m-%d') if hasattr(date_value, 'strftime') else str(date_value),
+                    'open': float(row['Open']),
+                    'close': float(row['Close']),
+                    'high': float(row['High']),
+                    'low': float(row['Low']),
+                    'volume': int(row['Volume']),
+                    'amount': None
+                }
+
+                # 对于分钟数据，使用不同的时间格式
+                if kline_type in ['5min', '15min', '30min', '60min']:
+                    if hasattr(date_value, 'strftime'):
+                        time_str = date_value.strftime('%H:%M')
+                        kline_item['date'] = date_value.strftime('%Y-%m-%d')
+                        kline_item['time'] = time_str
+                    else:
+                        kline_item['date'] = str(date_value)
+                        kline_item['time'] = str(date_value)
+
+                kline_list.append(kline_item)
+
+            # 只返回最后N条数据
+            if len(kline_list) > count:
+                kline_list = kline_list[-count:]
+
+            return kline_list
+
+        except Exception as e:
+            print(f"Error fetching US stock data for {stock_code}: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def _sample_minute_to_kline(self, minute_data: List[dict], minutes_per_kline: int, date: str = '') -> List[dict]:

@@ -38,7 +38,8 @@ DATA_TYPES_CONFIG = {
         'file_prefix': '',  # 文件名前缀（空表示使用股票名称）
         'file_pattern': '{stock_name}-{timestamp}.md',
         'symlink_name': '最新分析.md',
-        'needs_symlink': True
+        'needs_symlink': True,
+        'subdirectory': None  # analysis 不需要子目录
     },
     'gf-summary': {
         'base_dir': 'intermediate',
@@ -46,7 +47,8 @@ DATA_TYPES_CONFIG = {
         'file_prefix': 'gf_summary_',
         'file_pattern': 'gf_summary_{date}.md',
         'symlink_name': '最新广发.md',
-        'needs_symlink': True
+        'needs_symlink': True,
+        'subdirectory': '广发证券数据'
     },
     'history-continuity': {
         'base_dir': 'intermediate',
@@ -54,7 +56,8 @@ DATA_TYPES_CONFIG = {
         'file_prefix': 'continuity_',
         'file_pattern': 'continuity_{date}.md',
         'symlink_name': '最新连续性.md',
-        'needs_symlink': True
+        'needs_symlink': True,
+        'subdirectory': '历史连续性'
     },
     'deep-search': {
         'base_dir': 'intermediate',
@@ -62,7 +65,8 @@ DATA_TYPES_CONFIG = {
         'file_prefix': 'search_',
         'file_pattern': 'search_{date}.md',
         'symlink_name': '最新搜索.md',
-        'needs_symlink': True
+        'needs_symlink': True,
+        'subdirectory': '深度搜索'
     }
 }
 
@@ -125,23 +129,37 @@ def generate_data_filename(
         return f"{config['file_prefix']}{time_str}.md"
 
 
-def create_latest_symlink(target_dir: Path, filepath: Path, symlink_name: str):
+def create_latest_symlink(
+    target_dir: Path,
+    filepath: Path,
+    symlink_name: str,
+    subdirectory: str = None
+):
     """
     创建或更新最新数据软链接
 
     Args:
-        target_dir: 目标目录
+        target_dir: 目标基础目录（股票名称目录）
         filepath: 实际文件路径
         symlink_name: 软链接名称
+        subdirectory: 文件所在的子目录（如果有）
     """
+    # 软链接始终放在基础目录下，而不是子目录下
     symlink_path = target_dir / symlink_name
 
     if symlink_path.exists() or symlink_path.is_symlink():
         symlink_path.unlink()
 
-    # 使用相对路径创建软链接
-    symlink_path.symlink_to(filepath.name)
-    print(f"🔗 已更新软链接：{symlink_path} -> {filepath.name}")
+    # 计算相对路径
+    if subdirectory:
+        # 文件在子目录下，软链接在父目录
+        relative_path = Path(subdirectory) / filepath.name
+    else:
+        # 文件和软链接在同一目录
+        relative_path = filepath.name
+
+    symlink_path.symlink_to(relative_path)
+    print(f"🔗 已更新软链接：{symlink_path} -> {relative_path}")
 
 
 def save_analysis(stock_name: str, content: str, timestamp: datetime = None) -> Path:
@@ -203,7 +221,11 @@ def save_data(
         target_dir = get_stock_dir(stock_identifier)  # 使用现有函数
     else:  # intermediate
         stock_name = sanitize_stock_name(stock_identifier)
-        target_dir = INTERMEDIATE_DIR / stock_name
+        # 创建子目录结构：intermediate/股票名称/分类子目录/
+        if config.get('subdirectory'):
+            target_dir = INTERMEDIATE_DIR / stock_name / config['subdirectory']
+        else:
+            target_dir = INTERMEDIATE_DIR / stock_name
         target_dir.mkdir(parents=True, exist_ok=True)
 
     # 生成文件名
@@ -232,9 +254,22 @@ def save_data(
     filepath.write_text(content, encoding='utf-8')
     print(f"✅ {data_type} 数据已保存：{filepath}")
 
-    # 创建软链接
+    # 创建软链接（软链接放在股票名称目录下，而不是子目录下）
     if config['needs_symlink']:
-        create_latest_symlink(target_dir, filepath, config['symlink_name'])
+        # 股票名称的基础目录（用于放置软链接）
+        stock_name = sanitize_stock_name(stock_identifier)
+        if config['base_dir'] == 'stocks_analysis':
+            symlink_base_dir = get_stock_dir(stock_identifier)
+        else:
+            symlink_base_dir = INTERMEDIATE_DIR / stock_name
+            symlink_base_dir.mkdir(parents=True, exist_ok=True)
+
+        create_latest_symlink(
+            symlink_base_dir,
+            filepath,
+            config['symlink_name'],
+            subdirectory=config.get('subdirectory')
+        )
 
     return filepath
 
@@ -269,7 +304,11 @@ def list_data_files(
             data_dir = get_stock_dir(stock_identifier)
         else:
             stock_name = sanitize_stock_name(stock_identifier)
-            data_dir = INTERMEDIATE_DIR / stock_name
+            # 使用子目录结构
+            if config.get('subdirectory'):
+                data_dir = INTERMEDIATE_DIR / stock_name / config['subdirectory']
+            else:
+                data_dir = INTERMEDIATE_DIR / stock_name
 
         if not data_dir.exists():
             result[dtype] = []

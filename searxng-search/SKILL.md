@@ -11,6 +11,8 @@ SearXNG 是一个尊重隐私的元搜索引擎，它聚合来自多个搜索引
 
 **本技能提供了封装好的 `searx-bash` 脚本，专门为 SearXNG 搜索优化。**
 
+📂 注意：脚本位置是基于当前说明文档的相对路径，执行前务必切换(cd)正确的路径
+
 ✅ **推荐**：使用 `scripts/searx-bash` 脚本
 - 自动处理 URL 编码
 - 内置错误处理和验证
@@ -51,7 +53,7 @@ export SEARXNG_URL=http://your-server:port
 
 **方式二：使用 --server 标志配合每条命令**
 ```bash
-searx-bash "<query>" --server http://your-server:port
+scripts/searx-bash "<query>" --server http://your-server:port
 ```
 
 **2. 使用搜索助手：**
@@ -116,6 +118,9 @@ searx-bash <query> [OPTIONS]
 ```
 
 **基本示例：**
+
+📂 执行路径：请在执行命令前切换(cd)至当前说明文档目录
+
 ```bash
 # 本地服务器（默认）
 searx-bash tokio --category cargo

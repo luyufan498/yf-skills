@@ -134,6 +134,54 @@ python3 scripts/etf_rank.py search 芯片
 
 ---
 
+---
+
+## paper_trading (模拟盘交易系统)
+
+股票模拟盘交易系统，每只股票独立资金池，支持买入、卖出、持仓记录和收益计算。
+
+### 核心命令
+
+```bash
+# 初始化（创建资金池）
+python3 scripts/paper_trading.py init --stock "<股票名>" --amount <初始资金>
+
+# 查询持仓
+python3 scripts/paper_trading.py holdings --stock "<股票名>"
+
+# 查询收益
+python3 scripts/paper_trading.py profit --stock "<股票名>"
+
+# 查询操作记录
+python3 scripts/paper_trading.py operations --stock "<股票名>"
+
+# 生成报告
+python3 scripts/paper_trading.py report --stock "<股票名>"
+
+# 买入
+python3 scripts/paper_trading.py buy --stock "<股票名>" --price <价格> --qty <数量> --note "备注"
+
+# 卖出
+python3 scripts/paper_trading.py sell --stock "<股票名>" --price <价格> --qty <数量> --note "备注"
+
+# 调整资金池
+python3 scripts/paper_trading.py pool --stock "<股票名>" --add <增加金额> 或 --reduce <减少金额>
+```
+
+### 数据存储位置
+
+```
+intermediate/<股票名>/模拟买卖/
+├── holdings.json      # 当前持仓状态
+└── operations.json    # 操作历史记录
+```
+
+### 使用说明
+
+详细使用方法请参阅 [paper_trading_guide.md](paper_trading_guide.md)
+
+---
+
 ## 注意事项
 
 

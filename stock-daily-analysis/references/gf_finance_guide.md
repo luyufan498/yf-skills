@@ -172,12 +172,12 @@ python3 scripts/etf_rank.py search 汽车
 广发证券数据获取后，请参考下列命令将分析报告保存。
 
 💾 路径说明：脚本内置环境变量处理机制，自动确定保存路径，请勿自行指定或手动写入文件。
-📂 执行路径：当前说明文档上一级（`../`），请在执行命令前切换(cd)至此目录
+📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
 
 ### 保存命令
 
 ```bash
-python3 scripts/analysis_manager.py save-data "<股票名称>" \
+python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>" \
   --type gf-summary \
   --stdin << 'EOF'
 # {股票名称} - 广发证券数据汇总

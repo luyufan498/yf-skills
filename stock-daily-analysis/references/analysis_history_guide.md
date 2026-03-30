@@ -27,7 +27,7 @@
 ### 步骤 1: 读取历史分析记录
 
 ```bash
-python3 scripts/analysis_manager.py history "<股票名>" --limit 3
+python3 /skill绝对路径/scripts/analysis_manager.py history "<股票名>" --limit 7
 ```
 
 ### 步骤 2: 分析预测准确性
@@ -78,10 +78,10 @@ python3 scripts/analysis_manager.py history "<股票名>" --limit 3
 请参考下列命令将分析报告保存。
 
 💾 路径说明：脚本内置环境变量处理机制，自动确定保存路径，请勿自行指定或手动写入文件。
-📂 执行路径：当前说明文档上一级（`../`），请在执行命令前切换(cd)至此目录
+📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
 
 ```bash
-python3 scripts/analysis_manager.py save-data "<股票名>" \
+python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名>" \
   --type history-continuity \
   --stdin << 'EOF'
 {连续性分析报告内容}

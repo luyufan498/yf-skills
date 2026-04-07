@@ -12,6 +12,7 @@
 - 📤 **数据导出** - 支持导出为JSON、CSV格式
 - 🔍 **性能分析** - 收益率、胜率、盈亏比等指标
 - 📊 **市场数据查询** - 实时价格、K线数据、分时数据、股票代码搜索
+- 📰 **市场新闻** - 实时获取财联社、新浪财经、TradingView 市场新闻
 - 🎯 **CLI工具** - 友好的命令行交互界面
 
 ## 安装
@@ -123,7 +124,26 @@ ptrade delete "赛力斯"
 ptrade delete "赛力斯" --force
 ```
 
-### 8. 市场数据查询
+### 8. 市场新闻查询
+
+```bash
+# 获取最新新闻（所有来源）
+ptrade fetch-news --source all --limit 10
+
+# 只获取财联社新闻
+ptrade fetch-news --source cls --limit 5
+
+# 只获取新浪财经新闻
+ptrade fetch-news --source sina --limit 5
+
+# 只获取 TradingView 新闻
+ptrade fetch-news --source tv --limit 3
+
+# 输出 JSON 格式
+ptrade fetch-news --source all --format json
+```
+
+### 9. 市场数据查询
 
 ```bash
 # 查询实时价格（A股、港股、美股）
@@ -201,6 +221,21 @@ ptrade portfolio
 ptrade list
 ```
 
+### 市场新闻命令
+
+#### fetch-news - 获取市场新闻
+
+```bash
+ptrade fetch-news [--source SOURCE] [--limit N] [--format FORMAT]
+
+# 来源选项: all (所有), cls (财联社), sina (新浪财经), tv (TradingView)
+# 格式选项: pretty (人可读), json
+
+# 示例
+ptrade fetch-news --source all --limit 10
+ptrade fetch-news --source cls --limit 5 --format json
+```
+
 ### 市场数据命令
 
 #### fetch-price - 查询实时价格
@@ -273,9 +308,11 @@ intermediate/
 - ✅ A股（上海证券交易所、深圳证券交易所）
 - ✅ 港股
 - ✅ 美股
+- ✅ 市场新闻（财联社、新浪财经、TradingView）
 
 ## 数据来源
 
+- **新闻数据**: 财联社电报、新浪财经直播、TradingView
 - **股票代码查询**: 新浪财经
 - **实时价格**: 腾讯财经、新浪财经
 - **K线数据**: 腾讯财经（A股/港股）、Yahoo Finance（美股）
@@ -303,12 +340,11 @@ MIT License
 ### v1.2.0 (2026-04-07)
 
 重大更新：
-- 新增美股价格数据支持（通过新浪财经）
-- 新增K线数据获取功能（A股、港股、美股）
-- 新增分时数据获取功能
-- 新增股票代码搜索功能（支持A股、港股、美股）
-- 新增 ptrade fetch-price、ptrade fetch-kline、ptrade search 命令
-- 集成 Yahoo Finance 用于美股K线数据（yfinance）
+- 新增市场新闻功能（ptrade fetch-news 命令）
+- 支持三个新闻源：财联社电报、新浪财经直播、TradingView 外媒
+- 支持综合搜索和多格式输出
+- 新增 NewsItem 和 MarketNews 数据模型
+- 新闻获取器包含重试机制、速率限制、时区处理等生产级特性
 
 ### v1.1.0 (2024-04-04)
 

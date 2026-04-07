@@ -1,6 +1,6 @@
 # Paper Trading - 模拟盘交易系统
 
-一个功能完善的模拟盘交易系统，支持A股和港股的模拟交易，管理独立资金池和持仓。
+一个功能完善的模拟盘交易系统，支持A股、港股和美股的模拟交易，管理独立资金池和持仓。
 
 ## 功能特性
 
@@ -11,14 +11,22 @@
 - 💼 **投资组合管理** - 统一管理多股票账户
 - 📤 **数据导出** - 支持导出为JSON、CSV格式
 - 🔍 **性能分析** - 收益率、胜率、盈亏比等指标
+- 📊 **市场数据查询** - 实时价格、K线数据、分时数据、股票代码搜索
 - 🎯 **CLI工具** - 友好的命令行交互界面
 
 ## 安装
 
+### 使用 uv 安装（推荐）
+
+```bash
+cd paper-trading/scripts
+uv tool install --editable .
+```
+
 ### 使用 pip 安装
 
 ```bash
-cd scripts
+cd paper-trading/scripts
 pip install -e .
 ```
 
@@ -115,75 +123,134 @@ ptrade delete "赛力斯"
 ptrade delete "赛力斯" --force
 ```
 
+### 8. 市场数据查询
+
+```bash
+# 查询实时价格（A股、港股、美股）
+ptrade fetch-price sh600000
+ptrade fetch-price hk00700
+ptrade fetch-price GB_AAPL
+
+# 查询K线数据
+ptrade fetch-kline sh600000 --type day --count 30
+ptrade fetch-kline sh600000 --type week --count 20
+ptrade fetch-kline sh600000 --type 5min --count 48
+
+# 搜索股票代码
+ptrade search 腾讯 --limit 5
+ptrade search 苹果 --limit 5
+```
+
 ## 命令参考
 
-### init - 初始化账户
+### 交易命令
+
+#### init - 初始化账户
 
 ```bash
 ptrade init STOCK_NAME --capital CAPITAL [--code CODE] [--force]
 ```
 
-### buy - 买入股票
+#### buy - 买入股票
 
 ```bash
 ptrade buy STOCK_NAME (--qty QTY | --amount AMOUNT) [--note NOTE]
 ```
 
-### sell - 卖出股票
+#### sell - 卖出股票
 
 ```bash
 ptrade sell STOCK_NAME (--qty QTY | --all) [--note NOTE]
 ```
 
-### pool - 查询资金池
+### 查询命令
+
+#### pool - 查询资金池
 
 ```bash
 ptrade pool STOCK_NAME
 ```
 
-### holdings - 查看持仓
+#### holdings - 查看持仓
 
 ```bash
 ptrade holdings STOCK_NAME
 ```
 
-### operations - 查看操作历史
+#### operations - 查看操作历史
 
 ```bash
 ptrade operations STOCK_NAME
 ```
 
-### profit - 查看收益报告
+#### profit - 查看收益报告
 
 ```bash
 ptrade profit STOCK_NAME
 ```
 
-### portfolio - 查看投资组合
+#### portfolio - 查看投资组合
 
 ```bash
 ptrade portfolio
 ```
 
-### list - 列出账户
+#### list - 列出账户
 
 ```bash
 ptrade list
 ```
 
-### analyze - 性能分析
+### 市场数据命令
+
+#### fetch-price - 查询实时价格
+
+```bash
+ptrade fetch-price <code> [--format pretty|json]
+
+# 示例
+ptrade fetch-price sh600000 --format json
+ptrade fetch-price hk00700
+```
+
+#### fetch-kline - 查询K线数据
+
+```bash
+ptrade fetch-kline <code> [--type TYPE] [--count N] [--format pretty|json]
+
+# 类型选项: day, week, month, 5min, 10min, 15min, 30min, 60min
+
+# 示例
+ptrade fetch-kline sh600000 --type day --count 30
+ptrade fetch-kline sh600000 --type 5min --count 48
+ptrade fetch-kline hk00700 --type week --count 20
+```
+
+#### search - 搜索股票代码
+
+```bash
+ptrade search <keyword> [--limit N] [--format pretty|json]
+
+# 示例
+ptrade search 腾讯 --limit 10
+ptrade search 苹果 --limit 5
+```
+
+### 工具命令
+
+#### analyze - 性能分析
 
 ```bash
 ptrade analyze
 ```
 
-### export - 导出数据
+#### export - 导出数据
 
 ```bash
 ptrade export [--stock STOCK] [--format FORMAT] [--output PATH]
 ```
 
-### delete - 删除账户
+#### delete - 删除账户
 
 ```bash
 ptrade delete STOCK_NAME [--force]
@@ -205,12 +272,13 @@ intermediate/
 
 - ✅ A股（上海证券交易所、深圳证券交易所）
 - ✅ 港股
-- ❌ 美股（暂不支持）
+- ✅ 美股
 
 ## 数据来源
 
 - **股票代码查询**: 新浪财经
-- **实时价格**: 腾讯财经
+- **实时价格**: 腾讯财经、新浪财经
+- **K线数据**: 腾讯财经（A股/港股）、Yahoo Finance（美股）
 
 ## 开发
 
@@ -231,6 +299,22 @@ black paper_trading/ tests/
 MIT License
 
 ## 更新日志
+
+### v1.2.0 (2026-04-07)
+
+重大更新：
+- 新增美股价格数据支持（通过新浪财经）
+- 新增K线数据获取功能（A股、港股、美股）
+- 新增分时数据获取功能
+- 新增股票代码搜索功能（支持A股、港股、美股）
+- 新增 ptrade fetch-price、ptrade fetch-kline、ptrade search 命令
+- 集成 Yahoo Finance 用于美股K线数据（yfinance）
+
+### v1.1.0 (2024-04-04)
+
+改进版本：
+- 修复价格数据获取错误处理
+- 优化资金池计算逻辑
 
 ### v1.0.0 (2024-04-04)
 

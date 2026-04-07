@@ -28,6 +28,7 @@ from paper_trading.models import (
 from paper_trading.price_fetcher import StockPriceFetcher
 from paper_trading.kline_fetcher import KLineDataFetcher
 from paper_trading.code_searcher import StockCodeSearcher
+from paper_trading.news_fetcher import MarketNewsFetcher
 
 __all__ = [
     # 模型
@@ -49,4 +50,5 @@ __all__ = [
     'StockPriceFetcher',
     'KLineDataFetcher',
     'StockCodeSearcher',
+    'MarketNewsFetcher',  # 新增
 ]

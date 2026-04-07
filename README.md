@@ -1,6 +1,46 @@
-# YF Skills - Claude 技能集合
+# YF Skills - Claude Code Marketplace
 
 这是一个 Claude Code 技能（Skills）的集合项目，包含多个专业化技能，用于扩展 Claude 的能力。
+
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-Marketplace-blue)](https://github.com/luyufan498/yf-skills)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+## 快速开始
+
+### 安装 Marketplace
+
+```bash
+# 方法1：通过 GitHub（推荐）
+/plugin marketplace add luyufan498/yf-skills
+
+# 方法2：通过完整 URL
+/plugin marketplace add https://github.com/luyufan498/yf-skills
+```
+
+### 安装单个技能
+
+```bash
+# 安装股票市场数据技能
+/plugin install stock-market-data@yf-skills
+
+# 安装模拟盘交易系统
+/plugin install paper-trading@yf-skills
+
+# 安装 NBL PPT 构建工具
+/plugin install nbl-ppt-builder@yf-skills
+```
+
+### 查看可用技能
+
+```bash
+/plugin list --marketplace yf-skills
+```
+
+### 更新 Marketplace
+
+```bash
+/plugin marketplace update yf-skills
+```
 
 ## 项目概述
 
@@ -8,140 +48,19 @@
 
 ## 包含的技能
 
-| 技能名称 | 描述 | 触发关键词 |
-|---------|------|-----------|
-| **nbl-ppt-builder** | 专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范 | 制作 PPT、创建演示文稿、PPT 模板、企业介绍 |
-| **searxng-search** | 使用 SearXNG 实例增强的 Web 和软件包仓库搜索 | 搜索、查找 |
-| **siyuan-notes** | 思源笔记全功能命令行工具，支持笔记本、文档和块操作 | 思源、笔记 |
-| **skill-creator-dev** | 用于在 workspace 创建新技能开发环境的工具 | 创建技能、技能开发 |
-| **stock-market-data** | 中国股市数据查询，支持A股、港股、美股实时行情和K线数据 | 股票、行情、K线、实时股价 |
-
-## 快速开始
-
-### 环境要求
-
-- Claude Code 终端扩展
-- 各技能的特定依赖（详见各技能目录）
-
-### 安装技能
-
-由于本项目中的技能需要单独打包和安装，请参考各技能目录下的 `SKILL.md` 文件了解详细安装和使用说明。
-
-### 使用技巧
-
-在 Claude Code 对话中，可以通过触发关键词来自动加载相应的技能：
-
-```bash
-# 示例：
-"帮我制作一个季度业务汇报的 PPT"         # 触发 nbl-ppt-builder
-"搜索 tokio 这个 crate"                   # 触发 searxng-search
-"列出思源笔记中的所有文档"                # 触发 siyuan-notes
-"帮我创建一个新的技能开发环境"            # 触发 skill-creator-dev
-"查询平安银行的实时股价"                  # 触发 stock-market-data
-```
+| 技能名称 | 描述 | 类别 | 安装命令 |
+|---------|------|------|---------|
+| **stock-market-data** | 中国A股、港股、美股实时股价和历史数据 | finance | `/plugin install stock-market-data@yf-skills` |
+| **paper-trading** | 模拟盘交易系统，独立资金池管理 | finance | `/plugin install paper-trading@yf-skills` |
+| **stock-daily-analysis** | 股票每日分析，市场新闻聚合 | finance | `/plugin install stock-daily-analysis@yf-skills` |
+| **nbl-ppt-builder** | NBL 企业 PPT 构建工具 | productivity | `/plugin install nbl-ppt-builder@yf-skills` |
+| **searxng-search** | SearXNG 增强搜索工具 | productivity | `/plugin install searxng-search@yf-skills` |
+| **siyuan-notes** | 思源笔记命令行工具 | productivity | `/plugin install siyuan-notes@yf-skills` |
+| **gf-finance** | 广发证券工具接口 | finance | `/plugin install gf-finance@yf-skills` |
 
 ## 技能详情
 
-### nbl-ppt--builder
-
-专门用于构建 NBL 企业 PPT 的 Skill，包含 14 个基于 Tailwind CSS 的 HTML 模板和完整的 6 步构建流程。
-
-**核心特性：**
-- 5 步构建流程，确保质量符合要求
-- 每个内容页由独立子代理完成，保证专业度
-- 强调模板多样性，避免重复单调
-- 支持生成 HTML、PPTX 和 PDF 格式
-
-**目录结构：**
-```
-nbl-ppt-builder/
-├── SKILL.md                          # 技能核心定义
-├── README.md                         # 详细说明
-├── scripts/                          # 辅助脚本
-│   ├── merge_ppt_pages.py           # HTML 页面合并
-│   ├── validate_with_playwright.py  # 页面验证
-│   └── pptx/                        # PPTX 生成工具
-├── templates/                        # 14 个 HTML 模板
-└── reference/                       # 参考文档
-    ├── HTML页面生成说明.md
-    └── PPT规划说明.md
-```
-
-详细说明请参见 [nbl-ppt-builder/README.md](nbl-ppt-builder/README.md)
-
-### searxng-search
-
-使用 SearXNG 实例增强的 Web 和软件包仓库搜索，支持多个搜索引擎和软件包仓库的聚合搜索。
-
-**支持类别：**
-- `general` - 通用网页搜索
-- `cargo` - Rust crates (crates.io)
-- `packages` - 多仓库 (npm, rubygems, hex, docker hub 等)
-- `it` - IT/技术资源
-- `repos` - 代码仓库
-- `q&a` - 问答社区
-- `wikimedia` - 维基媒体项目
-
-**快速开始：**
-```bash
-# 设置服务器地址
-export SEARXNG_URL=http://your-server:38080
-
-# 使用搜索辅助工具
-scripts/searx-bash tokio --category cargo
-```
-
-详细说明请参见 [searxng-search/README.md](searxng-search/README.md)
-
-### siyuan-notes
-
-思源笔记全功能命令行工具，提供完整的笔记管理功能。
-
-**核心功能：**
-- 笔记本管理（列表、创建、删除、重命名）
-- 文档操作（创建、读取、更新、移动、删除）
-- 块级编辑（更新、追加、移动、删除）
-- 内容搜索和 SQL 查询
-- 导出为 Markdown/ZIP
-- 资源文件上传和下载
-
-**环境配置：**
-```bash
-export SIYUAN_ENDPOINT=http://127.0.0.1:6806
-export SIYUAN_TOKEN=your-api-token
-```
-
-**快速使用：**
-```bash
-cd scripts
-python3 siyuan nb list              # 列出所有笔记本
-python3 siyuan doc show <文档ID>     # 查看文档
-python3 siyuan query search "关键词" # 搜索内容
-```
-
-详细文档请参见 [siyuan-notes/SKILL.md](siyuan-notes/SKILL.md)
-
-### skill-creator-dev
-
-用于在 workspace 创建新技能开发环境的工具。
-
-**核心功能：**
-- 创建标准化的技能目录结构
-- 生成 SKILL.md 模板
-- 支持本地调试和测试
-- 分离开发和安装阶段
-
-**重要说明：**
-这是开发工具，不是安装工具。仅在 workspace 创建 skill 目录结构，不会执行安装操作。安装流程需要用户主动发起请求。
-
-**快速使用：**
-```bash
-scripts/init_skill.py <skill-name> --path <output-directory>
-```
-
-详细文档请参见 [skill-creator-dev/SKILL.md](skill-creator-dev/SKILL.md)
-
-### stock-market-data
+### Stock Market Data
 
 中国股市数据查询技能，提供 A股、港股、美股市场的实时数据查询能力。
 
@@ -159,44 +78,136 @@ scripts/init_skill.py <skill-name> --path <output-directory>
 
 **快速使用：**
 ```bash
-# 查询实时股价
 python3 scripts/fetch_realtime_stock.py sh600000
-
-# 获取K线数据
 python3 scripts/fetch_kline_data.py sh600000 -t day -c 30
-
-# 获取市场新闻
-python3 scripts/fetch_market_news.py -n 20 --source all -f simple
-
-# 搜索股票代码
-python3 scripts/search_stock_code.py 平安银行 -n 5
+python3 scripts/fetch_market_news.py -n 20
 ```
 
-详细文档请参见 [stock-market-data/SKILL.md](stock-market-data/SKILL.md)
+### Paper Trading
 
-## 开发指南
+模拟盘交易系统，支持A股和港股的独立资金池管理，提供完整的交易、持仓、分析功能。
 
-### 开发新技能
+**核心功能：**
+- 独立资金池管理
+- 买入/卖出/撤单交易
+- 持仓分析
+- 收益统计
+- 报表导出
 
-1. 使用 `skill-creator-dev` 技能创建开发环境
-2. 在 workspace 中调试和测试
-3. 完成后主动发起安装请求
+**快速使用：**
+```bash
+ptrade --init
+ptrade --portfolio
+ptrade buy sh600000 --quantity 100
+```
 
-### 技能设计原则
+### Stock Daily Analysis
+
+股票每日分析系统，支持市场新闻聚合和深度分析。
+
+**核心功能：**
+- 市场新闻聚合（多源数据）
+- 深度分析报告生成
+- 历史分析记录管理
+
+### NBL PPT Builder
+
+专门用于构建 NBL 企业 PPT 的 Skill，包含标准模板、配色方案和内容规范。
+
+**核心特性：**
+- 5 步构建流程，确保质量符合要求
+- 每个内容页由独立子代理完成
+- 强调模板多样性，避免重复单调
+- 支持生成 HTML、PPTX 和 PDF 格式
+
+### SearXNG Search
+
+使用 SearXNG 实例增强的 Web 和软件包仓库搜索，支持多个搜索引擎和软件包仓库的聚合搜索。
+
+**支持类别：**
+- `general` - 通用网页搜索
+- `cargo` - Rust crates (crates.io)
+- `packages` - 多仓库 (npm, rubygems, hex, docker hub 等)
+- `it` - IT/技术资源
+- `repos` - 代码仓库
+- `q&a` - 问答社区
+
+### Siyuan Notes
+
+思源笔记全功能命令行工具，提供完整的笔记管理功能。
+
+**核心功能：**
+- 笔记本管理（列表、创建、删除、重命名）
+- 文档操作（创建、读取、更新、移动、删除）
+- 块级编辑（更新、追加、移动、删除）
+- 内容搜索和 SQL 查询
+- 导出为 Markdown/ZIP
+
+**环境配置：**
+```bash
+export SIYUAN_ENDPOINT=http://127.0.0.1:6806
+export SIYUAN_TOKEN=your-api-token
+```
+
+### GF Finance
+
+广发证券相关工具和数据访问接口。
+
+## 配置
+
+### Stock Market Data
+
+```bash
+# SearXNG 配置（可选）
+export SEARXNG_URL=http://your-searxng-server:38080
+```
+
+### Siyuan Notes
+
+```bash
+# 必需的环境变量
+export SIYUAN_ENDPOINT=http://127.0.0.1:6806
+export SIYUAN_TOKEN=your-api-token
+```
+
+## 管理技能
+
+```bash
+# 更新 marketplace
+/plugin marketplace update yf-skills
+
+# 更新所有已安装的技能
+/plugin update
+
+# 禁用技能
+/plugin disable skill-name@yf-skills
+
+# 启用技能
+/plugin enable skill-name@yf-skills
+
+# 删除技能
+/plugin remove skill-name@yf-skills
+
+# 移除 marketplace
+/plugin marketplace remove yf-skills
+```
+
+## 贡献
+
+欢迎为技能提供反馈和改进建议！提交 Issue 或 Pull Request。
+
+## 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 相关链接
+
+- [Claude Code 文档](https://code.claude.com/docs/zh-CN/plugin-marketplaces)
+- [GitHub Issues](https://github.com/luyufan498/yf-skills/issues)
+- [GitHub Discussions](https://github.com/luyufan498/yf-skills/discussions)
+
+## 技能设计原则
 
 - **简洁是关键**：只添加 Claude 尚未具备的上下文
 - **适当自由度**：将特异性级别与任务的脆弱性相匹配
 - **渐进式披露**：使用三级加载系统高效管理上下文
-
-## 贡献
-
-欢迎为各种技能提供反馈和改进建议！
-
-## 许可证
-
-本项目各技能的许可证请参阅各自目录下的说明文件。
-
-## 相关链接
-
-- [Claude Code 文档](https://claude.ai/docs/claude-code)
-- 技能开发最佳实践：[skill-creator-dev](skill-creator-dev/)

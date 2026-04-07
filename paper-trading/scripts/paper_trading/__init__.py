@@ -21,6 +21,8 @@ from paper_trading.models import (
     PerformanceMetrics,
     KLineData,
     IntradayData,
+    NewsItem,        # 新增
+    MarketNews,      # 新增
 )
 
 from paper_trading.price_fetcher import StockPriceFetcher
@@ -41,6 +43,8 @@ __all__ = [
     'PerformanceMetrics',
     'KLineData',
     'IntradayData',
+    'NewsItem',      # 新增
+    'MarketNews',    # 新增
     # 获取器
     'StockPriceFetcher',
     'KLineDataFetcher',

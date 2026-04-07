@@ -221,3 +221,23 @@ class IntradayData(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+class NewsItem(BaseModel):
+    """单条新闻"""
+    title: str = Field(..., description="标题")
+    content: str = Field(..., description="内容")
+    time: str = Field(..., description="时间 HH:MM:SS")
+    date: str = Field(..., description="日期 YYYY-MM-DD")
+    datetime: str = Field(..., description="完整时间 ISO 格式")
+    url: str = Field(default="", description="新闻链接")
+    source: str = Field(..., description="来源: 财联社电报, 新浪财经, TradingView外媒")
+    is_red: bool = Field(default=False, description="是否重要")
+    tags: List[str] = Field(default_factory=list, description="标签")
+    description: str = Field(default="", description="描述")
+
+
+class MarketNews(BaseModel):
+    """市场新闻集合"""
+    total: int = Field(..., description="总数量")
+    items: List[NewsItem] = Field(default_factory=list, description="新闻列表")

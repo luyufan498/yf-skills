@@ -514,42 +514,65 @@ def fetch_news(
 ) -> None:
     """
     获取市场新闻
+
+    支持多个新闻源：
+      - all: 合并所有源的新闻
+      - cls: 财联社电报
+      - sina: 新浪财经直播
+      - tv: TradingView外媒
+
+    示例:
+      ptrade fetch-news --source all --limit 20
+      ptrade fetch-news -s cls -n 10 -f json
     """
     from paper_trading.news_fetcher import MarketNewsFetcher
 
-    fetcher = MarketNewsFetcher()
+    try:
+        fetcher = MarketNewsFetcher()
 
-    # 根据参数获取新闻
-    if source == 'cls':
-        news_data = fetcher.fetch_cls_news(limit)
-    elif source == 'sina':
-        news_data = fetcher.fetch_sina_live_news(limit)
-    elif source == 'tv':
-        news_data = fetcher.fetch_tradingview_news(limit)
-    else:  # all
-        news_data = fetcher.get_latest_news(limit)
+        # 根据参数获取新闻
+        if source == 'cls':
+            news_data = fetcher.fetch_cls_news(limit)
+        elif source == 'sina':
+            news_data = fetcher.fetch_sina_live_news(limit)
+        elif source == 'tv':
+            news_data = fetcher.fetch_tradingview_news(limit)
+        else:  # all
+            news_data = fetcher.get_latest_news(limit)
 
-    # 输出结果
-    if format == 'json':
-        import json
-        print(json.dumps({
-            'source': source,
-            'total': len(news_data),
-            'news': news_data
-        }, indent=2, ensure_ascii=False))
-    else:
-        print(f"\n{'='*60}")
-        print(f"最新市场新闻 (来源: {source}, 数量: {len(news_data)})")
-        print(f"{'='*60}\n")
+        # 检查空结果
+        if not news_data and format != 'json':
+            print("📭 未找到任何新闻")
+            return
 
-        for i, item in enumerate(news_data, 1):
-            print(f"{i}. [{item['time']}] {item['source']}")
-            if item.get('title'):
-                print(f"   标题: {item['title']}")
-            print(f"   内容: {item['content'][:150]}...")
-            if item.get('tags'):
-                print(f"   标签: {', '.join(item['tags'])}")
-            print()
+        # 输出结果
+        if format == 'json':
+            import json
+            print(json.dumps({
+                'source': source,
+                'total': len(news_data),
+                'news': news_data
+            }, indent=2, ensure_ascii=False))
+        else:
+            print(f"\n{'='*60}")
+            print(f"最新市场新闻 (来源: {source}, 数量: {len(news_data)})")
+            print(f"{'='*60}\n")
+
+            for i, item in enumerate(news_data, 1):
+                print(f"{i}. [{item['time']}] {item['source']}")
+                if item.get('title'):
+                    print(f"   标题: {item['title']}")
+                print(f"   内容: {item['content'][:150]}...")
+                if item.get('tags'):
+                    print(f"   标签: {', '.join(item['tags'])}")
+                print()
+
+    except ValueError as e:
+        print(f"❌ 参数错误: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        print(f"❌ 获取新闻失败: {e}")
+        raise typer.Exit(1)
 
 
 @app.command()

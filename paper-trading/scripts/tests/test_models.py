@@ -41,11 +41,26 @@ def test_intraday_data_valid():
     intraday = IntradayData(
         code="sh600000",
         date="2024-04-07",
-        time=["09:30", "09:31", "09:32"],
-        price=[10.5, 10.55, 10.6],
-        volume=[100, 200, 150],
-        amount=[1050, 2110, 1590]
+        time="09:30",
+        price=10.5,
+        volume=100,
+        amount=1050
     )
     assert intraday.code == "sh600000"
-    assert len(intraday.time) == 3
-    assert intraday.time[0] == "09:30"
+    assert intraday.time == "09:30"
+    assert intraday.price == 10.5
+    assert intraday.volume == 100
+    assert intraday.amount == 1050
+
+
+def test_intraday_data_optional_fields():
+    """测试 IntradayData 的可选字段"""
+    intraday = IntradayData(
+        code="sh600000",
+        date="2024-04-07"
+    )
+    assert intraday.code == "sh600000"
+    assert intraday.time is None
+    assert intraday.price is None
+    assert intraday.volume is None
+    assert intraday.amount is None

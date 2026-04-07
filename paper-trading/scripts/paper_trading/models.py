@@ -206,10 +206,10 @@ class IntradayData(BaseModel):
     """分时数据"""
     code: str = Field(..., description="股票代码")
     date: str = Field(..., description="交易日期")
-    time: List[str] = Field(default_factory=list, description="时间列表")
-    price: List[float] = Field(default_factory=list, description="价格列表")
-    volume: List[float] = Field(default_factory=list, description="成交量列表")
-    amount: List[float] = Field(default_factory=list, description="成交额列表")
+    time: Optional[str] = Field(None, description="时间")
+    price: Optional[float] = Field(None, description="价格")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
 
     class Config:
         use_enum_values = True

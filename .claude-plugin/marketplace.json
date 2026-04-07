@@ -1,0 +1,69 @@
+{
+  "name": "yf-skills",
+  "owner": {
+    "name": "luyufan498",
+    "email": "your-email@example.com"
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Claude Code 技能集合，包含财经数据分析、股票交易、PPT构建等专业化工具"
+  },
+  "plugins": [
+    {
+      "name": "nbl-ppt-builder",
+      "source": "./nbl-ppt-builder",
+      "description": "专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范",
+      "category": "productivity",
+      "tags": ["ppt", "presentation", "document", "templates"],
+      "keywords": ["ppt", "presentation", "slide", "document", "html", "markdown"]
+    },
+    {
+      "name": "stock-market-data",
+      "source": "./stock-market-data",
+      "description": "提供中国A股、港股和美股市场的实时股票数据查询能力",
+      "category": "finance",
+      "tags": ["stock", "market", "finance", "trading", "data"],
+      "keywords": ["stock", "market", "finance", "trading", "kline", "realtime"]
+    },
+    {
+      "name": "paper-trading",
+      "source": "./paper-trading",
+      "description": "模拟盘交易系统，支持A股和港股的独立资金池管理",
+      "category": "finance",
+      "tags": ["trading", "simulation", "paper-trading", "portfolio"],
+      "keywords": ["trading", "simulation", "portfolio", "stock", "finance"]
+    },
+    {
+      "name": "stock-daily-analysis",
+      "source": "./stock-daily-analysis",
+      "description": "股票每日分析系统，支持市场新闻聚合和深度分析",
+      "category": "finance",
+      "tags": ["analysis", "stock", "market", "news", "research"],
+      "keywords": ["analysis", "stock", "market", "news", "research", "daily"]
+    },
+    {
+      "name": "searxng-search",
+      "source": "./searxng-search",
+      "description": "使用 SearXNG 实例增强的 Web 和软件包仓库搜索",
+      "category": "productivity",
+      "tags": ["search", "web", "packages", "research"],
+      "keywords": ["search", "web", "packages", "research", "searxng"]
+    },
+    {
+      "name": "siyuan-notes",
+      "source": "./siyuan-notes",
+      "description": "思源笔记全功能命令行工具，支持笔记本、文档和块操作",
+      "category": "productivity",
+      "tags": ["notes", "siyuan", "documentation", "knowledge"],
+      "keywords": ["notes", "siyuan", "documentation", "knowledge", "markdown"]
+    },
+    {
+      "name": "gf-finance",
+      "source": "./gf-finance",
+      "description": "广发证券相关工具和数据访问接口",
+      "category": "finance",
+      "tags": ["finance", "securities", "gf", "stock"],
+      "keywords": ["finance", "securities", "gf", "stock", "brokerage"]
+    }
+  ]
+}

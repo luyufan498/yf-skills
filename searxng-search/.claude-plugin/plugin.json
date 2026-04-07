@@ -1,0 +1,17 @@
+{
+  "name": "searxng-search",
+  "description": "使用 SearXNG 实例增强的 Web 和软件包仓库搜索",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/searxng-search",
+  "license": "MIT",
+  "keywords": ["search", "web", "packages", "research"],
+  "category": "productivity",
+  "tags": ["search", "web", "packages"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

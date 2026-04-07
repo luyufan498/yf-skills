@@ -1,0 +1,17 @@
+{
+  "name": "gf-finance",
+  "description": "广发证券相关工具和数据访问接口",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/gf-finance",
+  "license": "MIT",
+  "keywords": ["finance", "securities", "gf", "stock", "brokerage"],
+  "category": "finance",
+  "tags": ["finance", "securities", "stock"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

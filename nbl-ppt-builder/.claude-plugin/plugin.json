@@ -1,0 +1,18 @@
+{
+  "name": "nbl-ppt-builder",
+  "description": "专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/nbl-ppt-builder",
+  "license": "MIT",
+  "keywords": ["ppt", "presentation", "slide", "document", "html", "markdown"],
+  "category": "productivity",
+  "tags": ["ppt", "presentation", "document", "templates"],
+  "allowed-tools": ["Bash", "Read", "Edit", "Glob"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

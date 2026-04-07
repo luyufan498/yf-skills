@@ -1,0 +1,17 @@
+{
+  "name": "stock-market-data",
+  "description": "提供中国A股、港股和美股市场的实时股票数据查询能力",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/stock-market-data",
+  "license": "MIT",
+  "keywords": ["stock", "market", "finance", "trading", "kline", "realtime"],
+  "category": "finance",
+  "tags": ["stock", "market", "trading", "data"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

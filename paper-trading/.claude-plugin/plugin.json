@@ -1,0 +1,17 @@
+{
+  "name": "paper-trading",
+  "description": "模拟盘交易系统，支持A股和港股的独立资金池管理",
+  "version": "1.0.1",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/paper-trading",
+  "license": "MIT",
+  "keywords": ["trading", "simulation", "paper-trading", "portfolio", "stock", "finance"],
+  "category": "finance",
+  "tags": ["trading", "simulation", "portfolio"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

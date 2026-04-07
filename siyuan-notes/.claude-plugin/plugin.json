@@ -1,0 +1,17 @@
+{
+  "name": "siyuan-notes",
+  "description": "思源笔记全功能命令行工具，支持笔记本、文档和块操作",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/siyuan-notes",
+  "license": "MIT",
+  "keywords": ["notes", "siyuan", "documentation", "knowledge", "markdown"],
+  "category": "productivity",
+  "tags": ["notes", "siyuan", "documentation"],
+  "skills": [
+    "./SKILL.md"
+  ]
+}

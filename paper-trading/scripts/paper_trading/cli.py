@@ -510,10 +510,14 @@ def search(
     limit: int = typer.Option(10, "--limit", "-n", help="返回结果数量"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
 ):
-    """搜索A股股票代码"""
+    """搜索股票代码（支持A股、港股、美股热门股票）"""
     try:
         searcher = StockCodeSearcher()
-        results = searcher.search_cn_stocks(keyword, limit=limit)
+        # 使用综合搜索，包括新浪财经 API 和内置热门股票库
+        search_results = searcher.search(keyword, limit=limit)
+
+        # 合并 A股搜索和热门股票库的结果
+        results = search_results.get('A_share', []) + search_results.get('hot_funds', [])
 
         if not results:
             typer.echo(f"❌ 未找到 '{keyword}' 相关的股票")

@@ -6,11 +6,12 @@ from paper_trading.price_fetcher import StockPriceFetcher
 
 def test_fetch_us_stock_from_sina():
     """测试从新浪获取美股数据"""
+    from paper_trading.models import MarketType
     fetcher = StockPriceFetcher()
     result = fetcher.get_realtime_price("gb_aapl")
     assert result is not None
     assert result.code.lower() == "gb_aapl"
-    assert result.market == "美股"
+    assert result.market == MarketType.US_STOCK
     assert result.current_price is not None
     assert result.source == "sina"
 

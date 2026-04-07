@@ -84,9 +84,7 @@ class StockPriceFetcher:
         # 如果是美股，用新浪
         if code_lower.startswith(('gb_', 'us')):
             result = self.fetch_sina_stock_data([stock_code])
-            if result:
-                return result[0] if isinstance(result, list) else result.get(stock_code)
-            return None
+            return result.get(stock_code) if result else None
 
         # 如果是港股或A股，优先用腾讯
         if code_lower.startswith(('hk', 'sh', 'sz')):
@@ -193,10 +191,6 @@ class StockPriceFetcher:
             # 沪深A股数据 (32个以上字段且不是美股)
             elif len(parts) >= 32:
                 market = MarketType.A_SHARE
-                if code.lower().startswith('sz'):
-                    market = MarketType.A_SHARE  # 深市
-                elif code.lower().startswith('sh'):
-                    market = MarketType.A_SHARE  # 沪市
 
                 return StockInfo(
                     code=code.lower(),

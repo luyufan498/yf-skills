@@ -211,5 +211,13 @@ class IntradayData(BaseModel):
     volume: Optional[float] = Field(None, description="成交量")
     amount: Optional[float] = Field(None, description="成交额")
 
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        """验证股票代码"""
+        if not v:
+            raise ValueError("股票代码不能为空")
+        return v.lower()
+
     class Config:
         use_enum_values = True

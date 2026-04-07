@@ -64,3 +64,36 @@ def test_intraday_data_optional_fields():
     assert intraday.price is None
     assert intraday.volume is None
     assert intraday.amount is None
+
+
+def test_kline_data_code_lowercase():
+    """测试 KLineData 的代码自动转为小写"""
+    kline = KLineData(
+        code="SH600000",
+        date="2024-04-07",
+        open=10.5,
+        close=10.8
+    )
+    assert kline.code == "sh600000"
+
+
+def test_intraday_data_code_lowercase():
+    """测试 IntradayData 的代码自动转为小写"""
+    intraday = IntradayData(
+        code="SZ000001",
+        date="2024-04-07",
+        time="09:30",
+        price=10.5
+    )
+    assert intraday.code == "sz000001"
+
+
+def test_intraday_data_invalid():
+    """测试无效的 IntradayData - 空代码"""
+    with pytest.raises(ValidationError):
+        IntradayData(
+            code="",
+            date="2024-04-07",
+            time="09:30",
+            price=10.5
+        )

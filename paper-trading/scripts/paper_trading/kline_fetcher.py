@@ -265,6 +265,7 @@ class KLineDataFetcher:
             'week': '1wk',
             'month': '1mo',
             '5min': '5m',
+            '10min': '10m',
             '15min': '15m',
             '30min': '30m',
             '60min': '1h',
@@ -275,7 +276,7 @@ class KLineDataFetcher:
         # 计算起始日期
         end_date = datetime.now()
 
-        if kline_type in ['5min', '15min', '30min', '60min']:
+        if kline_type in ['5min', '10min', '15min', '30min', '60min']:
             start_date = end_date - timedelta(days=30)
         elif kline_type == 'week':
             start_date = end_date - timedelta(days=180)
@@ -329,7 +330,7 @@ class KLineDataFetcher:
                 }
 
                 # 对于分钟数据，使用不同的时间格式
-                if kline_type in ['5min', '15min', '30min', '60min']:
+                if kline_type in ['5min', '10min', '15min', '30min', '60min']:
                     if hasattr(date_value, 'strftime'):
                         time_str = date_value.strftime('%H:%M')
                         kline_item['date'] = date_value.strftime('%Y-%m-%d')

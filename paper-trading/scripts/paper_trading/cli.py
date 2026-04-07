@@ -504,6 +504,54 @@ def fetch_kline(
         raise typer.Exit(1)
 
 
+# --- 市场新闻命令 ---
+
+@app.command("fetch-news")
+def fetch_news(
+    source: str = typer.Option("all", "--source", "-s", help="新闻源: all, cls (财联社), sina (新浪财经), tv (TradingView)"),
+    limit: int = typer.Option(10, "--limit", "-n", help="新闻数量"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式: pretty, json")
+) -> None:
+    """
+    获取市场新闻
+    """
+    from paper_trading.news_fetcher import MarketNewsFetcher
+
+    fetcher = MarketNewsFetcher()
+
+    # 根据参数获取新闻
+    if source == 'cls':
+        news_data = fetcher.fetch_cls_news(limit)
+    elif source == 'sina':
+        news_data = fetcher.fetch_sina_live_news(limit)
+    elif source == 'tv':
+        news_data = fetcher.fetch_tradingview_news(limit)
+    else:  # all
+        news_data = fetcher.get_latest_news(limit)
+
+    # 输出结果
+    if format == 'json':
+        import json
+        print(json.dumps({
+            'source': source,
+            'total': len(news_data),
+            'news': news_data
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"\n{'='*60}")
+        print(f"最新市场新闻 (来源: {source}, 数量: {len(news_data)})")
+        print(f"{'='*60}\n")
+
+        for i, item in enumerate(news_data, 1):
+            print(f"{i}. [{item['time']}] {item['source']}")
+            if item.get('title'):
+                print(f"   标题: {item['title']}")
+            print(f"   内容: {item['content'][:150]}...")
+            if item.get('tags'):
+                print(f"   标签: {', '.join(item['tags'])}")
+            print()
+
+
 @app.command()
 def search(
     keyword: str = typer.Argument(..., help="搜索关键词"),

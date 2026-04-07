@@ -351,7 +351,8 @@ def list():
         summary = manager.get_account_summary(name)
         if summary:
             pool = summary["capital_pool"]
-            typer.echo(f"  • {name}: ¥{pool['available']:,.2f} 可用")
+            stock_code = summary.get('stock_code', 'N/A')
+            typer.echo(f"  • {name} ({stock_code}): ¥{pool['available']:,.2f} 可用")
 
 
 @app.command()

@@ -85,15 +85,43 @@ ptrade analyze
 ptrade export --format json
 ```
 
-## 详细文档
+## 使用指南
 
-详细的使用指南和功能说明，请查阅 [references/](paper-trading/references/) 目录下的文档：
+对于详细的功能说明、参数详解和最佳实践，请查阅 [references/](references/) 目录下的参考文档。
 
-- **[基础交易操作](paper-trading/references/basic-operations.md)** - 初始化、买入、卖出操作详解
-- **[查询命令说明](paper-trading/references/query-commands.md)** - 资金池、持仓、历史、收益查询
-- **[投资组合管理](paper-trading/references/portfolio-management.md)** - 多账户管理和性能分析
-- **[数据管理](paper-trading/references/data-management.md)** - 数据导出、删除、备份
-- **[市场数据查询](paper-trading/references/market-data.md)** - 价格、K线、搜索、新闻功能
-- **[交易原则与策略](paper-trading/references/trading-principles.md)** - 交易纪律和决策流程
-- **[数据存储结构](paper-trading/references/data-storage.md)** - 数据文件结构和存储机制
-- **[常见问题与故障排除](paper-trading/references/troubleshooting.md)** - 问题诊断和解决方案
+### 按场景查阅
+
+| 场景 | 参考文档 |
+|------|---------|
+| 首次使用 | [基础交易操作](references/basic-operations.md) |
+| 查看数据 | [查询命令说明](references/query-commands.md) |
+| 管理多个账户 | [投资组合管理](references/portfolio-management.md) |
+| 备份数据 | [数据管理](references/data-management.md) |
+| 市场数据分析 | [市场数据查询](references/market-data.md) |
+| 交易策略 | [交易原则与策略](references/trading-principles.md) |
+| 理解数据结构 | [数据存储结构](references/data-storage.md) |
+| 解决问题 | [常见问题与故障排除](references/troubleshooting.md) |
+
+### 按功能查阅
+
+| 功能类别 | 参考文档 | 说明 |
+|---------|---------|------|
+| **基础交易** | [basic-operations.md](references/basic-operations.md) | 初始化、买入、卖出操作 |
+| **数据查询** | [query-commands.md](references/query-commands.md) | 资金池、持仓、历史、收益 |
+| **多账户管理** | [portfolio-management.md](references/portfolio-management.md) | 投资组合、性能分析 |
+| **数据备份** | [data-management.md](references/data-management.md) | 导出、删除、恢复 |
+| **市场数据** | [market-data.md](references/market-data.md) | 价格、K线、搜索、新闻 |
+| **交易策略** | [trading-principles.md](references/trading-principles.md) | 纪律、止盈止损 |
+| **数据机制** | [data-storage.md](references/data-storage.md) | 文件结构、存储原理 |
+| **故障排除** | [troubleshooting.md](references/troubleshooting.md) | 22个常见问题诊断 |
+
+### Agent 使用建议
+
+当需要详细说明时，请：
+
+1. **先查阅对应参考文档** - 每个功能都有专门的详细文档
+2. **理解核心机制** - [数据存储结构](references/data-storage.md) 解释了数据如何组织和计算
+3. **遵循交易原则** - [交易原则与策略](references/trading-principles.md) 提供最佳实践
+4. **遇到问题查阅** - [常见问题与故障排除](references/troubleshooting.md) 包含典型问题解决方案
+
+**不要**在 SKILL.md 中查找详细的参数说明、错误处理或实现细节，这些都在参考文档中。

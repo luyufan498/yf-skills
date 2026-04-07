@@ -1,0 +1,30 @@
+[project]
+name = "paper-trading"
+version = "1.0.1"
+description = "Paper trading system for A股 and港股 stocks with independent capital pools"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.28.0",
+    "pydantic>=2.0.0",
+    "typer>=0.7.0",
+    "pandas>=1.5.0",
+    "matplotlib>=3.6.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+ptrade = "paper_trading.cli:app"
+paper-trading = "paper_trading.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper_trading*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

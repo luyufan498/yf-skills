@@ -792,7 +792,16 @@ def main():
         elif args.file:
             content = Path(args.file).read_text(encoding='utf-8')
         else:
-            print("❌ 错误：请提供 --content、--stdin 或 --file")
+            print("❌ 错误：必须提供分析内容来源，请选择以下方式之一：")
+            print("\n  方式 1: 使用 --content 直接传入内容")
+            print(f'    {sys.argv[0]} save "{args.stock_name}" --content "这是分析内容..."')
+            print("\n  方式 2: 使用 --stdin 从标准输入读取")
+            print(f'    {sys.argv[0]} save "{args.stock_name}" --stdin <<\'EOF\'')
+            print('    这是分析内容')
+            print('    可以是多行内容')
+            print('    EOF')
+            print("\n  方式 3: 使用 --file 从文件读取")
+            print(f'    {sys.argv[0]} save "{args.stock_name}" --file analysis.md')
             sys.exit(1)
         
         save_analysis(args.stock_name, content)
@@ -856,7 +865,16 @@ def main():
         elif args.file:
             content = Path(args.file).read_text(encoding='utf-8')
         else:
-            print("❌ 错误：请提供 --content、--stdin 或 --file")
+            print("❌ 错误：必须提供数据内容来源，请选择以下方式之一：")
+            print("\n  方式 1: 使用 --content 直接传入内容")
+            print(f'    {sys.argv[0]} save-data "{args.stock_identifier}" --type {args.type} --content "这是数据内容..."')
+            print("\n  方式 2: 使用 --stdin 从标准输入读取")
+            print(f'    {sys.argv[0]} save-data "{args.stock_identifier}" --type {args.type} --stdin <<\'EOF\'')
+            print('    这是数据内容')
+            print('    可以是多行内容')
+            print('    EOF')
+            print("\n  方式 3: 使用 --file 从文件读取")
+            print(f'    {sys.argv[0]} save-data "{args.stock_identifier}" --type {args.type} --file data.md')
             sys.exit(1)
 
         # 调用统一保存接口

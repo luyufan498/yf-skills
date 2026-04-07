@@ -9,6 +9,17 @@ description: 模拟盘交易系统，支持A股和港股的模拟交易，提供
 
 模拟盘交易系统是一个用于测试投资策略和练习股票交易的虚拟交易平台。支持A股和港股交易，每个股票有独立的资金池管理，提供完整的交易流程追踪和收益计算功能。
 
+**安装方式**：
+```bash
+cd scripts
+uv tool install --editable .
+```
+
+**要求**：需要先安装 uv 工具：
+```bash
+pip install uv
+```
+
 ## 核心功能
 
 ### 资金池管理
@@ -26,15 +37,25 @@ description: 模拟盘交易系统，支持A股和港股的模拟交易，提供
 - **持仓报告**：详细显示持仓数量、成本、市值和浮动盈亏
 - **操作历史**：记录所有交易流水和时间戳
 - **收益分析**：统计实现盈亏和浮动盈亏，计算收益率
+- **统一显示**：info 命令合并显示资金池、持仓、收益信息
 
 ## 快速开始
+
+### 环境变量配置（可选）
+
+```bash
+export STOCK_ANALYSIS_WORKSPACE=/path/to/workspace
+export STOCK_INTERMEDIATE_DIR=/path/to/intermediate
+```
+
+如果未设置，系统将自动使用项目默认路径。
 
 ### 初始化资金池
 
 为指定股票创建独立的资金池：
 
 ```bash
-python3 <skill目录>/scripts/paper_trading.py init "股票名称" --capital 100000
+ptrade init "股票名称" --capital 100000
 ```
 
 **参数说明**：
@@ -46,67 +67,87 @@ python3 <skill目录>/scripts/paper_trading.py init "股票名称" --capital 100
 **示例**：
 ```bash
 # 正常初始化
-python3 <skill目录>/scripts/paper_trading.py init "赛力斯" --capital 50000
+ptrade init "赛力斯" --capital 50000
 
 # 强制重新初始化
-python3 <skill目录>/scripts/paper_trading.py init "赛力斯" --capital 100000 --force
-```
-
-### 查询资金池状态
-
-```bash
-python3 <skill目录>/scripts/paper_trading.py pool "股票名称"
+ptrade init "赛力斯" --capital 100000 --force
 ```
 
 ### 买入股票
 
 ```bash
 # 按股数买入
-python3 <skill目录>/scripts/paper_trading.py buy "股票名称" --qty 100
+ptrade buy "股票名称" --qty 100
 
 # 按金额买入
-python3 <skill目录>/scripts/paper_trading.py buy "股票名称" --amount 10000
+ptrade buy "股票名称" --amount 10000
 
 # 添加备注
-python3 <skill目录>/scripts/paper_trading.py buy "股票名称" --qty 200 --note "初始建仓"
+ptrade buy "股票名称" --qty 200 --note "初始建仓"
 ```
 
 ### 卖出股票
 
 ```bash
 # 按股数卖出
-python3 <skill目录>/scripts/paper_trading.py sell "股票名称" --qty 50
+ptrade sell "股票名称" --qty 50
 
 # 全仓卖出
-python3 <skill目录>/scripts/paper_trading.py sell "股票名称" --all
+ptrade sell "股票名称" --all
 
 # 添加备注
-python3 <skill目录>/scripts/paper_trading.py sell "股票名称" --qty 100 --note "部分止盈"
+ptrade sell "股票名称" --qty 100 --note "部分止盈"
 ```
 
-### 查看持仓报告
+### 查看账户信息
 
+**合并显示（推荐）**：
 ```bash
-python3 <skill目录>/scripts/paper_trading.py holdings "股票名称"
+# 查看单个股票完整信息
+ptrade info "股票名称"
+
+# 查看所有股票概览
+ptrade info
 ```
 
-### 查看操作历史
-
+**分项查询**：
 ```bash
-python3 <skill目录>/scripts/paper_trading.py operations "股票名称"
+# 资金池（单个/所有）
+ptrade pool "股票名称"
+ptrade pool
+
+# 持仓情况（单个/所有）
+ptrade holdings "股票名称"
+ptrade holdings
+
+# 操作历史（单个/所有）
+ptrade operations "股票名称"
+ptrade operations
+
+# 收益报告（单个/所有）
+ptrade profit "股票名称"
+ptrade profit
 ```
 
-### 生成报告
+### 其他命令
 
 ```bash
-# 持仓报告
-python3 <skill目录>/scripts/paper_trading.py report "股票名称" --type holdings
+# 列出所有账户
+ptrade list
 
-# 收益报告
-python3 <skill目录>/scripts/paper_trading.py report "股票名称" --type profit
+# 查看投资组合报告
+ptrade portfolio
 
-# 操作报告
-python3 <skill目录>/scripts/paper_trading.py report "股票名称" --type history
+# 导出数据
+ptrade export --stock "股票名称" --format json --output data.json
+ptrade export --stock "股票名称" --format csv --output data.csv
+ptrade export --format json  # 导出所有账户
+
+# 删除账户
+ptrade delete "股票名称" --force
+
+# 显示版本
+ptrade version
 ```
 
 ## 交易原则与策略
@@ -183,23 +224,38 @@ python3 <skill目录>/scripts/paper_trading.py report "股票名称" --type hist
 
 ## 数据存储
 
+### 存储路径优先级
+
+1. 优先使用环境变量 `STOCK_INTERMEDIATE_DIR`
+2. 其次使用环境变量 `STOCK_ANALYSIS_WORKSPACE/intermediate`
+3. 最后使用项目默认路径
+
+### 数据结构
+
 交易数据存储在 `intermediate/<股票名>/模拟买卖/` 目录下：
 
 ```
 intermediate/
 └── 中科曙光/
     └── 模拟买卖/
-        ├── holdings.json     # 当前持仓、资金池状态
+        ├── account.json      # 当前持仓、资金池状态（新格式）
         └── operations.json   # 历史操作记录
 ```
 
-### holdings.json
+**旧数据兼容**：
+- 系统会自动检测并迁移旧的 `holdings.json` 格式到新的 `account.json` 格式
+- 迁移过程会计算净持仓，忽略决策类操作
+- 保留所有有效的买卖操作记录
+
+### account.json
+
 存储当前持仓和资金池状态，包含：
-- 股票基本信息
+- 股票基本信息（名称、代码）
 - 资金池状态（总资金、可用资金、占用资金）
-- 持仓列表（每次买入/卖出的仓位记录）
+- 持仓列表
 
 ### operations.json
+
 存储所有历史操作记录，包含：
 - 初始化操作
 - 买入操作（价格、数量、金额、备注）
@@ -211,7 +267,7 @@ intermediate/
 
 **解决方法**：
 1. 检查股票名称是否正确
-2. 手动指定股票代码：`--code sh600000`
+2. 手动指定股票代码：`ptrade init "股票名称" --code sh600000 --capital 50000`
 3. 使用其他查询工具确认股票代码
 
 ### 问题 2：资金不足
@@ -228,6 +284,13 @@ intermediate/
 2. 确认股票代码格式正确（sh/sz/hk 开头）
 3. 尝试其他股票代码测试
 
+### 问题 4：命令未找到
+
+**解决方法**：
+1. 确认已安装：`pip install -e .`
+2. 检查 Python 环境路径：`which ptrade`
+3. 重新安装：`pip install --force-reinstall -e .`
+
 ## 注意事项
 
 1. **美股支持**：本系统仅支持 A股和港股，不支持美股代码
@@ -236,15 +299,5 @@ intermediate/
 4. **实时价格**：每次交易操作都会自动获取最新价格
 5. **数据持久化**：所有操作实时保存到 JSON 文件
 6. **强制初始化**：使用 `--force` 会永久删除现有数据
-
-## 详细使用指南
-
-如需了解更多使用细节、常见场景示例和高级功能，请参阅 [references/usage_guide.md](references/usage_guide.md)。
-
-## 资源管理
-
-### Scripts/
-- [paper_trading.py](scripts/paper_trading.py) - 模拟盘交易系统核心脚本，提供所有交易功能
-
-### References/
-- [usage_guide.md](references/usage_guide.md) - 完整的使用指南，包含详细的功能说明和示例
+7. **环境变量**：支持 `STOCK_ANALYSIS_WORKSPACE` 和 `STOCK_INTERMEDIATE_DIR` 配置
+8. **数据迁移**：自动检测并迁移旧格式数据，无需手动处理

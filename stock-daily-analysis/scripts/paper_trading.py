@@ -722,6 +722,7 @@ def show_holdings(stock_name: str) -> str:
     """
     clean_name = sanitize_stock_name(stock_name)
     holdings = load_holdings(stock_name)
+    ops_data = load_operations(stock_name)
 
     if not holdings:
         return f"❌ 未找到股票 '{clean_name}' 的持仓记录"
@@ -736,7 +737,7 @@ def show_holdings(stock_name: str) -> str:
     output += f"- **占用资金**: ¥{pool['used']:,.2f}\n"
     output += f"- **资金使用率**: {(pool['used']/pool['total']*100):.1f}%\n\n"
 
-    # 计算持仓
+    # 计算当前持仓
     total_quantity = 0
     total_cost = 0.0
 
@@ -747,33 +748,97 @@ def show_holdings(stock_name: str) -> str:
         total_quantity += qty
         total_cost += pos.get('total_cost', 0)
 
+    # 计算已投入总成本（所有买入金额）
+    invested_cost = 0.0
+    if ops_data:
+        for op in ops_data.get('operations', []):
+            if op.get('type') == 'buy':
+                invested_cost += op.get('amount', 0)
+
+    # 计算已实现盈亏（所有卖出操作）
+    realized_profit = 0.0
+    if ops_data:
+        for op in ops_data.get('operations', []):
+            if op.get('type') == 'sell':
+                realized_profit += op.get('profit', 0)
+
+    # 计算浮动盈亏
+    floating_profit = 0.0
+    current_price = None
+    market_value = 0.0
+
+    if total_quantity > 0:
+        stock_code = holdings.get('stock_code')
+        if stock_code:
+            price_data = get_realtime_price(stock_code)
+            if price_data and price_data.get('price'):
+                current_price = price_data.get('price')
+                market_value = total_quantity * current_price
+                floating_profit = market_value - total_cost
+
+    # 总盈亏和收益率
+    total_profit = realized_profit + floating_profit
+    return_rate = (total_profit / pool['total'] * 100) if pool['total'] > 0 else 0
+
     if total_quantity == 0:
-        output += "## 📭 当前无持仓\n"
+        output += "## 📭 当前无持仓\n\n"
+        output += f"## 💵 投入与收益\n\n"
+        output += f"- **已投入总成本**: ¥{invested_cost:,.2f}\n"
+        output += f"- **已实现盈亏**: "
+        if realized_profit >= 0:
+            output += f"📈 +¥{realized_profit:,.2f}\n"
+        else:
+            output += f"📉 ¥{realized_profit:,.2f}\n"
+        output += f"- **总盈亏**: "
+        if total_profit >= 0:
+            output += f"📈 +¥{total_profit:,.2f}\n"
+        else:
+            output += f"📉 ¥{total_profit:,.2f}\n"
+        output += f"- **总收益率**: "
+        if return_rate >= 0:
+            output += f"📈 +{return_rate:.2f}%\n"
+        else:
+            output += f"📉 {return_rate:.2f}%\n"
         return output
 
-    avg_cost = total_cost / total_quantity
+    avg_cost = total_cost / total_quantity if total_quantity > 0 else 0
 
     output += f"## 📈 当前持仓\n\n"
     output += f"- **持股数量**: {total_quantity} 股\n"
     output += f"- **平均成本**: ¥{avg_cost:.2f}\n"
     output += f"- **持仓成本**: ¥{total_cost:,.2f}\n"
 
-    # 获取实时价格
-    stock_code = holdings.get('stock_code')
-    if stock_code:
-        price_data = get_realtime_price(stock_code)
-        if price_data and price_data.get('price'):
-            current_price = price_data.get('price')
-            market_value = total_quantity * current_price
-            profit_loss = market_value - total_cost
-            profit_loss_pct = (profit_loss / total_cost) * 100
+    if current_price:
+        output += f"- **当前价格**: ¥{current_price:.2f}\n"
+        output += f"- **持仓市值**: ¥{market_value:,.2f}\n"
+        if floating_profit >= 0:
+            output += f"- **浮动盈亏**: 📈 +¥{floating_profit:,.2f}\n"
+        else:
+            output += f"- **浮动盈亏**: 📉 ¥{floating_profit:,.2f}\n"
 
-            output += f"- **当前价格**: ¥{current_price:.2f}\n"
-            output += f"- **持仓市值**: ¥{market_value:,.2f}\n"
-            if profit_loss >= 0:
-                output += f"- **浮动盈亏**: 📈 +¥{profit_loss:,.2f} (+{profit_loss_pct:.2f}%)\n"
-            else:
-                output += f"- **浮动盈亏**: 📉 ¥{profit_loss:,.2f} ({profit_loss_pct:.2f}%)\n"
+    # 投入与收益统计
+    output += f"\n## 💵 投入与收益\n\n"
+    output += f"- **已投入总成本**: ¥{invested_cost:,.2f}\n"
+    output += f"- **已实现盈亏**: "
+    if realized_profit >= 0:
+        output += f"📈 +¥{realized_profit:,.2f}\n"
+    else:
+        output += f"📉 ¥{realized_profit:,.2f}\n"
+    output += f"- **浮动盈亏**: "
+    if floating_profit >= 0:
+        output += f"📈 +¥{floating_profit:,.2f}\n"
+    else:
+        output += f"📉 ¥{floating_profit:,.2f}\n"
+    output += f"- **总盈亏**: "
+    if total_profit >= 0:
+        output += f"📈 +¥{total_profit:,.2f}\n"
+    else:
+        output += f"📉 ¥{total_profit:,.2f}\n"
+    output += f"- **总收益率**: "
+    if return_rate >= 0:
+        output += f"📈 +{return_rate:.2f}%\n"
+    else:
+        output += f"📉 {return_rate:.2f}%\n"
 
     # 持仓明细
     output += f"\n## 📋 持仓明细\n\n"

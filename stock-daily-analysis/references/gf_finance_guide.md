@@ -176,6 +176,8 @@ python3 scripts/etf_rank.py search 汽车
 
 ### 保存命令
 
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 analysis_manager.py 脚本保存数据**
+
 ```bash
 python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>" \
   --type gf-summary \

@@ -88,9 +88,9 @@ python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名>" \
 EOF
 ```
 
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 analysis_manager.py 脚本保存数据**
 **保存位置**: `xxx/intermediate/<股票名>/continuity_{YYYY-MM-DD}.md`
 **软链接**: 自动创建 `最新连续性.md` 指向最新文件
-
 **重要**: 保存成功后，其他 agent 会自动读取和合并这份报告。
 
 ---

@@ -177,3 +177,39 @@ class PerformanceMetrics(BaseModel):
     profit_loss_ratio: Optional[float] = None
     avg_holding_period: Optional[float] = None
     turnover_rate: Optional[float] = None
+
+
+class KLineData(BaseModel):
+    """K线数据"""
+    code: str = Field(..., min_length=1, description="股票代码")
+    date: str = Field(..., min_length=1, description="日期")
+    open: Optional[float] = Field(None, description="开盘价")
+    close: Optional[float] = Field(None, description="收盘价")
+    high: Optional[float] = Field(None, description="最高价")
+    low: Optional[float] = Field(None, description="最低价")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        """验证股票代码"""
+        if not v:
+            raise ValueError("股票代码不能为空")
+        return v.lower()
+
+    class Config:
+        use_enum_values = True
+
+
+class IntradayData(BaseModel):
+    """分时数据"""
+    code: str = Field(..., description="股票代码")
+    date: str = Field(..., description="交易日期")
+    time: List[str] = Field(default_factory=list, description="时间列表")
+    price: List[float] = Field(default_factory=list, description="价格列表")
+    volume: List[float] = Field(default_factory=list, description="成交量列表")
+    amount: List[float] = Field(default_factory=list, description="成交额列表")
+
+    class Config:
+        use_enum_values = True

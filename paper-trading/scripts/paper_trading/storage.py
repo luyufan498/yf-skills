@@ -4,19 +4,12 @@
 """
 
 import json
-import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 
 from paper_trading.models import Account, AccountHistory, Operation
-
-
-def sanitize_stock_name(name: str) -> str:
-    """清理股票名称，移除非法字符"""
-    cleaned = re.sub(r'[^\w\u4e00-\u9fff\-_]', '', name)
-    return cleaned.strip() or "unknown_stock"
 
 
 class StorageBackend(ABC):
@@ -61,35 +54,25 @@ class JsonStorage(StorageBackend):
         初始化JSON存储
 
         Args:
-            base_dir: 基础目录路径，默认使用环境变量或当前目录
+            base_dir: 基础目录路径，默认使用配置文件中的 tradings_dir
         """
         if base_dir:
             self.base_dir = Path(base_dir)
         else:
-            import os
             from paper_trading.config import get_workspace_config
-
-            # 优先使用环境变量 STOCK_INTERMEDIATE_DIR
-            # 然后使用环境变量 STOCK_ANALYSIS_WORKSPACE + "intermediate"
-            # 最后使用默认配置
             config = get_workspace_config()
-
-            intermediate_dir = os.getenv('STOCK_INTERMEDIATE_DIR')
-            if intermediate_dir:
-                self.base_dir = Path(intermediate_dir)
-            else:
-                workspace_root = os.getenv('STOCK_ANALYSIS_WORKSPACE')
-                if workspace_root:
-                    self.base_dir = Path(workspace_root) / "intermediate"
-                else:
-                    self.base_dir = config['intermediate']
+            self.base_dir = config['tradings_dir']
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_account_dir(self, stock_name: str) -> Path:
-        """获取账户目录"""
-        clean_name = sanitize_stock_name(stock_name)
-        return self.base_dir / clean_name / "模拟买卖"
+        """
+        获取账户目录
+
+        直接使用原始股票名称，不再进行字符清理
+        目录结构: tradings_dir/stock_name
+        """
+        return self.base_dir / stock_name
 
     def _get_account_file(self, stock_name: str) -> Path:
         """获取账户文件路径
@@ -252,8 +235,8 @@ class JsonStorage(StorageBackend):
                 continue
 
             # 检查新格式或旧格式
-            account_file_new = stock_dir / "模拟买卖" / "account.json"
-            account_file_old = stock_dir / "模拟买卖" / "holdings.json"
+            account_file_new = stock_dir / "account.json"
+            account_file_old = stock_dir / "holdings.json"
 
             account_file = account_file_new if account_file_new.exists() else account_file_old
             if account_file.exists():

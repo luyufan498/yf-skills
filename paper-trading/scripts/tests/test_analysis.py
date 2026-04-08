@@ -160,6 +160,24 @@ class TestAnalysisManager:
         assert records[1].content == "第二次分析"
         assert records[0].timestamp.startswith("2026-04-08")
 
+    def test_read_analyses_count_zero(self, temp_dir):
+        """测试 count=0 返回空列表"""
+        temp_dir.save_analysis("测试股票", "内容")
+        records = temp_dir.read_analyses_count("测试股票", count=0)
+        assert len(records) == 0
+
+    def test_read_analyses_count_negative(self, temp_dir):
+        """测试 count 为负数时返回空列表"""
+        temp_dir.save_analysis("测试股票", "内容")
+        records = temp_dir.read_analyses_count("测试股票", count=-1)
+        assert len(records) == 0
+
+    def test_read_analyses_count_large(self, temp_dir):
+        """测试 count 超过可用报告数量"""
+        temp_dir.save_analysis("测试股票", "内容")
+        records = temp_dir.read_analyses_count("测试股票", count=100)
+        assert len(records) == 1
+
 
 def test_analysis_uses_stocks_analysis_directory():
     """测试分析管理器使用 workspace_root/stocks_analysis 目录"""

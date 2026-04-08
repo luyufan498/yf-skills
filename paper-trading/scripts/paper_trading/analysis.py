@@ -44,6 +44,24 @@ class AnalysisManager:
         stock_dir.mkdir(parents=True, exist_ok=True)
         return stock_dir
 
+    def _parse_timestamp_from_filename(self, filepath: Path) -> str:
+        """
+        从文件名中解析时间戳并转换为 ISO 格式
+
+        Args:
+            filepath: 文件路径
+
+        Returns:
+            ISO 格式的时间戳字符串，解析失败返回空字符串
+        """
+        time_match = re.search(r'(\d{4}-\d{2}-\d{2}-\d{4})', filepath.name)
+        timestamp_str = time_match.group(1) if time_match else ""
+        try:
+            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d-%H%M").isoformat()
+        except ValueError:
+            timestamp = ""
+        return timestamp
+
     def _generate_filename(self, stock_name: str, timestamp: datetime = None) -> str:
         """
         生成分析文件名
@@ -162,14 +180,7 @@ class AnalysisManager:
             return None
 
         content = filepath.read_text(encoding='utf-8')
-        # 从文件名中提取时间戳
-        time_match = re.search(r'(\d{4}-\d{2}-\d{2}-\d{4})', filepath.name)
-        timestamp_str = time_match.group(1) if time_match else ""
-        # 转换为 ISO 格式
-        try:
-            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d-%H%M").isoformat()
-        except ValueError:
-            timestamp = ""
+        timestamp = self._parse_timestamp_from_filename(filepath)
 
         return AnalysisRecord(
             stock_name=stock_name,
@@ -213,6 +224,10 @@ class AnalysisManager:
         Returns:
             AnalysisRecord 对象列表（按时间倒序）
         """
+        # 参数验证：count <= 0 时返回空列表
+        if count <= 0:
+            return []
+
         files = self.list_analyses(stock_name, limit=count)
         records = []
 
@@ -220,22 +235,20 @@ class AnalysisManager:
             if not filepath.exists():
                 continue
 
-            content = filepath.read_text(encoding='utf-8')
-            # 从文件名中提取时间戳
-            time_match = re.search(r'(\d{4}-\d{2}-\d{2}-\d{4})', filepath.name)
-            timestamp_str = time_match.group(1) if time_match else ""
-            # 转换为 ISO 格式
             try:
-                timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d-%H%M").isoformat()
-            except ValueError:
-                timestamp = ""
+                content = filepath.read_text(encoding='utf-8')
+                timestamp = self._parse_timestamp_from_filename(filepath)
 
-            records.append(AnalysisRecord(
-                stock_name=stock_name,
-                content=content,
-                timestamp=timestamp,
-                file_path=str(filepath)
-            ))
+                records.append(AnalysisRecord(
+                    stock_name=stock_name,
+                    content=content,
+                    timestamp=timestamp,
+                    file_path=str(filepath)
+                ))
+            except (IOError, PermissionError) as e:
+                # 跳过无法读取的文件
+                print(f"⚠️  无法读取文件 {filepath}: {e}")
+                continue
 
         return records
 

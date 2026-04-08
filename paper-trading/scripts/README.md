@@ -13,6 +13,7 @@
 - 🔍 **性能分析** - 收益率、胜率、盈亏比等指标
 - 📊 **市场数据查询** - 实时价格、K线数据、分时数据、股票代码搜索
 - 📰 **市场新闻** - 实时获取财联社、新浪财经、TradingView 市场新闻
+- ✅ **股票名称验证** - 自动验证股票名称合法性，支持A股、港股、美股
 - 🎯 **CLI工具** - 友好的命令行交互界面
 
 ## 安装
@@ -159,6 +160,18 @@ ptrade fetch-kline sh600000 --type 5min --count 48
 # 搜索股票代码
 ptrade search 腾讯 --limit 5
 ptrade search 苹果 --limit 5
+```
+
+### 股票名称验证
+
+```bash
+# 创建账号时自动验证（不提供 --code 时）
+ptrade init "赛力斯" --capital 100000  # 验证通过
+ptrade init "不存在的股票" --capital 100000  # 验证失败
+
+# 保存分析报告时验证
+ptrade analysis 赛力斯 --action save --content "# 分析"
+ptrade analysis 不存在的股票 --action save --content "# 分析"  # 验证失败
 ```
 
 ## 命令参考

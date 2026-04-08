@@ -3,13 +3,10 @@
 提供股票分析报告的保存、读取和查询功能
 """
 
-import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
-import json
-
 from paper_trading.config import get_workspace_config
 from paper_trading.models import AnalysisRecord
 from paper_trading.code_searcher import StockCodeSearcher
@@ -38,8 +35,9 @@ def validate_stock_name(stock_name: str) -> tuple[bool, Optional[str]]:
 
 class AnalysisManager:
     """分析报告管理器"""
+    LATEST_ANALYSIS_FILENAME = "最新分析.md"
 
-    def __init__(self, base_dir: str = None, validate_stock: bool = True):
+    def __init__(self, base_dir: Optional[str] = None, validate_stock: bool = True):
         """
         初始化分析管理器
 
@@ -88,7 +86,7 @@ class AnalysisManager:
             target_dir: 目标基础目录
             filepath: 实际文件路径
         """
-        symlink_name = "最新分析.md"
+        symlink_name = self.LATEST_ANALYSIS_FILENAME
         symlink_path = target_dir / symlink_name
 
         # 删除旧的软链接
@@ -167,14 +165,14 @@ class AnalysisManager:
             filepath = stock_dir / filename
         else:
             # 读取最新分析（通过软链接）
-            symlink_path = stock_dir / "最新分析.md"
+            symlink_path = stock_dir / self.LATEST_ANALYSIS_FILENAME
             if not symlink_path.exists():
                 return None
             # 解析软链接指向的实际文件
             try:
                 target = symlink_path.readlink()
                 filepath = symlink_path.parent / target
-            except Exception:
+            except (OSError, RuntimeError):
                 return None
 
         if not filepath.exists():

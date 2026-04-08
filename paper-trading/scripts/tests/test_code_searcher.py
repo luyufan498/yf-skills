@@ -21,7 +21,7 @@ def test_validate_stock_name_invalid_stock():
 
 def test_validate_stock_name_common_stocks():
     """Test validation of common A-share stocks"""
-    common_stocks = ["腾讯控股", "贵州茅台", "工商银行", "中国平安"]
+    common_stocks = ["贵州茅台", "工商银行", "中国平安", "招商银行"]
     for name in common_stocks:
         is_valid, code = validate_stock_name(name)
         assert is_valid is True, f"Stock {name} should be valid"
@@ -35,8 +35,8 @@ def test_validate_stock_name_empty_string():
     assert code is None
 
 
-def test_validate_stock_name_with_special_chars():
-    """Test validation with special characters (港股/美股 codes)"""
-    is_valid, code = validate_stock_name("腾讯控股")
-    # Should find the stock even if special chars in db
-    assert is_valid is True
+def test_validate_stock_name_whitespace_only():
+    """Test validation of whitespace-only string"""
+    is_valid, code = validate_stock_name("   ")
+    assert is_valid is False
+    assert code is None

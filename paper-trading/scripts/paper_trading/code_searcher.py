@@ -28,14 +28,11 @@ def validate_stock_name(stock_name: str) -> tuple[bool, Optional[str]]:
         return False, None
 
     searcher = StockCodeSearcher()
-    all_results = searcher.search(stock_name, limit=1)
+    results = searcher.search_cn_stocks(stock_name, limit=1)
 
-    # 检查 A-share 和 hot_funds 的结果
-    for category in ['A_share', 'hot_funds']:
-        if all_results[category]:
-            # 找到匹配的股票，返回 True 和股票代码
-            return True, all_results[category][0]['code']
-
+    if results:
+        # 找到匹配的股票，返回 True 和股票代码
+        return True, results[0]['code']
     return False, None
 
 

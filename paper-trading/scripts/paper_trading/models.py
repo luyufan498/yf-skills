@@ -241,3 +241,22 @@ class MarketNews(BaseModel):
     """市场新闻集合"""
     total: int = Field(..., description="总数量")
     items: List[NewsItem] = Field(default_factory=list, description="新闻列表")
+
+
+class AnalysisRecord(BaseModel):
+    """分析记录"""
+    stock_name: str = Field(..., min_length=1, description="股票名称")
+    stock_code: Optional[str] = Field(None, description="股票代码")
+    content: str = Field(..., description="分析内容（Markdown格式）")
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="创建时间")
+    file_path: Optional[str] = Field(None, description="文件路径")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "stock_name": "赛力斯",
+                "stock_code": "sh603527",
+                "content": "# 股票分析报告\\n\\n## 技术面分析\\n...",
+                "timestamp": "2026-04-08T22:30:00"
+            }
+        }

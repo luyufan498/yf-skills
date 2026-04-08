@@ -145,6 +145,21 @@ class TestAnalysisManager:
         record = temp_dir.read_analysis("不存在的股票")
         assert record is None
 
+    def test_read_analyses_count(self, temp_dir):
+        """测试读取多份分析报告"""
+        # 保存多次分析
+        temp_dir.save_analysis("测试股票", "第一次分析", timestamp=datetime(2026, 4, 8, 14, 0))
+        temp_dir.save_analysis("测试股票", "第二次分析", timestamp=datetime(2026, 4, 8, 15, 0))
+        temp_dir.save_analysis("测试股票", "第三次分析", timestamp=datetime(2026, 4, 8, 16, 0))
+
+        # 读取最近 2 份
+        records = temp_dir.read_analyses_count("测试股票", count=2)
+
+        assert len(records) == 2
+        assert records[0].content == "第三次分析"
+        assert records[1].content == "第二次分析"
+        assert records[0].timestamp.startswith("2026-04-08")
+
 
 def test_analysis_uses_stocks_analysis_directory():
     """测试分析管理器使用 workspace_root/stocks_analysis 目录"""

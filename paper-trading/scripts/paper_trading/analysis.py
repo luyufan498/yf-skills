@@ -202,6 +202,43 @@ class AnalysisManager:
 
         return files[:limit]
 
+    def read_analyses_count(self, stock_name: str, count: int = 1) -> List[AnalysisRecord]:
+        """
+        读取最近 N 份分析报告
+
+        Args:
+            stock_name: 股票名称
+            count: 要读取的份数（默认 1）
+
+        Returns:
+            AnalysisRecord 对象列表（按时间倒序）
+        """
+        files = self.list_analyses(stock_name, limit=count)
+        records = []
+
+        for filepath in files:
+            if not filepath.exists():
+                continue
+
+            content = filepath.read_text(encoding='utf-8')
+            # 从文件名中提取时间戳
+            time_match = re.search(r'(\d{4}-\d{2}-\d{2}-\d{4})', filepath.name)
+            timestamp_str = time_match.group(1) if time_match else ""
+            # 转换为 ISO 格式
+            try:
+                timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d-%H%M").isoformat()
+            except ValueError:
+                timestamp = ""
+
+            records.append(AnalysisRecord(
+                stock_name=stock_name,
+                content=content,
+                timestamp=timestamp,
+                file_path=str(filepath)
+            ))
+
+        return records
+
     def list_stocks(self) -> List[str]:
         """
         列出所有已分析的股票

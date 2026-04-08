@@ -244,19 +244,20 @@ class MarketNews(BaseModel):
 
 
 class AnalysisRecord(BaseModel):
-    """分析记录"""
+    """分析记录：用于存储股票分析报告的数据模型"""
     stock_name: str = Field(..., min_length=1, description="股票名称")
     stock_code: Optional[str] = Field(None, description="股票代码")
-    content: str = Field(..., description="分析内容（Markdown格式）")
+    content: str = Field(..., description="分析内容（Markdown格式）", max_length=1000000)
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="创建时间")
-    file_path: Optional[str] = Field(None, description="文件路径")
+    file_path: Optional[str] = Field(None, min_length=1, description="文件路径")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "stock_name": "赛力斯",
                 "stock_code": "sh603527",
-                "content": "# 股票分析报告\\n\\n## 技术面分析\\n...",
+                "content": "# 股票分析报告\n\n## 技术面分析...",
                 "timestamp": "2026-04-08T22:30:00"
             }
         }
+        use_enum_values = True

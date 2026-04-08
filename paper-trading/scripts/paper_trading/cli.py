@@ -592,7 +592,8 @@ def analysis(
     action: str = typer.Option("save", "--action", "-a", help="操作: save/read/list"),
     content: Optional[str] = typer.Option(None, "--content", "-c", help="分析内容"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="从文件读取内容"),
-    limit: int = typer.Option(10, "--limit", "-l", help="最多显示的记录数")
+    limit: int = typer.Option(10, "--limit", "-l", help="最多显示的记录数"),
+    count: int = typer.Option(1, "--count", "-n", help="读取的报告数量（仅 read 操作，默认 1）")
 ):
     """
     分析报告管理
@@ -601,6 +602,7 @@ def analysis(
       ptrade analysis 赛力斯 --action save --content "# 分析内容"
       ptrade analysis 赛力斯 --action save --file analysis.md
       ptrade analysis 赛力斯 --action read
+      ptrade analysis 赛力斯 --action read --count 3
       ptrade analysis --action list
     """
     manager = AnalysisManager()
@@ -626,15 +628,31 @@ def analysis(
         typer.echo(f"   路径: {record.file_path}")
 
     elif action == "read":
-        # 读取分析报告
-        record = manager.read_analysis(stock_name)
+        # 读取分析报告（支持读取最近 N 份）
+        records = manager.read_analyses_count(stock_name, count=count)
 
-        if not record:
+        if not records:
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的分析记录")
             raise typer.Exit(1)
 
-        typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）\n")
-        typer.echo(record.content)
+        # 如果只有一份报告，保持简洁显示
+        if len(records) == 1:
+            record = records[0]
+            typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）\n")
+            typer.echo(record.content)
+        else:
+            # 多份报告时，显示分隔符和文件名
+            total = len(records)
+            for idx, record in enumerate(records, 1):
+                file_name = Path(record.file_path).name
+                typer.echo(f"{'='*60}")
+                typer.echo(f"报告 {idx}/{total}")
+                typer.echo(f"{'='*60}")
+                typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）")
+                typer.echo(f"📁 文件: {file_name}\n")
+                typer.echo(record.content)
+                if idx < total:
+                    typer.echo()  # 报告之间添加空行
 
     elif action == "list":
         # 列出分析记录

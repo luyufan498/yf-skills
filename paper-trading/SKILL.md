@@ -85,6 +85,24 @@ ptrade analyze
 ptrade export --format json
 ```
 
+### 分析报告管理
+
+```bash
+# 保存分析报告
+ptrade analysis 赛力斯 --action save --file report.md
+
+# 查看最新分析
+ptrade analysis 赛力斯 --action read
+
+# 列出分析历史
+ptrade analysis 赛力斯 --action list
+
+# 查看所有已分析的股票
+ptrade analysis all --action list
+```
+
+详细文档：[分析报告管理](docs/analysis-manager.md)
+
 ## 使用指南
 
 对于详细的功能说明、参数详解和最佳实践，请查阅 [references/](references/) 目录下的参考文档。

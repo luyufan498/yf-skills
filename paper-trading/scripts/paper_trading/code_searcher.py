@@ -3,8 +3,40 @@
 支持搜索A股、港股、美股的股票代码
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 import requests
+
+
+class StockValidationError(Exception):
+    """股票名称验证失败异常"""
+    pass
+
+
+def validate_stock_name(stock_name: str) -> tuple[bool, Optional[str]]:
+    """
+    验证股票名称是否合法
+
+    使用 StockCodeSearcher 查询股票名称是否存在
+
+    Args:
+        stock_name: 股票名称
+
+    Returns:
+        (是否合法, 股票代码) 元组，如果不合法则代码为 None
+    """
+    if not stock_name or not stock_name.strip():
+        return False, None
+
+    searcher = StockCodeSearcher()
+    all_results = searcher.search(stock_name, limit=1)
+
+    # 检查 A-share 和 hot_funds 的结果
+    for category in ['A_share', 'hot_funds']:
+        if all_results[category]:
+            # 找到匹配的股票，返回 True 和股票代码
+            return True, all_results[category][0]['code']
+
+    return False, None
 
 
 class StockCodeSearcher:

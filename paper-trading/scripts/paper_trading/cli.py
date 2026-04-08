@@ -41,7 +41,7 @@ def version():
 def init(
     stock_name: str = typer.Argument(..., help="股票名称"),
     capital: float = typer.Option(..., "--capital", "-c", help="初始资金"),
-    code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选）"),
+    code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选，如提供则跳过股票名称验证）"),
     force: bool = typer.Option(False, "--force", "-f", help="强制重新初始化")
 ):
     """初始化资金池"""
@@ -59,7 +59,13 @@ def init(
         typer.echo(f"   股票代码：{account.stock_code or '未知'}")
 
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
+        error_msg = str(e)
+        if "未能通过验证" in error_msg:
+            typer.echo(f"❌ 股票名称验证失败", err=True)
+            typer.echo(f"   {error_msg}", err=True)
+            typer.echo(f"   💡 提示：使用 --code 参数可跳过验证，或使用正确的股票名称", err=True)
+        else:
+            typer.echo(f"❌ {error_msg}", err=True)
         raise typer.Exit(1)
 
 

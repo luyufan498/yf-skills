@@ -42,21 +42,25 @@ class AnalysisManager:
         初始化分析管理器
 
         Args:
-            base_dir: 基础目录路径，默认使用配置文件
+            base_dir: 基础目录路径，默认使用配置文件中的 stocks_analysis_dir（workspace_root/stocks_analysis）
             validate_stock: 是否验证股票名称合法性（默认 True）
         """
         if base_dir:
             self.base_dir = Path(base_dir)
         else:
             config = get_workspace_config()
-            # 使用 intermediate 目录下的 stocks_analysis 子目录
-            self.base_dir = config['intermediate'] / "stocks_analysis"
+            self.base_dir = config['stocks_analysis_dir']
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.validate_stock = validate_stock
 
     def _get_stock_dir(self, stock_name: str) -> Path:
-        """获取股票分析目录（使用原始股票名称作为目录名）"""
+        """
+        获取股票分析目录
+
+        直接使用原始股票名称，不做清理
+        目录结构: stocks_analysis_dir/stock_name
+        """
         stock_dir = self.base_dir / stock_name
         stock_dir.mkdir(parents=True, exist_ok=True)
         return stock_dir

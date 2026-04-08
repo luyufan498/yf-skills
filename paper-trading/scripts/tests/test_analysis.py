@@ -1,6 +1,8 @@
 """分析管理器单元测试"""
 
 import pytest
+import tempfile
+import os
 from pathlib import Path
 from datetime import datetime
 from paper_trading.analysis import AnalysisManager, validate_stock_name
@@ -142,3 +144,51 @@ class TestAnalysisManager:
         """测试读取不存在的分析"""
         record = temp_dir.read_analysis("不存在的股票")
         assert record is None
+
+
+def test_analysis_uses_stocks_analysis_directory():
+    """测试分析管理器使用 workspace_root/stocks_analysis 目录"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.config import get_workspace_config
+        config = get_workspace_config()
+
+        # 验证 stocks_analysis_dir 配置
+        assert config['stocks_analysis_dir'].name == 'stocks_analysis'
+        assert config['stocks_analysis_dir'].parent == Path(tmpdir)  # 直接在 workspace_root 下
+        # 验证不包含 tradings 目录
+        assert 'tradings' not in str(config['stocks_analysis_dir'])
+
+        # 创建分析管理器
+        analysis_manager = AnalysisManager(validate_stock=False)
+
+        # 验证基础目录
+        assert analysis_manager.base_dir == config['stocks_analysis_dir']
+
+        # 保存分析
+        record = analysis_manager.save_analysis(
+            stock_name="比亚迪",
+            content="# 测试分析\n\n技术分析：..."
+        )
+
+        # 验证文件保存在 stocks_analysis 目录下（直接在 workspace_root 下）
+        assert 'stocks_analysis' in str(record.file_path)
+        assert '比亚迪' in str(record.file_path)
+        # 验证不使用 intermediate 目录
+        assert 'intermediate' not in str(record.file_path)
+        # 验证不使用 tradings 目录
+        assert 'tradings' not in str(record.file_path)
+
+
+def test_analysis_directory_structure():
+    """测试分析目录结构为 workspace_root/stocks_analysis/stock_name"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        analysis_manager = AnalysisManager(validate_stock=False)
+
+        # 测试目录路径
+        stock_dir = analysis_manager._get_stock_dir('宁德时代')
+        expected = Path(tmpdir) / 'stocks_analysis' / '宁德时代'
+        assert stock_dir == expected

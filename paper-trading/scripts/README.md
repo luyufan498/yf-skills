@@ -293,15 +293,28 @@ ptrade delete STOCK_NAME [--force]
 
 ## 数据存储
 
-数据默认存储在当前工作目录的 `intermediate/股票名称/模拟买卖/` 下：
+所有模拟交易数据存储在以下目录：
 
 ```
-intermediate/
-└── 赛力斯/
-    └── 模拟买卖/
-        ├── account.json      # 账户信息（持仓数据）
-        └── operations.json   # 操作记录
+<workspace_root>/
+├── tradings/                  # 交易数据目录
+│   ├── 赛力斯/                    # 股票名称目录
+│   │   ├── account.json          # 账户信息
+│   │   └── operations.json       # 操作记录
+│   └── 比亚迪/
+│       ├── account.json
+│       └── operations.json
+└── stocks_analysis/           # 分析报告目录（直接在工作空间根目录）
+    ├── 赛力斯/
+    │   ├── 赛力斯-2026-04-08-1430.md
+    │   └── 最新分析.md -> 赛力斯-2026-04-08-1430.md
+    └── 比亚迪/
+        ├── 比亚迪-2026-04-08-1500.md
+        └── 最新分析.md -> 比亚迪-2026-04-08-1500.md
 ```
+
+**环境变量：**
+- `STOCK_ANALYSIS_WORKSPACE`: 工作空间根目录（可选，默认为脚本所在目录）
 
 ## 支持的市场
 

@@ -47,25 +47,30 @@ class PaperTrader:
         Args:
             stock_name: 股票名称
             capital: 初始资金
-            stock_code: 股票代码（可选）
+            stock_code: 股票代码（可选，如未提供会自动查询并验证股票名称）
             force: 是否强制重新初始化
 
         Returns:
             Account 对象
 
         Raises:
-            ValueError: 如果账户已存在且未使用force参数
+            ValueError: 如果账户已存在且未使用force参数，或股票名称验证失败
         """
-        from paper_trading.storage import sanitize_stock_name
+        from paper_trading.code_searcher import validate_stock_name
 
-        clean_name = sanitize_stock_name(stock_name)
+        # Validate stock name if code not provided
+        if stock_code is None:
+            is_valid, auto_code = validate_stock_name(stock_name)
+            if not is_valid:
+                raise ValueError(f"❌ 股票名称 '{stock_name}' 未能通过验证，请确保使用正确的股票名称")
+            stock_code = auto_code
 
         existing = self.storage.load_account(stock_name)
         if existing:
             if force:
                 self.storage.delete_account(stock_name)
             else:
-                raise ValueError(f"账户 '{clean_name}' 已存在，现有资金：¥{existing.capital_pool.total:,.2f}")
+                raise ValueError(f"账户 '{stock_name}' 已存在，现有资金：¥{existing.capital_pool.total:,.2f}")
 
         if stock_code is None:
             from paper_trading.code_searcher import StockCodeSearcher
@@ -77,7 +82,7 @@ class PaperTrader:
                 stock_code = None
 
         account = Account(
-            stock_name=clean_name,
+            stock_name=stock_name,
             stock_code=stock_code,
             capital_pool=CapitalPool(total=capital, available=capital, used=0.0)
         )

@@ -9,28 +9,7 @@ from pathlib import Path
 from typing import Optional, List
 from paper_trading.config import get_workspace_config
 from paper_trading.models import AnalysisRecord
-from paper_trading.code_searcher import StockCodeSearcher
-
-
-def validate_stock_name(stock_name: str) -> tuple[bool, Optional[str]]:
-    """
-    验证股票名称是否合法
-
-    使用 paper-trading 的 StockCodeSearcher 验证股票名称
-
-    Args:
-        stock_name: 股票名称
-
-    Returns:
-        (是否合法, 股票代码) 元组，如果不合法则代码为 None
-    """
-    searcher = StockCodeSearcher()
-    results = searcher.search_cn_stocks(stock_name, limit=1)
-
-    if results:
-        # 找到匹配的股票，返回 True 和股票代码
-        return True, results[0]['code']
-    return False, None
+from paper_trading.code_searcher import StockCodeSearcher, validate_stock_name
 
 
 class AnalysisManager:

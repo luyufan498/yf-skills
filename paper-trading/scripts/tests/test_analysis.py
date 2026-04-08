@@ -192,3 +192,16 @@ def test_analysis_directory_structure():
         stock_dir = analysis_manager._get_stock_dir('宁德时代')
         expected = Path(tmpdir) / 'stocks_analysis' / '宁德时代'
         assert stock_dir == expected
+
+
+def test_analysis_imports_validation_from_code_searcher():
+    """Test that AnalysisManager uses validation from code_searcher"""
+    import paper_trading.analysis as analysis_module
+    import paper_trading.code_searcher as code_searcher_module
+
+    # Verify validate_stock_name is imported from code_searcher
+    assert hasattr(analysis_module, 'validate_stock_name')
+    # Check it's the same function (or at least behaves the same)
+    is_valid_analysis, code_analysis = analysis_module.validate_stock_name("赛力斯")
+    is_valid_code, code_code = code_searcher_module.validate_stock_name("赛力斯")
+    assert is_valid_analysis == is_valid_code

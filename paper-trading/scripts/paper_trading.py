@@ -15,10 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import requests
 
-# 基础目录配置（与 analysis_manager.py 保持一致）
-SKILL_ROOT = Path(__file__).parent.parent
-WORKSPACE_ROOT = Path(os.getenv('STOCK_ANALYSIS_WORKSPACE', SKILL_ROOT))
-INTERMEDIATE_DIR = Path(os.getenv('STOCK_INTERMEDIATE_DIR', WORKSPACE_ROOT / "intermediate"))
+# 导入配置管理
+from paper_trading.config import get_trading_account_dir
 
 
 class StockPriceFetcher:
@@ -202,7 +200,6 @@ class StockCodeSearcher:
         except Exception as e:
             print(f"Error searching stocks: {e}")
             return []
-INTERMEDIATE_DIR = Path(os.getenv('STOCK_INTERMEDIATE_DIR', WORKSPACE_ROOT / "intermediate"))
 
 
 def sanitize_stock_name(name: str) -> str:
@@ -214,7 +211,7 @@ def sanitize_stock_name(name: str) -> str:
 def get_trading_dir(stock_name: str) -> Path:
     """获取模拟买卖目录"""
     clean_name = sanitize_stock_name(stock_name)
-    trading_dir = INTERMEDIATE_DIR / clean_name / "模拟买卖"
+    trading_dir = get_trading_account_dir(clean_name)
     trading_dir.mkdir(parents=True, exist_ok=True)
     return trading_dir
 

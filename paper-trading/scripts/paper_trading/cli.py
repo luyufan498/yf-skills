@@ -5,6 +5,7 @@
 
 import typer
 from typing import Optional
+from pathlib import Path
 import importlib.metadata
 
 from paper_trading.trading import PaperTrader
@@ -14,6 +15,7 @@ from paper_trading.export import DataExporter
 from paper_trading.price_fetcher import StockPriceFetcher
 from paper_trading.kline_fetcher import KLineDataFetcher
 from paper_trading.code_searcher import StockCodeSearcher
+from paper_trading.analysis import AnalysisManager
 
 # 从已安装包读取版本号
 try:
@@ -573,6 +575,90 @@ def fetch_news(
         raise typer.Exit(1)
     except Exception as e:
         print(f"❌ 获取新闻失败: {e}")
+        raise typer.Exit(1)
+
+
+# --- 分析报告命令 ---
+
+@app.command()
+def analysis(
+    stock_name: str = typer.Argument(..., help="股票名称"),
+    action: str = typer.Option("save", "--action", "-a", help="操作: save/read/list"),
+    content: Optional[str] = typer.Option(None, "--content", "-c", help="分析内容"),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="从文件读取内容"),
+    limit: int = typer.Option(10, "--limit", "-l", help="最多显示的记录数")
+):
+    """
+    分析报告管理
+
+    示例:
+      ptrade analysis 赛力斯 --action save --content "# 分析内容"
+      ptrade analysis 赛力斯 --action save --file analysis.md
+      ptrade analysis 赛力斯 --action read
+      ptrade analysis --action list
+    """
+    manager = AnalysisManager()
+
+    if action == "save":
+        # 保存分析报告
+        if content:
+            analysis_content = content
+        elif file:
+            try:
+                analysis_content = Path(file).read_text(encoding='utf-8')
+            except Exception as e:
+                typer.echo(f"❌ 读取文件失败: {e}", err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo("❌ 错误：必须提供分析内容（--content 或 --file）", err=True)
+            raise typer.Exit(1)
+
+        record = manager.save_analysis(stock_name, analysis_content)
+        typer.echo(f"\n✅ 分析报告保存成功")
+        typer.echo(f"   股票: {record.stock_name}")
+        typer.echo(f"   时间: {record.timestamp}")
+        typer.echo(f"   路径: {record.file_path}")
+
+    elif action == "read":
+        # 读取分析报告
+        record = manager.read_analysis(stock_name)
+
+        if not record:
+            typer.echo(f"❌ 未找到股票 '{stock_name}' 的分析记录")
+            raise typer.Exit(1)
+
+        typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）\n")
+        typer.echo(record.content)
+
+    elif action == "list":
+        # 列出分析记录
+        if stock_name == "all":
+            # 列出所有股票
+            stocks = manager.list_stocks()
+
+            if not stocks:
+                typer.echo("📭 暂无分析记录")
+                return
+
+            typer.echo(f"📊 已分析的股票（共 {len(stocks)} 只）:")
+            for stock in stocks:
+                files = manager.list_analyses(stock, limit=999)
+                typer.echo(f"  • {stock} - {len(files)} 次分析")
+        else:
+            # 列出某股票的分析记录
+            files = manager.list_analyses(stock_name, limit)
+
+            if not files:
+                typer.echo(f"📭 未找到 '{stock_name}' 的分析记录")
+                return
+
+            typer.echo(f"📈 {stock_name} 分析历史（共 {len(files)} 条）:")
+            for f in files:
+                time_match = f.name.replace(".md", "")[-16:]
+                typer.echo(f"  • {f.resolve()}")
+
+    else:
+        typer.echo(f"❌ 不支持的操作: {action}", err=True)
         raise typer.Exit(1)
 
 

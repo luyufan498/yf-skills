@@ -7,6 +7,7 @@ import typer
 from typing import Optional
 from pathlib import Path
 import importlib.metadata
+import re
 
 from paper_trading.trading import PaperTrader
 from paper_trading.portfolio import PortfolioManager
@@ -16,6 +17,8 @@ from paper_trading.price_fetcher import StockPriceFetcher
 from paper_trading.kline_fetcher import KLineDataFetcher
 from paper_trading.code_searcher import StockCodeSearcher
 from paper_trading.analysis import AnalysisManager
+from paper_trading.temp_data_manager import TempDataManager
+from paper_trading.config import get_workspace_config
 
 # 从已安装包读取版本号
 try:
@@ -584,6 +587,144 @@ def fetch_news(
         raise typer.Exit(1)
 
 
+# --- 临时数据命令 ---
+
+@app.command("temp-data")
+def temp_data_command(
+    stock_name: str = typer.Argument(..., help="股票名称"),
+    action: str = typer.Option("save", "--action", "-a", help="操作: save/read/list"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="数据类别"),
+    content: Optional[str] = typer.Option(None, "--content", help="数据内容"),
+    file: Optional[str] = typer.Option(None, "--file", "-f", help="从文件读取内容"),
+    stdin_flag: bool = typer.Option(False, "--stdin", help="从标准输入读取内容"),
+    limit: int = typer.Option(30, "--limit", "-l", help="最多显示的记录数")
+):
+    """
+    临时数据管理
+
+    支持的数据类别（示例）:
+      - deep-search: 深度搜索结果
+      - history-continuity: 历史连续性分析
+      - gf-summary: 广发证券摘要
+
+    示例:
+      ptrade temp-data 赛力斯 --action save --category deep-search --content "内容"
+      ptrade temp-data 赛力斯 --action save --category deep-search --file data.md --stdin
+      ptrade temp-data 赛力斯 --action read --category deep-search
+      ptrade temp-data --action list
+    """
+    manager = TempDataManager(validate_stock=False)
+
+    if action == "save":
+        # 验证类别参数
+        if not category:
+            typer.echo("❌ 错误：必须指定数据类别（--category）", err=True)
+            raise typer.Exit(1)
+
+        # 获取内容
+        temp_content = None
+        if content:
+            temp_content = content
+        elif file:
+            try:
+                temp_content = Path(file).read_text(encoding='utf-8')
+            except Exception as e:
+                typer.echo(f"❌ 读取文件失败: {e}", err=True)
+                raise typer.Exit(1)
+        elif stdin_flag:
+            temp_content = typer.get_text_stream("stdin").read()
+        else:
+            typer.echo("❌ 错误：必须提供数据内容（--content, --file 或 --stdin）", err=True)
+            raise typer.Exit(1)
+
+        try:
+            record = manager.save_temp_data(
+                stock_name=stock_name,
+                category=category,
+                content=temp_content
+            )
+            typer.echo(f"\n✅ 临时数据保存成功")
+            typer.echo(f"   股票: {record.stock_name}")
+            typer.echo(f"   类别: {record.category}")
+            typer.echo(f"   时间: {record.timestamp}")
+            typer.echo(f"   路径: {record.file_path}")
+        except ValueError as e:
+            typer.echo(f"❌ {e}", err=True)
+            raise typer.Exit(1)
+
+    elif action == "read":
+        # 验证类别参数
+        if not category:
+            typer.echo("❌ 错误：必须指定数据类别（--category）", err=True)
+            raise typer.Exit(1)
+
+        record = manager.read_temp_data(stock_name=stock_name, category=category)
+
+        if not record:
+            typer.echo(f"❌ 未找到股票 '{stock_name}' 类别 '{category}' 的临时数据", err=True)
+            raise typer.Exit(1)
+
+        typer.echo(f"📄 {record.stock_name} - {record.category}（{record.timestamp[:10]}）\n")
+        typer.echo(record.content)
+
+    elif action == "list":
+        if stock_name == "all":
+            # 列出所有股票的所有类别
+            config = get_workspace_config()
+            temp_data_dir = config['temp_data_dir']
+
+            if not temp_data_dir.exists():
+                typer.echo("📭 暂无临时数据")
+                return
+
+            typer.echo(f"📊 所有临时数据（根目录: {temp_data_dir}）:\n")
+
+            for stock_dir in sorted(temp_data_dir.iterdir()):
+                if not stock_dir.is_dir():
+                    continue
+
+                stock_name = stock_dir.name
+                categories = manager.list_categories(stock_name)
+
+                if categories:
+                    typer.echo(f"  📈 {stock_name}:")
+                    for cat in categories:
+                        files = manager.list_temp_data(stock_name, cat, limit=999)
+                        typer.echo(f"    • {cat}: {len(files)} 条数据")
+        else:
+            # 列出某股票的所有类别或某类别下的数据
+            if category:
+                # 列出某类别下的数据
+                files = manager.list_temp_data(stock_name, category, limit)
+
+                if not files:
+                    typer.echo(f"📭 未找到 '{stock_name}' 类别 '{category}' 的临时数据")
+                    return
+
+                typer.echo(f"📊 {stock_name} - {category}（共 {len(files)} 条）:")
+                for f in files:
+                    # 从文件名解析时间
+                    time_match = re.search(r'(\d{4}-\d{2}-\d{2}-\d{6})', f.name)
+                    time_str = time_match.group(1) if time_match else f.name
+                    typer.echo(f"  • {f.resolve()} ({time_str})")
+            else:
+                # 列出某股票的所有类别
+                categories = manager.list_categories(stock_name)
+
+                if not categories:
+                    typer.echo(f"📭 未找到 '{stock_name}' 的临时数据")
+                    return
+
+                typer.echo(f"📊 {stock_name} 的数据类别:")
+                for cat in categories:
+                    files = manager.list_temp_data(stock_name, cat, limit=999)
+                    typer.echo(f"  • {cat}: {len(files)} 条数据")
+
+    else:
+        typer.echo(f"❌ 不支持的操作: {action}", err=True)
+        raise typer.Exit(1)
+
+
 # --- 分析报告命令 ---
 
 @app.command()
@@ -592,7 +733,7 @@ def analysis(
     action: str = typer.Option("save", "--action", "-a", help="操作: save/read/list"),
     content: Optional[str] = typer.Option(None, "--content", "-c", help="分析内容"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="从文件读取内容"),
-    limit: int = typer.Option(10, "--limit", "-l", help="最多显示的记录数"),
+    limit: int = typer.Option(15, "--limit", "-l", help="最多显示的记录数"),
     count: int = typer.Option(1, "--count", "-n", help="读取的报告数量（仅 read 操作，默认 1）")
 ):
     """

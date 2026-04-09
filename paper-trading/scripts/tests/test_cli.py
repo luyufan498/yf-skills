@@ -74,3 +74,84 @@ def test_cli_analysis_read_count_exceeds_available():
         assert "第二份" in result.stdout
         # 验证只显示了两份报告
         assert "报告 2/2" in result.stdout
+
+def test_temp_data_save_command():
+    """测试 temp-data save 命令"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.temp_data_manager import TempDataManager
+        manager = TempDataManager(validate_stock=False)
+
+        # 测试保存
+        result = runner.invoke(
+            app,
+            ["temp-data", "测试股票", "--action", "save", "--category", "deep-search", "--content", "这是测试内容"]
+        )
+
+        assert result.exit_code == 0
+        assert "临时数据保存成功" in result.stdout
+
+def test_temp_data_read_command():
+    """测试 temp-data read 命令"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.temp_data_manager import TempDataManager
+        manager = TempDataManager(validate_stock=False)
+
+        # 先保存
+        manager.save_temp_data("测试股票", "deep-search", "测试内容")
+
+        # 测试读取
+        result = runner.invoke(
+            app,
+            ["temp-data", "测试股票", "--action", "read", "--category", "deep-search"]
+        )
+
+        assert result.exit_code == 0
+        assert "测试内容" in result.stdout
+
+def test_temp_data_stdin():
+    """测试 temp-data stdin 读取"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.temp_data_manager import TempDataManager
+        _ = TempDataManager(validate_stock=False)
+
+        # 测试 stdin 读取
+        result = runner.invoke(
+            app,
+            ["temp-data", "测试股票", "--action", "save", "--category", "deep-search", "--stdin"],
+            input="从标准输入的数据"
+        )
+
+        assert result.exit_code == 0
+        assert "临时数据保存成功" in result.stdout
+
+def test_temp_data_list_command():
+    """测试 temp-data list 命令"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.temp_data_manager import TempDataManager
+        manager = TempDataManager(validate_stock=False)
+
+        # 保存多条数据
+        manager.save_temp_data("股票A", "deep-search", "内容A")
+        manager.save_temp_data("股票A", "history-continuity", "内容B")
+
+        # 测试列出所有类别
+        result = runner.invoke(
+            app,
+            ["temp-data", "股票A", "--action", "list"]
+        )
+
+        assert result.exit_code == 0
+        assert "deep-search" in result.stdout
+        assert "history-continuity" in result.stdout

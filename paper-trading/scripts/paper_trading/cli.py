@@ -609,7 +609,7 @@ def temp_data_command(
 
     示例:
       ptrade temp-data 赛力斯 --action save --category deep-search --content "内容"
-      ptrade temp-data 赛力斯 --action save --category deep-search --file data.md --stdin
+      ptrade temp-data 赛力斯 --action save --category deep-search --stdin < input.md
       ptrade temp-data 赛力斯 --action read --category deep-search
       ptrade temp-data --action list
     """

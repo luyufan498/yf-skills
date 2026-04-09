@@ -102,7 +102,6 @@ def test_intraday_data_invalid():
 def test_temp_data_record_model():
     """测试 TempDataRecord 模型"""
     from paper_trading.models import TempDataRecord
-    from datetime import datetime
 
     record = TempDataRecord(
         stock_name="测试股票",

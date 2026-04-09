@@ -14,7 +14,7 @@
 - **市场整体新闻**: 市场热点、资金流向、情绪指标
 - **政策信号**: 宏观政策、监管动向、资金面变化
 - **行业联动**: 相关行业动态、板块轮动、概念炒作
-- **获取方式**: 直接调用本地脚本 `<skill绝对路径>/scripts/fetch_market_news.py` 获取实时市场新闻
+- **获取方式**: 使用 ptrade CLI 工具获取实时市场新闻：`ptrade fetch-news --source all --limit 30`
 
 ### 2️⃣ 公司基本面
 - **财务数据**: 营收、净利、毛利率、ROE、现金流
@@ -93,7 +93,7 @@
 - **市场热点**: [当前市场主要热点和资金流向]
 - **政策信号**: [宏观政策、监管动态、资金面变化]
 - **行业联动**: [相关行业动态、板块轮动趋势]
-- **获取方式**: [<skill绝对路径>/scripts/fetch_market_news.py 实时市场新闻]
+- **获取方式**: [ptrade fetch-news --source all --limit 30]
 
 ### 📅 实时动态（最近 1-2 周）
 - [按时间排序，最近在前]
@@ -137,35 +137,48 @@
    - 特点: 开源元搜索引擎，本地部署，免费使用，可聚合多个来源
    - 使用方法: 参考该 Skill 的 README.md 和脚本说明
 
-2. **brave-search（备用方案）**
-   - 工具: `web_search` (Claude Code 内置)
-   - 搜索引擎: Brave Search API（provider: brave）
-   - 特点: 高质量搜索结果，反爬虫能力强，API 稳定，付费服务
-   - 已配置 API Key: ✅
+2. **mcp-web-search（备用方案）** 🆕
+   - 工具: `mcp__web-search-prime__web_search_prime` (MCP 插件)
+   - 特点: Web 搜索 Prime 插件，返回页面标题、URL、摘要、网站名称和图标等详细信息
+   - 优势: 高质量搜索结果，支持时间过滤、域名过滤、位置过滤等功能
    - 用途: 仅在 searxng 遇到验证码或访问限制时使用
 
-3. **multi-search-engine（最后备用）**
+3. **brave-search-skills（通用搜索，备选）** 🆕
+   - **通用搜索**: `brave-search-skills:search` / `brave-search-skills:web-search`
+     - 特点: 返回排名结果、摘要、URL、缩略图
+     - 支持: 新鲜度过滤、SafeSearch、域名限制
+     - 用途: 通用网页搜索、信息查询
+   - **新闻搜索**: `brave-search-skills:news-search` 📰
+     - 特点: 专门用于搜索新闻文章
+     - 返回: 标题、URL、描述、发布时间、缩略图
+     - 支持: 新鲜度过滤、日期范围限制
+     - 用途: **特别适合搜索市场新闻、公司新闻、行业动态**等时效性强的信息
+     - 使用: `Skill skill: Brave-search-skills:news-search -q "搜索词"`
+   - **其他能力**: `images-search`、`videos-search`、`llm-context`
+   - 使用方法: 参考 Brave Search Skills 的文档说明
+
+4. **multi-search-engine（最后备用）**
    - 类型: 可选的搜索 skill
    - 特点: 支持多搜索引擎并行搜索，可绕过部分限制
    - 使用方法: 参考该 Skill 的 README.md 使用说明
 
 **工具选择策略：**
 - **优先使用**: `searxng-search-skill` - 本地部署，免费使用，可控性强
-- **切换条件**: 如遇到验证码、访问受限等问题无法获取搜索结果时，切换到 `brave-search`
-- **最后备用**: 如 brave-search 仍无法使用，尝试 `multi-search-engine`
+- **切换条件**: 如遇到验证码、访问受限等问题无法获取搜索结果时，切换到 `mcp-web-search`
+- **最后备用**: 如 mcp-web-search 仍无法使用，尝试 `multi-search-engine`
 - **切换说明**: 工具切换不影响本指南定义的搜索策略和迭代链条，仅替换底层搜索引擎
 
-**说明**: 推荐优先使用 searxng-search-skill（本地部署，免费），仅在遇到验证码或访问限制时切换到 brave-search（付费 API）。multi-search-engine 作为最后的备用方案。本指南重点是搜索策略、迭代链条和覆盖维度的原则性说明。具体工具调用、参数配置等细节信息，请参考所选工具的官方文档。
+**说明**: 推荐优先使用 searxng-search-skill（本地部署，免费），仅在遇到验证码或访问限制时切换到 mcp-web-search（MCP 插件）。multi-search-engine 作为最后的备用方案。本指南重点是搜索策略、迭代链条和覆盖维度的原则性说明。具体工具调用、参数配置等细节信息，请参考所选工具的官方文档。
 
 ### 执行步骤
 
 **步骤一：初始化搜索环境**
-- 选择搜索工具：优先使用 searxng-search-skill（本地部署，免费），遇到验证码或访问限制时切换到 brave-search（已配置 API Key）
+- 选择搜索工具：优先使用 searxng-search-skill（本地部署，免费），遇到验证码或访问限制时切换到 mcp-web-search（MCP 插件）
 - 参考 searxng-search-skill 的文档完成环境配置和工具初始化
 - 确保搜索服务可用后开始执行
 
 **步骤二：获取市场整体新闻 🆕**
-- 执行命令：`python3 <skill绝对路径>/scripts/fetch_market_news.py -n 30 --source all`
+- 执行命令：`ptrade fetch-news --source all --limit 30`
 - 重点关注：市场热点、资金流向、政策信号、行业联动
 - 分析市场环境是否对目标股票有潜在影响
 - 提取与目标股票相关的市场线索（如板块轮动、概念炒作等）
@@ -202,7 +215,7 @@
 ## ✅ 质量检查要点
 
 - [ ] 五大维度均有信息覆盖（含市场环境）
-- [ ] 市场环境信息已获取分析（调用本地脚本 fetch_market_news.py）
+- [ ] 市场环境信息已获取分析（使用 ptrade fetch-news 命令）
 - [ ] 实时信息优先（最近 1-2 周）
 - [ ] 关键数据有具体数值（营业额、销量等）
 - [ ] 重大事件有时间、背景、影响
@@ -217,17 +230,16 @@
 
 深度搜索完成后，请参考下列命令将分析报告保存。
 
-💾 路径说明：脚本内置环境变量处理机制，自动确定保存路径，请勿自行指定或手动写入文件。
+💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能，自动确定保存路径
 📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
 
 ### 保存命令
 
-**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 analysis_manager.py 脚本保存数据**
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据**
 
 ```bash
-python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>" \
-  --type deep-search \
-  --stdin << 'EOF'
+# 1. 先将深度搜索报告保存到临时文件
+cat > /tmp/{股票名称}_deep_search_${CLAUDE_SESSION_ID}.md << 'EOF'
 # {股票名称}深度分析报告
 
 **分析日期**: {YYYY-MM-DD HH:mm}
@@ -258,6 +270,12 @@ python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>
 ## 📚 参考来源
 [重要来源链接]
 EOF
+
+# 2. 使用 --file 参数归档
+ptrade temp-data "股票名称" \
+  --action save \
+  --category deep-search \
+  --file /tmp/{股票名称}_deep_search_${CLAUDE_SESSION_ID}.md
 ```
 
 ### 实施检查清单
@@ -265,16 +283,16 @@ EOF
 - [ ] 使用 `save-data` 命令，指定 `--type deep-search`
 - [ ] 文件名遵循 `search_{YYYY-MM-DD}.md` 格式
 - [ ] 报告内容包含五大维度信息（含市场环境）
-- [ ] 已调用 `python3 <skill绝对路径>/scripts/fetch_market_news.py` 获取市场新闻
+- [ ] 已调用 `ptrade fetch-news --source all --limit 30` 获取市场新闻
 - [ ] 搜索链条记录完整
 - [ ] 文件成功写入磁盘
 - [ ] 软链接 `最新搜索.md` 已创建
-- [ ] 返回保存路径确认: `✓ 深度搜索报告已保存至: xxx/intermediate/{股票名称}/{文件名}.md`
+- [ ] 返回保存路径确认: `✓ 深度搜索报告已保存至: xxx/temp-data/{股票名称}/deep-search/`
 
 ---
 
 ## 📝 注意事项
 
 - 优先使用 searxng-search-skill（本地部署，免费），请严格遵循其使用方法和最佳实践，注意环境变量设置和服务器可用性检查
-- 遇到验证码或访问限制时，切换到 brave-search（付费 API，已预配置）
+- 遇到验证码或访问限制时，切换到 mcp-web-search（MCP 插件）
 - multi-search-engine 作为最后的备用方案，仅在必要时使用

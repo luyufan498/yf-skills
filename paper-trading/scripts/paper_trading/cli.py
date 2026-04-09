@@ -607,11 +607,21 @@ def temp_data_command(
       - history-continuity: 历史连续性分析
       - gf-summary: 广发证券摘要
 
-    示例:
-      ptrade temp-data 赛力斯 --action save --category deep-search --content "内容"
-      ptrade temp-data 赛力斯 --action save --category deep-search --stdin < input.md
+    保存示例:
+      ptrade temp-data 赛力斯 --action save --category deep-search --content "分析内容"
+      ptrade temp-data 赛力斯 --action save --category deep-search --file search_result.md
+      ptrade temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
+      # 广发证券数据分析
+      ...
+      EOF
+
+    读取示例:
       ptrade temp-data 赛力斯 --action read --category deep-search
-      ptrade temp-data --action list
+
+    列出示例:
+      ptrade temp-data 赛力斯 --action list
+      ptrade temp-data 赛力斯 --action list --category deep-search
+      ptrade temp-data all --action list
     """
     manager = TempDataManager(validate_stock=False)
 

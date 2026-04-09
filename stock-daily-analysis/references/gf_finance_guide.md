@@ -171,17 +171,15 @@ python3 scripts/etf_rank.py search 汽车
 
 广发证券数据获取后，请参考下列命令将分析报告保存。
 
-💾 路径说明：脚本内置环境变量处理机制，自动确定保存路径，请勿自行指定或手动写入文件。
-📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
+💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能，自动确定保存路径
 
 ### 保存命令
 
-**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 analysis_manager.py 脚本保存数据**
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据**
 
 ```bash
-python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>" \
-  --type gf-summary \
-  --stdin << 'EOF'
+# 1. 先将广发证券数据汇总保存到临时文件
+cat > /tmp/{股票名称}_gf_summary_${CLAUDE_SESSION_ID}.md << 'EOF'
 # {股票名称} - 广发证券数据汇总
 
 **数据获取时间**: {YYYY-MM-DD HH:mm:ss}
@@ -206,17 +204,21 @@ python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名称>
 ## 📚 数据来源
 广发证券易淘金平台
 EOF
+
+# 2. 使用 --file 参数归档
+ptrade temp-data "股票名称" \
+  --action save \
+  --category gf-summary \
+  --file /tmp/{股票名称}_gf_summary_${CLAUDE_SESSION_ID}.md
 ```
 
 ### 实施检查清单
 
-- [ ] 使用 `save-data` 命令，指定 `--type gf-summary`
-- [ ] 文件名遵循 `gf_summary_{YYYY-MM-DD}.md` 格式
+- [ ] 使用 `ptrade temp-data` 命令，指定 `--category gf-summary`
 - [ ] 数据内容包含所有获取到的数据（龙虎榜/财务/ETF）
 - [ ] 数据来源标注为广发证券
 - [ ] 文件成功写入磁盘
-- [ ] 软链接 `最新广发.md` 已创建
-- [ ] 返回保存路径确认: `✓ 广发证券数据已保存至: xxx/intermediate/{股票名称}/gf_summary_{YYYY-MM-DD}.md`
+- [ ] 返回保存路径确认: `✓ 广发证券数据已保存至: xxx/temp-data/{股票名称}/gf-summary/`
 
 ---
 
@@ -235,11 +237,4 @@ EOF
 - **上海**: `SH601127` (必须大写 SH 前缀)
 - **深圳**: `SZ000776` (必须大写 SZ 前缀)
 
----
 
-## 📚 参考文档
-
-- **龙虎榜完整 API**: `/home/catmouse/Github_Project/yf-skills/gf-finance/references/lhb.md`
-- **财务对比 API**: `/home/catmouse/Github_Project/yf-skills/gf-finance/references/quant.md`
-- **ETF 榜单 API**: `/home/catmouse/Github_Project/yf-skills/gf-finance/references/etf_rank.md`
-- **指数估值 API**: `/home/catmouse/Github_Project/yf-skills/gf-finance/references/windmill.md`

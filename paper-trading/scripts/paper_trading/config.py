@@ -23,11 +23,13 @@ def get_workspace_config() -> dict:
     """
     import os
 
-    # 获取脚本所在目录的父目录（SKILL_ROOT）
-    SKILL_ROOT = Path(__file__).parent.parent
+    # 默认工作空间路径（如果未设置环境变量）
+    from pathlib import Path
+    import os
+    DEFAULT_WORKSPACE = Path(os.path.expanduser('~/.paper-trading'))
 
     # 工作空间根目录（优先使用环境变量）
-    workspace_root = Path(os.getenv('STOCK_ANALYSIS_WORKSPACE', SKILL_ROOT))
+    workspace_root = Path(os.getenv('STOCK_ANALYSIS_WORKSPACE', DEFAULT_WORKSPACE))
 
     # 交易数据目录
     tradings_dir = workspace_root / "tradings"

@@ -101,7 +101,30 @@ ptrade analysis 赛力斯 --action list
 ptrade analysis all --action list
 ```
 
-详细文档：[分析报告管理](docs/analysis-manager.md)
+详细文档：[分析报告管理](references/analysis.md)
+
+### 临时数据存储
+
+支持的数据类别：
+- `deep-search`: 深度搜索结果
+- `history-continuity`: 历史连续性分析
+- `gf-summary`: 广发证券摘要
+
+```bash
+# 保存临时数据（从文件读取）
+ptrade temp-data 赛力斯 --action save --category deep-search --file search_result.md
+
+# 保存临时数据（从 stdin 读取）
+ptrade temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
+# 广发证券数据分析
+...
+EOF
+
+# 读取最新数据
+ptrade temp-data 赛力斯 --action read --category deep-search
+```
+
+详细文档：[临时数据存储](references/temp-data.md)
 
 ## 使用指南
 
@@ -112,9 +135,11 @@ ptrade analysis all --action list
 | 场景 | 参考文档 |
 |------|---------|
 | 首次使用 | [基础交易操作](references/basic-operations.md) |
+| 分析报告管理 | [分析报告管理](references/analysis.md) |
 | 查看数据 | [查询命令说明](references/query-commands.md) |
 | 管理多个账户 | [投资组合管理](references/portfolio-management.md) |
 | 备份数据 | [数据管理](references/data-management.md) |
+| 临时数据存储 | [临时数据存储](references/temp-data.md) |
 | 市场数据分析 | [市场数据查询](references/market-data.md) |
 | 交易策略 | [交易原则与策略](references/trading-principles.md) |
 | 理解数据结构 | [数据存储结构](references/data-storage.md) |
@@ -125,9 +150,11 @@ ptrade analysis all --action list
 | 功能类别 | 参考文档 | 说明 |
 |---------|---------|------|
 | **基础交易** | [basic-operations.md](references/basic-operations.md) | 初始化、买入、卖出操作 |
+| **分析报告** | [analysis.md](references/analysis.md) | 保存、读取、查询分析报告 |
 | **数据查询** | [query-commands.md](references/query-commands.md) | 资金池、持仓、历史、收益 |
 | **多账户管理** | [portfolio-management.md](references/portfolio-management.md) | 投资组合、性能分析 |
 | **数据备份** | [data-management.md](references/data-management.md) | 导出、删除、恢复 |
+| **临时数据** | [temp-data.md](references/temp-data.md) | 中间数据存储、读取、管理 |
 | **市场数据** | [market-data.md](references/market-data.md) | 价格、K线、搜索、新闻 |
 | **交易策略** | [trading-principles.md](references/trading-principles.md) | 纪律、止盈止损 |
 | **数据机制** | [data-storage.md](references/data-storage.md) | 文件结构、存储原理 |

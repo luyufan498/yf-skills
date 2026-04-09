@@ -26,9 +26,16 @@
 
 ### 步骤 1: 读取历史分析记录
 
+通过读取历史分析报告，获取之前的预测、建议和关键观点，用于连续性分析和预测准确性评估。
+
 ```bash
-python3 /skill绝对路径/scripts/analysis_manager.py history "<股票名>" --limit 7
+ptrade analysis 股票名称 --action read --count 3
 ```
+
+参数说明：
+- `--action read`: 读取操作
+- `--count 5`: 读取最近 5 次分析报告（可根据需要调整，建议 3-7 份）
+- 如该股票从未分析过，命令会返回"暂无历史分析记录"，此时跳过连续性分析步骤
 
 ### 步骤 2: 分析预测准确性
 
@@ -77,20 +84,23 @@ python3 /skill绝对路径/scripts/analysis_manager.py history "<股票名>" --l
 
 请参考下列命令将分析报告保存。
 
-💾 路径说明：脚本内置环境变量处理机制，自动确定保存路径，请勿自行指定或手动写入文件。
-📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
+💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能
+📂 保存位置：ptrade 工作的 workspace/temp-data 目录（通过 STOCK_ANALYSIS_WORKSPACE 环境变量配置）
 
 ```bash
-python3 /skill绝对路径/scripts/analysis_manager.py save-data "<股票名>" \
-  --type history-continuity \
-  --stdin << 'EOF'
+# 1. 先将连续性分析报告保存到临时文件
+cat > /tmp/{股票名称}_history_continuity_${CLAUDE_SESSION_ID}.md << 'EOF'
 {连续性分析报告内容}
 EOF
+
+# 2. 使用 --file 参数归档
+ptrade temp-data "股票名称" \
+  --action save \
+  --category history-continuity \
+  --file /tmp/{股票名称}_history_continuity_${CLAUDE_SESSION_ID}.md
 ```
 
-**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 analysis_manager.py 脚本保存数据**
-**保存位置**: `xxx/intermediate/<股票名>/continuity_{YYYY-MM-DD}.md`
-**软链接**: 自动创建 `最新连续性.md` 指向最新文件
+⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据
 **重要**: 保存成功后，其他 agent 会自动读取和合并这份报告。
 
 ---
@@ -100,7 +110,7 @@ EOF
 ### 数据目录说明
 
 - **历史分析记录**: 保存在 `stocks_analysis/` 目录（股票名称作为目录）
-- **中间数据**: 保存在 `intermediate/` 目录（股票名称作为目录）
+- **中间数据**: 保存在 `temp-data/` 目录（股票名称作为目录，通过 ptrade 的工作空间配置）
 - **分析文件命名**: `<股票名>-YYYY-MM-DD-HHMM.md`
 - **首次分析**: 如从未分析过该股票，返回"暂无历史分析记录"
 

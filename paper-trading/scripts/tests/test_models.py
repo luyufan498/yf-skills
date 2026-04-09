@@ -97,3 +97,22 @@ def test_intraday_data_invalid():
             time="09:30",
             price=10.5
         )
+
+
+def test_temp_data_record_model():
+    """测试 TempDataRecord 模型"""
+    from paper_trading.models import TempDataRecord
+    from datetime import datetime
+
+    record = TempDataRecord(
+        stock_name="测试股票",
+        category="deep-search",
+        content="测试内容",
+        timestamp="2026-04-09T10:30:00",
+        file_path="/path/to/file.md"
+    )
+
+    assert record.stock_name == "测试股票"
+    assert record.category == "deep-search"
+    assert record.content == "测试内容"
+    assert record.file_path == "/path/to/file.md"

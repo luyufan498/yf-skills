@@ -261,3 +261,12 @@ class AnalysisRecord(BaseModel):
             }
         }
         use_enum_values = True
+
+
+class TempDataRecord(BaseModel):
+    """临时数据记录：用于存储临时分析数据的模型"""
+    stock_name: str = Field(..., min_length=1, description="股票名称")
+    category: str = Field(..., min_length=1, description="数据类别（如deep-search, gf-finance等）")
+    content: str = Field(..., description="数据内容")
+    timestamp: str = Field(..., description="ISO格式时间戳")
+    file_path: str = Field(..., min_length=1, description="文件路径")

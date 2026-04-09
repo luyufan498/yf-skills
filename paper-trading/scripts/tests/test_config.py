@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 import pytest
-from paper_trading.config import get_workspace_config, get_trading_account_dir, get_stock_analysis_dir
+from paper_trading.config import get_workspace_config, get_trading_account_dir, get_stock_analysis_dir, get_stock_temp_data_dir
 
 # 清除可能设置的环境变量，确保测试隔离
 @pytest.fixture(autouse=True)
@@ -79,3 +79,18 @@ def test_get_temp_data_dir():
     assert 'temp_data_dir' in config
     assert config['temp_data_dir'].parts[-1] == 'temp-data'
     assert config['temp_data_dir'].parent == config['workspace_root']
+
+
+def test_get_stock_temp_data_dir():
+    """测试获取股票临时数据目录路径"""
+    # 不带 category
+    result = get_stock_temp_data_dir("测试股票")
+    assert result.name == "测试股票"
+    assert result.parent.name == "temp-data"
+
+    # 带 category
+    result = get_stock_temp_data_dir("测试股票", "deep-search")
+    assert result.name == "deep-search"
+    assert result.parent.name == "测试股票"
+    assert result.parent.parent.name == "temp-data"
+

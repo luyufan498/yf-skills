@@ -19,6 +19,7 @@ def get_workspace_config() -> dict:
             - workspace_root: 工作空间根目录 (Path)
             - tradings_dir: 交易数据目录 (Path) = workspace_root/tradings
             - stocks_analysis_dir: 股票分析目录 (Path) = workspace_root/stocks_analysis
+            - temp_data_dir: 临时数据目录 (Path) = workspace_root/temp-data
     """
     import os
 

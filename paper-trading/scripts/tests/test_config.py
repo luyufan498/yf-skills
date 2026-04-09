@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 import pytest
-from paper_trading.config import get_workspace_config, get_trading_account_dir, get_stock_analysis_dir
+from paper_trading.config import get_workspace_config, get_trading_account_dir, get_stock_analysis_dir, get_stock_temp_data_dir
 
 # 清除可能设置的环境变量，确保测试隔离
 @pytest.fixture(autouse=True)
@@ -70,3 +70,34 @@ def test_path_functions_are_absolute():
     assert config['stocks_analysis_dir'].is_absolute()
     assert get_trading_account_dir('test').is_absolute()
     assert get_stock_analysis_dir('test').is_absolute()
+
+def test_get_temp_data_dir():
+    """测试获取 temp-data 目录配置"""
+    from paper_trading.config import get_workspace_config
+
+    config = get_workspace_config()
+    assert 'temp_data_dir' in config
+    assert config['temp_data_dir'].parts[-1] == 'temp-data'
+    assert config['temp_data_dir'].parent == config['workspace_root']
+
+def test_get_stock_temp_data_dir():
+    """测试获取股票临时数据目录路径"""
+    config = get_workspace_config()
+
+    # 不指定 category
+    temp_dir = get_stock_temp_data_dir('测试股票')
+    expected_path = config['temp_data_dir'] / '测试股票'
+    assert temp_dir == expected_path
+
+    # 指定 category
+    temp_dir_with_category = get_stock_temp_data_dir('测试股票', 'deep-search')
+    expected_path_with_category = config['temp_data_dir'] / '测试股票' / 'deep-search'
+    assert temp_dir_with_category == expected_path_with_category
+
+def test_get_stock_temp_data_dir_with_special_chars():
+    """测试特殊字符的股票名称处理"""
+    config = get_workspace_config()
+
+    temp_dir = get_stock_temp_data_dir('ST+测试股', 'history-continuity')
+    expected_path = config['temp_data_dir'] / 'ST+测试股' / 'history-continuity'
+    assert temp_dir == expected_path

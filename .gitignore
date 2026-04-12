@@ -63,4 +63,4 @@ docs/superpowers/
 .cache/
 
 # Validation reports
-nbl-ppt-builder/scripts/validation_report.json
+validation_report.json

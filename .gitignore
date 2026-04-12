@@ -54,6 +54,9 @@ Thumbs.db
 # Git (ignore sub-repos)
 */.git/
 
+# Docs (non-tracked)
+docs/superpowers/
+
 # Other
 *.tmp
 *.bak

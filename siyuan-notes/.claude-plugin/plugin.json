@@ -11,7 +11,5 @@
   "keywords": ["notes", "siyuan", "documentation", "knowledge", "markdown"],
   "category": "productivity",
   "tags": ["notes", "siyuan", "documentation"],
-  "skills": [
-    "./SKILL.md"
-  ]
+  "skills": "./skills"
 }

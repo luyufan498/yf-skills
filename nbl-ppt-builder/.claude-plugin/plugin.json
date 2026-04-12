@@ -11,8 +11,5 @@
   "keywords": ["ppt", "presentation", "slide", "document", "html", "markdown"],
   "category": "productivity",
   "tags": ["ppt", "presentation", "document", "templates"],
-  "allowed-tools": ["Bash", "Read", "Edit", "Glob"],
-  "skills": [
-    "./SKILL.md"
-  ]
+  "skills": "./skills"
 }

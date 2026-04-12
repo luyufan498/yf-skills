@@ -1,0 +1,15 @@
+{
+  "name": "stock-toolkit",
+  "description": "股票分析工具包，包含实时数据查询、每日分析、模拟交易、广发证券接口等多个技能",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/stock-toolkit",
+  "license": "MIT",
+  "keywords": ["stock", "market", "finance", "trading", "analysis", "portfolio"],
+  "category": "finance",
+  "tags": ["stock", "market", "finance", "trading", "analysis"],
+  "skills": "./skills"
+}

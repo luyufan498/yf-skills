@@ -1,0 +1,682 @@
+{
+  "summary": {
+    "total_files": 20,
+    "ok_files": 15,
+    "warning_files": 0,
+    "error_files": 5,
+    "total_issues": 36,
+    "issues_by_category": {
+      "content_overflow": 28,
+      "card_overlap": 0,
+      "inner_scroll_vertical": 8,
+      "inner_scroll_horizontal": 0
+    }
+  },
+  "files": [
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/01_home.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/02_toc.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/03_uec_overview.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/04_toc.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/05_rtt_calculation.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/06_header_format.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/07_sender_architecture.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/08_toc.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/09_send_process.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/10_normal_send.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/11_rtx_send.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/12_timeout_handler.html",
+      "status": "error",
+      "issue_count": 1,
+      "issues": [
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 30px，需要滚动查看",
+          "details": {
+            "card_top": 160,
+            "card_height": 362,
+            "scroll_height": 392,
+            "client_height": 362,
+            "overflow": 30,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(49, 160)"
+          }
+        }
+      ]
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/13_toc.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/14_nscc_algorithm.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/15_quick_adapt.html",
+      "status": "error",
+      "issue_count": 1,
+      "issues": [
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 32px，需要滚动查看",
+          "details": {
+            "card_top": 160,
+            "card_height": 362,
+            "scroll_height": 394,
+            "client_height": 362,
+            "overflow": 32,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(49, 160)"
+          }
+        }
+      ]
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/16_sleek_algorithm.html",
+      "status": "error",
+      "issue_count": 1,
+      "issues": [
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 32px，需要滚动查看",
+          "details": {
+            "card_top": 160,
+            "card_height": 362,
+            "scroll_height": 394,
+            "client_height": 362,
+            "overflow": 32,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(49, 160)"
+          }
+        }
+      ]
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/17_rccc_algorithm.html",
+      "status": "error",
+      "issue_count": 1,
+      "issues": [
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 58px，需要滚动查看",
+          "details": {
+            "card_top": 160,
+            "card_height": 362,
+            "scroll_height": 420,
+            "client_height": 362,
+            "overflow": 58,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(49, 160)"
+          }
+        }
+      ]
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/18_summary.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/19_end.html",
+      "status": "ok",
+      "issue_count": 0,
+      "issues": []
+    },
+    {
+      "file": "/home/catmouse/Github_Project/nbl_skill/ppt_UEC拥塞控制/merged_presentation.html",
+      "status": "error",
+      "issue_count": 32,
+      "issues": [
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 1050px",
+          "details": {
+            "card_top": 1243,
+            "card_height": 347,
+            "card_bottom": 1590,
+            "slide_height": 540,
+            "overflow": 1050,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(17, 1243)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 1050px",
+          "details": {
+            "card_top": 1243,
+            "card_height": 347,
+            "card_bottom": 1590,
+            "slide_height": 540,
+            "overflow": 1050,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(331, 1243)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 1050px",
+          "details": {
+            "card_top": 1243,
+            "card_height": 347,
+            "card_bottom": 1590,
+            "slide_height": 540,
+            "overflow": 1050,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(645, 1243)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2074px",
+          "details": {
+            "card_top": 2527.5,
+            "card_height": 86,
+            "card_bottom": 2613.5,
+            "slide_height": 540,
+            "overflow": 2073.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(30, 2528)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2074px",
+          "details": {
+            "card_top": 2527.5,
+            "card_height": 86,
+            "card_bottom": 2613.5,
+            "slide_height": 540,
+            "overflow": 2073.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(268, 2528)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2082px",
+          "details": {
+            "card_top": 2518.5,
+            "card_height": 104,
+            "card_bottom": 2622.5,
+            "slide_height": 540,
+            "overflow": 2082.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(506, 2518)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2074px",
+          "details": {
+            "card_top": 2527.5,
+            "card_height": 86,
+            "card_bottom": 2613.5,
+            "slide_height": 540,
+            "overflow": 2073.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(745, 2528)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2740px",
+          "details": {
+            "card_top": 2915,
+            "card_height": 365,
+            "card_bottom": 3280,
+            "slide_height": 540,
+            "overflow": 2740,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(17, 2915)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 2740px",
+          "details": {
+            "card_top": 2915,
+            "card_height": 365,
+            "card_bottom": 3280,
+            "slide_height": 540,
+            "overflow": 2740,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(488, 2915)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 3260px",
+          "details": {
+            "card_top": 3480,
+            "card_height": 320,
+            "card_bottom": 3800,
+            "slide_height": 540,
+            "overflow": 3260,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(20, 3480)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 3260px",
+          "details": {
+            "card_top": 3480,
+            "card_height": 320,
+            "card_bottom": 3800,
+            "slide_height": 540,
+            "overflow": 3260,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(492, 3480)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4314px",
+          "details": {
+            "card_top": 4767.5,
+            "card_height": 86,
+            "card_bottom": 4853.5,
+            "slide_height": 540,
+            "overflow": 4313.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(30, 4768)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4304px",
+          "details": {
+            "card_top": 4776.5,
+            "card_height": 68,
+            "card_bottom": 4844.5,
+            "slide_height": 540,
+            "overflow": 4304.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(268, 4776)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4304px",
+          "details": {
+            "card_top": 4776.5,
+            "card_height": 68,
+            "card_bottom": 4844.5,
+            "slide_height": 540,
+            "overflow": 4304.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(506, 4776)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4304px",
+          "details": {
+            "card_top": 4776.5,
+            "card_height": 68,
+            "card_bottom": 4844.5,
+            "slide_height": 540,
+            "overflow": 4304.5,
+            "element_id": "div.bg-white.rounded-xl.p-3.card-shadow.w-full.text-center",
+            "position": "(745, 4776)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4940px",
+          "details": {
+            "card_top": 5160,
+            "card_height": 320,
+            "card_bottom": 5480,
+            "slide_height": 540,
+            "overflow": 4940,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(20, 5160)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 4940px",
+          "details": {
+            "card_top": 5160,
+            "card_height": 320,
+            "card_bottom": 5480,
+            "slide_height": 540,
+            "overflow": 4940,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(492, 5160)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 5500px",
+          "details": {
+            "card_top": 5720,
+            "card_height": 320,
+            "card_bottom": 6040,
+            "slide_height": 540,
+            "overflow": 5500,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(20, 5720)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 5500px",
+          "details": {
+            "card_top": 5720,
+            "card_height": 320,
+            "card_bottom": 6040,
+            "slide_height": 540,
+            "overflow": 5500,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(492, 5720)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 6110px",
+          "details": {
+            "card_top": 6288,
+            "card_height": 362,
+            "card_bottom": 6650,
+            "slide_height": 540,
+            "overflow": 6110,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 6288)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 7180px",
+          "details": {
+            "card_top": 7400,
+            "card_height": 320,
+            "card_bottom": 7720,
+            "slide_height": 540,
+            "overflow": 7180,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(20, 7400)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 7180px",
+          "details": {
+            "card_top": 7400,
+            "card_height": 320,
+            "card_bottom": 7720,
+            "slide_height": 540,
+            "overflow": 7180,
+            "element_id": "div.bg-white.rounded-xl.p-5.card-shadow",
+            "position": "(492, 7400)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 7790px",
+          "details": {
+            "card_top": 7968,
+            "card_height": 362,
+            "card_bottom": 8330,
+            "slide_height": 540,
+            "overflow": 7790,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 7968)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 8350px",
+          "details": {
+            "card_top": 8528,
+            "card_height": 362,
+            "card_bottom": 8890,
+            "slide_height": 540,
+            "overflow": 8350,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 8528)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 8910px",
+          "details": {
+            "card_top": 9088,
+            "card_height": 362,
+            "card_bottom": 9450,
+            "slide_height": 540,
+            "overflow": 8910,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 9088)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 9450px",
+          "details": {
+            "card_top": 9643,
+            "card_height": 347,
+            "card_bottom": 9990,
+            "slide_height": 540,
+            "overflow": 9450,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(17, 9643)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 9450px",
+          "details": {
+            "card_top": 9643,
+            "card_height": 347,
+            "card_bottom": 9990,
+            "slide_height": 540,
+            "overflow": 9450,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(331, 9643)"
+          }
+        },
+        {
+          "type": "A",
+          "category": "content_overflow",
+          "severity": "high",
+          "description": "内容溢出幻灯片底部: 超出 9450px",
+          "details": {
+            "card_top": 9643,
+            "card_height": 347,
+            "card_bottom": 9990,
+            "slide_height": 540,
+            "overflow": 9450,
+            "element_id": "div.bg-white.rounded-2xl.p-4.card-shadow.flex.flex-col",
+            "position": "(645, 9643)"
+          }
+        },
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 30px，需要滚动查看",
+          "details": {
+            "card_top": 6288,
+            "card_height": 362,
+            "scroll_height": 392,
+            "client_height": 362,
+            "overflow": 30,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 6288)"
+          }
+        },
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 32px，需要滚动查看",
+          "details": {
+            "card_top": 7968,
+            "card_height": 362,
+            "scroll_height": 394,
+            "client_height": 362,
+            "overflow": 32,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 7968)"
+          }
+        },
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 32px，需要滚动查看",
+          "details": {
+            "card_top": 8528,
+            "card_height": 362,
+            "scroll_height": 394,
+            "client_height": 362,
+            "overflow": 32,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 8528)"
+          }
+        },
+        {
+          "type": "C",
+          "category": "inner_scroll_vertical",
+          "severity": "high",
+          "description": "卡片内部垂直滚动条: 内容溢出 58px，需要滚动查看",
+          "details": {
+            "card_top": 9088,
+            "card_height": 362,
+            "scroll_height": 420,
+            "client_height": 362,
+            "overflow": 58,
+            "element_id": "div.absolute.left-[17px].top-[128px].right-[17px].bottom-[50px].bg-white.rounded-2xl.p-5.card-shadow.overflow-y-auto",
+            "position": "(17, 9088)"
+          }
+        }
+      ]
+    }
+  ]
+}

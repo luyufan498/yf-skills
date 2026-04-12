@@ -1,0 +1,15 @@
+{
+  "name": "nbl_jira",
+  "description": "JIRA 问题单自动化工具，支持 ASIC 项目 CBUG 问题提交",
+  "version": "1.0.0",
+  "author": {
+    "name": "luyufan498"
+  },
+  "homepage": "https://github.com/luyufan498/yf-skills",
+  "repository": "https://github.com/luyufan498/yf-skills/tree/main/nbl_jira",
+  "license": "MIT",
+  "keywords": ["jira", "issue", "automation", "asic"],
+  "category": "productivity",
+  "tags": ["jira", "issue", "automation"],
+  "skills": "./skills"
+}

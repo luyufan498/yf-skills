@@ -11,7 +11,5 @@
   "keywords": ["search", "web", "packages", "research"],
   "category": "productivity",
   "tags": ["search", "web", "packages"],
-  "skills": [
-    "./SKILL.md"
-  ]
+  "skills": "./skills"
 }

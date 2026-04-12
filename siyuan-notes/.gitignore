@@ -1,0 +1,16 @@
+# Temporary files generated during execution
+scripts/*.fifoHead
+scripts/*.fifoHead+*
+scripts/*[slot]
+scripts/opcode
+scripts/wrs
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/

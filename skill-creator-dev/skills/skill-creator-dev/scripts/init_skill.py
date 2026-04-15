@@ -67,15 +67,29 @@ Delete this entire "Structuring This Skill" section when done - it's just guidan
 This skill includes example resource directories that demonstrate how to organize different types of bundled resources:
 
 ### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
 
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
+Executable code (Python/Bash/etc.) for deterministic operations.
 
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
+**Choose the right approach based on complexity:**
 
-**Note:** Scripts may be executed without loading into context, but can still be read by Claude for patching or environment adjustments.
+**Level 1: Simple (Standard Library/Bash)**
+- Use when: Only stdlib needed or Bash is sufficient
+- How: Place scripts directly in `scripts/`, use `python3 scripts/foo.py`
+- Example: File conversion, data processing with json/re/pathlib
+
+**Level 2: Medium (Third-party deps, small project)**
+- Use when: Need packages like pandas/requests/pillow, 1-3 scripts total
+- How: Use `uv` for dependency management in skill directory
+- Setup: Create `pyproject.toml`, run with `uv run python scripts/main.py`
+- Never use: pip/venv - always use `uv run`
+
+**Level 3: Complex (CLI tool, large project)**
+- Use when: Complex multi-module project or needs CLI interface
+- How: Build as installable CLI tool with `uv tools install --editable`
+- Setup: Define entry points in `pyproject.toml`, install once, use as CLI command
+- Refer to: SKILL.md examples for CLI command patterns
+
+**All levels:** Scripts save tokens, provide determinism, and can be executed without loading into context.
 
 ### references/
 Documentation and reference material intended to be loaded into context to inform Claude's process and thinking.

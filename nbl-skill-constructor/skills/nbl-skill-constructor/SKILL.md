@@ -1,6 +1,6 @@
 ---
-name: skill-creator-dev
-description: 用于在当前 workspace 创建新技能开发环境的工具。不执行安装操作，仅在 workspace 创建 skill 目录结构供用户调试和开发。当用户确认 skill 完成后，需要主动发起安装请求才触发打包和安装流程。
+name: nbl-skill-constructor
+description: NBL企业技能构造规范与开发指南。用于在 workspace 中创建符合NBL企业标准的 skill，提供标准化的目录结构、脚本复杂度决策树和最佳实践指导。不执行安装操作，仅在 workspace 创建供用户调试和开发的 skill 目录结构。
 ---
 
 # 技能开发环境创建器
@@ -444,8 +444,8 @@ scripts/package_skill.py <path/to/skill-folder> ./dist
 
 ## 与安装工具的区别
 
-| 方面 | skill-creator-dev | 安装工具 |
-|------|------------------|---------|
+| 方面 | nbl-skill-constructor | 安装工具 |
+|------|----------------------|---------|
 | 目的 | 在 workspace 创建开发环境 | 将 skill 打包并安装到系统 |
 | 触发时机 | 用户请求创建新 skill 开发环境 | 用户主动发起安装请求 |
 | 创建位置 | workspace 目录 | 系统技能目录 |

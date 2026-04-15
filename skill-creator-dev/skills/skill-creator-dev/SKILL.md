@@ -76,10 +76,74 @@ skill-name/
 
 用于需要确定性可靠性或重复重写的任务的可执行代码（Python/Bash/等）。
 
-- **何时包含**：当代码被重复重写或需要确定性可靠性时
-- **示例**：用于 PDF 旋转任务的 `scripts/rotate_pdf.py`
-- **优势**：节省 token、确定性强，可以在不加载到上下文的情况下执行
-- **注意**：脚本可能仍需要由 Claude 读取以进行修补或环境特定的调整
+**脚本复杂度决策树：**
+
+选择适当的脚本方案取决于任务的复杂度：
+
+1. **简单任务** - 系统 Python3 或 Bash 即可满足
+   - **适用场景**：
+     - 仅需标准库（如 `os`, `json`, `re`, `pathlib`）
+     - 或使用 Bash 脚本即可完成的任务
+     - 无需第三方依赖
+   - **实现方式**：
+     - 直接编写 Python3/Bash 脚本放在 `scripts/` 目录
+     - 使用 shebang `#!/usr/bin/env python3` 或 `#!/bin/bash`
+     - Claude 直接调用：`python3 scripts/your_script.py`
+   - **示例**：文件格式转换、简单的数据处理、系统命令封装
+
+2. **中等复杂度** - 需要第三方依赖但工程规模小
+   - **适用场景**：
+     - 需要导入复杂的环境包（如 `pandas`, `requests`, `pillow`）
+     - 整体工程不大（1-3 个脚本内可完成）
+     - 不需要复杂的项目结构
+   - **实现方式**：
+     - 在 skill 目录下使用 `uv` 创建虚拟环境
+     - 创建 `pyproject.toml` 定义依赖
+     - 所有脚本使用 `uv run` 执行
+     - **不要**使用 pip/venv 传统方式
+   - **目录结构**：
+     ```
+     skill-name/
+     ├── SKILL.md
+     ├── pyproject.toml      # uv 项目配置
+     ├── scripts/
+     │   ├── __init__.py
+     │   └── main.py         # 主入口脚本
+     └── src/                # 可选，如果代码较多
+     ```
+   - **调用方式**：`uv run python scripts/main.py`
+   - **优势**：依赖管理简洁，启动速度快，避免污染系统环境
+
+3. **高复杂度** - 大型项目或需要 CLI 接口
+   - **适用场景**：
+     - 工程复杂度高，需要多模块组织
+     - 需要提供命令行接口（CLI）供用户直接调用
+     - 需要作为独立工具安装到系统
+   - **实现方式**：
+     - 使用 `uv` 创建完整的 Python 项目
+     - 配置 `pyproject.toml` 定义入口点（entry points）
+     - 使用 `uv tools install --editable` 安装为系统 CLI 工具
+     - 在 SKILL.md 中描述 CLI 命令的使用方式
+   - **目录结构**：
+     ```
+     skill-name/
+     ├── SKILL.md
+     ├── pyproject.toml      # 包含 [project.scripts] 入口点
+     ├── src/
+     │   └── skill_name/
+     │       ├── __init__.py
+     │       ├── cli.py      # CLI 入口
+     │       └── ...
+     └── scripts/            # 可选的辅助脚本
+     ```
+   - **安装**：`uv tools install --editable .`
+   - **调用方式**：直接调用 CLI 命令（如 `my-skill-command --help`）
+   - **优势**：用户可以像使用系统命令一样使用，集成度高
+
+**通用原则**：
+- **节省 token**：脚本可以在不加载到上下文的情况下执行
+- **确定性**：代码执行比 LLM 生成更可靠
+- **可维护性**：脚本可能需要由 Claude 读取以进行修补或环境特定的调整
 
 ##### 参考资料 (`references/`)
 

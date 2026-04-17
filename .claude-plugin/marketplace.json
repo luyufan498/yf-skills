@@ -50,8 +50,8 @@
       "keywords": ["jira", "issue", "automation", "asic", "cbug"]
     },
     {
-      "name": "skill-creator-dev",
-      "source": "./skill-creator-dev",
+      "name": "nbl-skill-constructor",
+      "source": "./nbl-skill-constructor",
       "description": "技能开发环境创建工具，用于在 workspace 中创建和调试新的 skill",
       "category": "development",
       "tags": ["skill", "development", "creator", "tool"],

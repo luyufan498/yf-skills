@@ -54,16 +54,7 @@ class PortfolioManager:
 
         operations = self.trader.storage.load_operations(stock_name)
 
-        total_quantity = 0
-        total_cost = 0.0
-        for pos in account.positions:
-            if pos.operation == OperationType.BUY:
-                total_quantity += pos.quantity
-                total_cost += pos.total_cost
-            elif pos.operation == OperationType.SELL:
-                total_quantity -= pos.quantity
-                # 卖出操作的总成本需要从成本中扣除
-                total_cost -= pos.total_cost
+        total_quantity, total_cost = self.trader.get_remaining_position(account)
 
         realized_profit = 0.0
         if operations:
@@ -154,25 +145,15 @@ class PortfolioManager:
         for name in account_names:
             account = self.trader.get_account(name)
             if account:
-                for pos in account.positions:
-                    if pos.operation == OperationType.BUY:
-                        total_cost += pos.total_cost
+                remaining_qty, remaining_cost = self.trader.get_remaining_position(account)
+                total_cost += remaining_cost
 
-                if account.stock_code:
-                    pos_qty = sum(
-                        p.quantity for p in account.positions
-                        if p.operation == OperationType.BUY
-                    )
-                    if pos_qty > 0:
-                        price_info = self.price_fetcher.get_realtime_price(account.stock_code)
-                        if price_info and price_info.current_price:
-                            market_value = pos_qty * price_info.current_price
-                            pos_cost = sum(
-                                p.total_cost for p in account.positions
-                                if p.operation == OperationType.BUY
-                            )
-                            total_market_value += market_value
-                            floating_profit += (market_value - pos_cost)
+                if account.stock_code and remaining_qty > 0:
+                    price_info = self.price_fetcher.get_realtime_price(account.stock_code)
+                    if price_info and price_info.current_price:
+                        market_value = remaining_qty * price_info.current_price
+                        total_market_value += market_value
+                        floating_profit += (market_value - remaining_cost)
 
                 operations = self.trader.storage.load_operations(name)
                 if operations:

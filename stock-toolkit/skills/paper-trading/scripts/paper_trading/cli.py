@@ -154,6 +154,8 @@ def info(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
             typer.echo(f"   股票代码：{summary['stock_code']}")
             typer.echo(f"   持仓数量：{positions['total_quantity']} 股")
             typer.echo(f"   持仓成本：¥{positions['total_cost']:,.2f}")
+            avg_cost = positions['total_cost'] / positions['total_quantity'] if positions['total_quantity'] > 0 else 0
+            typer.echo(f"   单股成本：¥{avg_cost:,.2f}")
             if positions.get('current_price'):
                 typer.echo(f"   当前价格：¥{positions['current_price']:.2f}")
 
@@ -251,6 +253,8 @@ def holdings(stock_name: Optional[str] = typer.Argument(None, help="股票名称
             typer.echo(f"   股票代码: {summary['stock_code']}")
             typer.echo(f"   持仓数量: {positions_data['total_quantity']} 股")
             typer.echo(f"   持仓成本: ¥{positions_data['total_cost']:,.2f}")
+            avg_cost_h = positions_data['total_cost'] / positions_data['total_quantity'] if positions_data['total_quantity'] > 0 else 0
+            typer.echo(f"   单股成本: ¥{avg_cost_h:,.2f}")
             if positions_data.get('current_price'):
                 typer.echo(f"   当前价格: ¥{positions_data['current_price']:.2f}")
     else:

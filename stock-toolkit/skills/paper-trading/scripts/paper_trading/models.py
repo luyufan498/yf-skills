@@ -126,6 +126,8 @@ class Account(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     capital_pool: CapitalPool
     positions: List[Position] = Field(default_factory=list)
+    fifo_index: int = Field(default=-1, description="FIFO指针：当前成本基准BUY position在positions列表中的索引")
+    fifo_offset: int = Field(default=0, description="当前fifo_index指向的BUY position中已消耗的股数")
 
     class Config:
         json_schema_extra = {

@@ -386,6 +386,73 @@ class PaperTrader:
                 realized += (pos.quantity * pos.price) - cost
         return realized
 
+    def fix_operations(self, stock_name: str) -> dict:
+        """
+        根据 FIFO 重新修正 SELL operation 的 cost 和 profit（修复旧 Bug 数据污染）
+
+        Returns:
+            {"fixed": 修正笔数, "total_sell": SELL 总笔数}
+        """
+        account = self.get_account(stock_name)
+        if not account:
+            raise ValueError(f"账户 '{stock_name}' 不存在")
+
+        ops_data = self.storage.load_operations(stock_name)
+        if not ops_data:
+            raise ValueError(f"操作记录 '{stock_name}' 不存在")
+
+        from collections import deque
+        fifo_queue = deque()
+
+        sell_ops = [(i, o) for i, o in enumerate(ops_data.operations) if o.type == OperationType.SELL]
+        sell_pos = [(i, p) for i, p in enumerate(account.positions) if p.operation == OperationType.SELL]
+
+        if len(sell_ops) != len(sell_pos):
+            raise ValueError(
+                f"SELL 记录不一致: operations 中有 {len(sell_ops)} 笔 SELL，"
+                f"positions 中有 {len(sell_pos)} 笔 SELL，无法自动修复"
+            )
+
+        fixed = 0
+        sell_idx = 0
+
+        for pos in account.positions:
+            if pos.operation == OperationType.BUY:
+                cost_per_share = pos.total_cost / pos.quantity
+                fifo_queue.append([pos.quantity, cost_per_share])
+            elif pos.operation == OperationType.SELL:
+                qty = pos.quantity
+                cost = 0.0
+                while qty > 0 and fifo_queue:
+                    if fifo_queue[0][0] <= qty:
+                        cost += fifo_queue[0][0] * fifo_queue[0][1]
+                        qty -= fifo_queue[0][0]
+                        fifo_queue.popleft()
+                    else:
+                        cost += qty * fifo_queue[0][1]
+                        fifo_queue[0][0] -= qty
+                        qty = 0
+
+                profit = (pos.quantity * pos.price) - cost
+                op = ops_data.operations[sell_ops[sell_idx][0]]
+
+                old_cost = op.cost
+                old_profit = op.profit
+
+                if (old_cost is None or abs(old_cost - cost) > 1) or \
+                   (old_profit is None or abs(old_profit - profit) > 1):
+                    pos.total_cost = round(cost, 2)
+                    op.cost = round(cost, 2)
+                    op.profit = round(profit, 2)
+                    fixed += 1
+
+                sell_idx += 1
+
+        self.storage.save_account(account)
+        self.storage.save_operations(stock_name, ops_data)
+
+        return {"fixed": fixed, "total_sell": len(sell_ops)}
+
     def get_remaining_position(self, account: Account) -> tuple[int, float]:
         """
         获取当前剩余持仓数量和原始成本

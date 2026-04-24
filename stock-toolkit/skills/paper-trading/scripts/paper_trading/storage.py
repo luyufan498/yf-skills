@@ -41,6 +41,11 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    def save_operations(self, stock_name: str, operations: AccountHistory) -> Path:
+        """覆盖保存完整的操作记录"""
+        pass
+
+    @abstractmethod
     def list_accounts(self) -> List[str]:
         """列出所有账户"""
         pass
@@ -180,6 +185,12 @@ class JsonStorage(StorageBackend):
             )
 
         operations.operations.append(operation)
+        operations.updated_at = datetime.now().isoformat()
+
+        return self.save_operations(stock_name, operations)
+
+    def save_operations(self, stock_name: str, operations: AccountHistory) -> Path:
+        """覆盖保存完整的操作记录"""
         operations.updated_at = datetime.now().isoformat()
 
         operations_file = self._get_operations_file(stock_name)

@@ -403,6 +403,45 @@ def export(
 
 
 @app.command()
+def fix(
+    stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则修复所有账户）")
+):
+    """根据 FIFO 重新修正 SELL operation 的 cost 和 profit（修复旧 Bug 数据污染）"""
+    trader = PaperTrader()
+
+    if stock_name:
+        stock_names = [stock_name]
+    else:
+        manager = PortfolioManager()
+        stock_names = manager.list_accounts()
+        if not stock_names:
+            typer.echo("📭 暂无账户")
+            return
+
+    total_fixed = 0
+    has_error = False
+    for name in stock_names:
+        try:
+            result = trader.fix_operations(name)
+            if result["fixed"] > 0:
+                typer.echo(f"✅ {name}: 已修正 {result['fixed']}/{result['total_sell']} 笔 SELL 记录")
+                total_fixed += result["fixed"]
+            else:
+                typer.echo(f"✅ {name}: 所有 {result['total_sell']} 笔 SELL 记录均正确，无需修正")
+        except ValueError as e:
+            typer.echo(f"❌ {name}: {e}", err=True)
+            has_error = True
+
+    if len(stock_names) > 1:
+        if total_fixed > 0:
+            typer.echo(f"\n🎉 共修正 {total_fixed} 笔 SELL 记录")
+        else:
+            typer.echo(f"\n📭 所有 {len(stock_names)} 个账户的 SELL 记录均正确")
+    if has_error:
+        raise typer.Exit(1)
+
+
+@app.command()
 def delete(
     stock_name: str = typer.Argument(..., help="股票名称"),
     force: bool = typer.Option(False, "--force", "-f", help="强制删除（即使有持仓）")

@@ -56,11 +56,7 @@ class PortfolioManager:
 
         total_quantity, total_cost = self.trader.get_remaining_position(account)
 
-        realized_profit = 0.0
-        if operations:
-            for op in operations.operations:
-                if op.type == OperationType.SELL:
-                    realized_profit += op.profit or 0.0
+        realized_profit = self.trader.get_realized_profit_from_positions(account)
 
         floating_profit = 0.0
         current_price = None
@@ -155,17 +151,15 @@ class PortfolioManager:
                         total_market_value += market_value
                         floating_profit += (market_value - remaining_cost)
 
-                operations = self.trader.storage.load_operations(name)
-                if operations:
-                    for op in operations.operations:
-                        if op.type == OperationType.SELL:
-                            realized_profit += op.profit or 0.0
+                realized_profit += self.trader.get_realized_profit_from_positions(account)
 
+        total_current_assets = total_available + total_used
         total_profit = realized_profit + floating_profit
         return_rate = (total_profit / total_capital * 100) if total_capital > 0 else 0.0
 
         return PortfolioSummary(
             total_capital=total_capital,
+            total_current_assets=total_current_assets,
             total_available=total_available,
             total_used=total_used,
             total_positions=total_positions,

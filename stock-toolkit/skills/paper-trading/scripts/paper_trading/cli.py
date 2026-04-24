@@ -140,10 +140,11 @@ def info(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
         # 资金池信息
         pool = summary["capital_pool"]
         typer.echo("💰 资金池状态")
-        typer.echo(f"   总资金：¥{pool['total']:,.2f}")
+        typer.echo(f"   初始资金：¥{pool['total']:,.2f}")
+        typer.echo(f"   当前总资产：¥{pool['current_total']:,.2f}")
         typer.echo(f"   可用资金：¥{pool['available']:,.2f}")
         typer.echo(f"   占用资金：¥{pool['used']:,.2f}")
-        typer.echo(f"   资金使用率：{pool['used']/pool['total']*100:.1f}%")
+        typer.echo(f"   资金使用率：{pool['usage_rate']:.1f}%")
 
         # 持仓信息
         positions = summary["positions"]
@@ -190,9 +191,10 @@ def info(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
 
                 # 收益图标
                 profit_icon = "📈" if profit["total"] >= 0 else "📉"
+                current_total = pool['available'] + pool['used']
 
                 typer.echo(f"\n  • {name}:")
-                typer.echo(f"    💰 ¥{pool['available']:,.2f} 可用 / ¥{pool['total']:,.2f} 总计")
+                typer.echo(f"    💰 ¥{pool['available']:,.2f} 可用 / ¥{current_total:,.2f} 当前总资产 (初始: ¥{pool['total']:,.2f})")
                 typer.echo(f"    📈 {pos_status}")
                 typer.echo(f"    {profit_icon} 收益: ¥{profit['total']:+.2f} ({(profit['total']/pool['total']*100):+.2f}%)")
 
@@ -212,10 +214,11 @@ def pool(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
 
         pool = summary["capital_pool"]
         typer.echo(f"💰 {stock_name} 资金池状态")
-        typer.echo(f"   总资金：¥{pool['total']:,.2f}")
+        typer.echo(f"   初始资金：¥{pool['total']:,.2f}")
+        typer.echo(f"   当前总资产：¥{pool['current_total']:,.2f}")
         typer.echo(f"   可用资金：¥{pool['available']:,.2f}")
         typer.echo(f"   占用资金：¥{pool['used']:,.2f}")
-        typer.echo(f"   资金使用率：{pool['used']/pool['total']*100:.1f}%")
+        typer.echo(f"   资金使用率：{pool['usage_rate']:.1f}%")
     else:
         # 列出所有股票
         accounts = manager.list_accounts()
@@ -229,7 +232,8 @@ def pool(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
             summary = manager.get_account_summary(name)
             if summary:
                 pool = summary["capital_pool"]
-                typer.echo(f"  • {name}: ¥{pool['available']:,.2f} 可用 / ¥{pool['total']:,.2f} 总计")
+                current_total = pool['available'] + pool['used']
+                typer.echo(f"  • {name}: ¥{pool['available']:,.2f} 可用 / ¥{current_total:,.2f} 当前总资产 (初始: ¥{pool['total']:,.2f})")
 
 
 @app.command()
@@ -367,7 +371,8 @@ def list():
         if summary:
             pool = summary["capital_pool"]
             stock_code = summary.get('stock_code', 'N/A')
-            typer.echo(f"  • {name} ({stock_code}): ¥{pool['available']:,.2f} 可用")
+            current_total = pool['available'] + pool['used']
+            typer.echo(f"  • {name} ({stock_code}): ¥{pool['available']:,.2f} 可用 / ¥{current_total:,.2f} 当前总资产")
 
 
 @app.command()

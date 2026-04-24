@@ -6,7 +6,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, computed_field
 
 
 class MarketType(str, Enum):
@@ -53,20 +53,20 @@ class StockInfo(BaseModel):
 
 class CapitalPool(BaseModel):
     """资金池"""
-    total: float = Field(..., gt=0, description="总资金")
+    total: float = Field(..., gt=0, description="初始总资金（历史不变）")
     available: float = Field(..., description="可用资金")
     used: float = Field(default=0.0, description="占用资金")
 
     @field_validator("available")
     @classmethod
     def validate_available(cls, v: float) -> float:
-        """验证可用资金不超过总资金"""
+        """验证可用资金，允许超过初始总资金（含已实现盈利）"""
         return v
 
     @field_validator("used")
     @classmethod
     def validate_used(cls, v: float) -> float:
-        """验证占用资金不超过总资金并允许小的负值为计算误差"""
+        """验证占用资金并允许小的负值为计算误差"""
         return v
 
     def withdraw(self, amount: float) -> bool:
@@ -82,10 +82,18 @@ class CapitalPool(BaseModel):
         self.available += amount
         self.used -= amount
 
+    @computed_field
+    @property
+    def current_total(self) -> float:
+        """当前总资产（可用 + 占用，包含已实现盈利）"""
+        return self.available + self.used
+
+    @computed_field
     @property
     def usage_rate(self) -> float:
-        """资金使用率"""
-        return (self.used / self.total * 100) if self.total > 0 else 0.0
+        """资金使用率（基于当前总资产）"""
+        total = self.current_total
+        return (self.used / total * 100) if total > 0 else 0.0
 
 
 class Position(BaseModel):
@@ -155,6 +163,7 @@ class AccountHistory(BaseModel):
 class PortfolioSummary(BaseModel):
     """投资组合汇总"""
     total_capital: float
+    total_current_assets: float
     total_available: float
     total_used: float
     total_positions: int

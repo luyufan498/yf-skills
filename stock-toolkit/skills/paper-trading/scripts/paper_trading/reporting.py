@@ -45,10 +45,11 @@ class ReportGenerator:
 
         pool = summary["capital_pool"]
         output += f"## 💰 资金池\n\n"
-        output += f"- **总资金**: ¥{pool['total']:,.2f}\n"
+        output += f"- **初始资金**: ¥{pool['total']:,.2f}\n"
+        output += f"- **当前总资产**: ¥{pool['current_total']:,.2f}\n"
         output += f"- **可用资金**: ¥{pool['available']:,.2f}\n"
         output += f"- **占用资金**: ¥{pool['used']:,.2f}\n"
-        output += f"- **资金使用率**: {(pool['used']/pool['total']*100):.1f}%\n\n"
+        output += f"- **资金使用率**: {pool['usage_rate']:.1f}%\n\n"
 
         positions = summary["positions"]
         if positions["total_quantity"] == 0:
@@ -278,7 +279,8 @@ class ReportGenerator:
         output = "# 💼 投资组合报告\n\n"
 
         output += "## 📊 总体概况\n\n"
-        output += f"- **总资金**: ¥{summary.total_capital:,.2f}\n"
+        output += f"- **总初始资金**: ¥{summary.total_capital:,.2f}\n"
+        output += f"- **当前总资产**: ¥{summary.total_current_assets:,.2f}\n"
         output += f"- **可用资金**: ¥{summary.total_available:,.2f}\n"
         output += f"- **占用资金**: ¥{summary.total_used:,.2f}\n"
         output += f"- **持仓数量**: {summary.total_positions}\n"

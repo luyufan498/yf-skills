@@ -109,16 +109,33 @@ class PaperTrader:
             Account 对象，如果不存在返回None
         """
         account = self.storage.load_account(stock_name)
-        if account:
-            # 检测并修复旧版本的错误资金占用数据
-            _, remaining_cost = self.get_remaining_position(account)
-            expected_available = account.capital_pool.total - remaining_cost
-            if abs(account.capital_pool.used - remaining_cost) > 1 or (
-                abs(account.capital_pool.available - expected_available) > 1
-            ):
-                account.capital_pool.used = remaining_cost
-                account.capital_pool.available = expected_available
-                self.storage.save_account(account)
+        if not account:
+            return None
+
+        _, remaining_cost = self.get_remaining_position(account)
+
+        # 修复 used：与 FIFO 剩余持仓成本比对
+        used_changed = abs(account.capital_pool.used - remaining_cost) > 1
+        if used_changed:
+            account.capital_pool.used = remaining_cost
+
+        # 从操作记录重建 available（包含已实现盈利）
+        operations = self.storage.load_operations(stock_name)
+        expected_available = account.capital_pool.total
+        if operations:
+            for op in operations.operations:
+                if op.type == OperationType.BUY:
+                    expected_available -= op.amount or 0
+                elif op.type == OperationType.SELL:
+                    expected_available += op.amount or 0
+
+        avail_changed = abs(account.capital_pool.available - expected_available) > 1
+        if avail_changed:
+            account.capital_pool.available = expected_available
+
+        if used_changed or avail_changed:
+            self.storage.save_account(account)
+
         return account
 
     def buy_stock(
@@ -344,6 +361,30 @@ class PaperTrader:
                 remaining = 0
 
         return cost_amount
+
+    def get_realized_profit_from_positions(self, account: Account) -> float:
+        """从 positions 按 FIFO 重新计算已实现盈亏（不依赖 ops.profit，兼容旧数据）"""
+        from collections import deque
+        buy_queue = deque()
+        realized = 0.0
+        for pos in account.positions:
+            if pos.operation == OperationType.BUY:
+                cost_per_share = pos.total_cost / pos.quantity
+                buy_queue.append([pos.quantity, cost_per_share])
+            elif pos.operation == OperationType.SELL:
+                qty = pos.quantity
+                cost = 0.0
+                while qty > 0 and buy_queue:
+                    if buy_queue[0][0] <= qty:
+                        cost += buy_queue[0][0] * buy_queue[0][1]
+                        qty -= buy_queue[0][0]
+                        buy_queue.popleft()
+                    else:
+                        cost += qty * buy_queue[0][1]
+                        buy_queue[0][0] -= qty
+                        qty = 0
+                realized += (pos.quantity * pos.price) - cost
+        return realized
 
     def get_remaining_position(self, account: Account) -> tuple[int, float]:
         """

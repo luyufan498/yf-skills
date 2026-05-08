@@ -4,6 +4,7 @@
 """
 
 from typing import Optional
+from datetime import datetime, timedelta
 from paper_trading.models import (
     Account,
     Operation,
@@ -101,7 +102,9 @@ class ReportGenerator:
     def generate_operations_report(
         self,
         stock_name: str,
-        storage: Optional[StorageBackend] = None
+        storage: Optional[StorageBackend] = None,
+        days: Optional[int] = None,
+        limit: Optional[int] = None
     ) -> str:
         """
         生成操作历史报告
@@ -109,6 +112,8 @@ class ReportGenerator:
         Args:
             stock_name: 股票名称
             storage: 存储后端
+            days: 仅显示最近N天的操作记录
+            limit: 最多显示最近N条操作记录
 
         Returns:
             Markdown格式的报告
@@ -123,9 +128,23 @@ class ReportGenerator:
         if not ops_data:
             return f"❌ 未找到股票 '{stock_name}' 的操作记录"
 
-        output = f"# 📝 {stock_name} 操作历史\n\n"
-
         operations = ops_data.operations
+
+        # 按天数过滤
+        if days is not None and days > 0:
+            cutoff = datetime.now() - timedelta(days=days)
+            operations = [
+                op for op in operations
+                if datetime.fromisoformat(op.timestamp) >= cutoff
+            ]
+
+        parts = []
+        if days:
+            parts.append(f"最近 {days} 天")
+        if limit:
+            parts.append(f"最近 {limit} 笔")
+        title_suffix = f" ({', '.join(parts)})" if parts else ""
+        output = f"# 📝 {stock_name} 操作历史{title_suffix}\n\n"
 
         if not operations:
             output += "📭 暂无操作记录\n"
@@ -160,7 +179,9 @@ class ReportGenerator:
         output += "| 时间 | 类型 | 价格 | 数量 | 金额 | 盈亏 | 备注 |\n"
         output += "|------|------|------|------|------|------|------|\n"
 
-        for op in reversed(operations):
+        display_ops = operations[-limit:] if limit else operations
+
+        for op in reversed(display_ops):
             time_str = op.timestamp[:16].replace('T', ' ')
 
             if op.type == OperationType.INIT:

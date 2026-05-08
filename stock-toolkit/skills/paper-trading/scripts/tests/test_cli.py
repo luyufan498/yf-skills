@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typer.testing import CliRunner
 from paper_trading.cli import app
-from datetime import datetime
+from datetime import datetime, timedelta
 
 runner = CliRunner()
 
@@ -155,3 +155,73 @@ def test_temp_data_list_command():
         assert result.exit_code == 0
         assert "deep-search" in result.stdout
         assert "history-continuity" in result.stdout
+
+
+def test_operations_with_days():
+    """测试 operations 命令的 --days 参数"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.trading import PaperTrader
+        from paper_trading.models import Operation, OperationType
+
+        trader = PaperTrader()
+        trader.init_account("测试股", capital=100000, stock_code="sh000001", force=True)
+
+        # 今天的操作
+        today_op = Operation(
+            type=OperationType.BUY, price=10, quantity=100, amount=1000,
+            timestamp=datetime.now().isoformat()
+        )
+        trader.storage.save_operation("测试股", today_op)
+
+        # 10 天前的操作
+        old_date = datetime.now() - timedelta(days=10)
+        old_op = Operation(
+            type=OperationType.BUY, price=10, quantity=100, amount=1000,
+            timestamp=old_date.isoformat()
+        )
+        trader.storage.save_operation("测试股", old_op)
+
+        # 测试 --days 7 只返回最近 7 天的操作
+        result = runner.invoke(app, ["operations", "测试股", "--days", "7"])
+
+        assert result.exit_code == 0
+        assert "(最近 7 天)" in result.stdout
+        assert "买入" in result.stdout
+        # 验证 10 天前的操作不在输出中，今天的操作在输出中
+        old_date_str = old_date.strftime('%Y-%m-%d')
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        assert old_date_str not in result.stdout
+        assert today_str in result.stdout
+
+
+def test_operations_list_with_limit():
+    """测试 operations 命令的 --limit 参数（全部股票列表视图）"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+
+        from paper_trading.trading import PaperTrader
+        from paper_trading.models import Operation, OperationType
+
+        trader = PaperTrader()
+        trader.init_account("测试股", capital=100000, stock_code="sh000001", force=True)
+
+        # 保存 3 条操作
+        for i in range(3):
+            op = Operation(
+                type=OperationType.BUY, price=10, quantity=100, amount=1000,
+                timestamp=datetime.now().isoformat()
+            )
+            trader.storage.save_operation("测试股", op)
+
+        # 测试 --limit 2 只显示最近 2 笔
+        result = runner.invoke(app, ["operations", "--limit", "2"])
+
+        assert result.exit_code == 0
+        assert "测试股" in result.stdout
+        # 检查 bullet 点数量（每行以 "     •" 开头）
+        bullet_lines = [line for line in result.stdout.split('\n') if '     •' in line]
+        assert len(bullet_lines) == 2

@@ -5,7 +5,7 @@
     "email": "your-email@example.com"
   },
   "metadata": {
-    "version": "1.0.0",
+    "version": "1.5.0",
     "description": "Claude Code 技能集合，包含财经数据分析、股票交易、PPT构建等专业化工具"
   },
   "plugins": [

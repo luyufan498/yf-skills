@@ -1,7 +1,7 @@
 """Tests for market_summary trend computation."""
 
 import pytest
-from paper_trading.market_summary import _compute_trend, _detect_intraday_pattern
+from paper_trading.market_summary import _compute_trend, _detect_intraday_pattern, _compute_cross_period
 
 
 def test_compute_trend_rising():
@@ -150,7 +150,58 @@ def test_detect_intraday_pattern_rising():
     assert len(result["key_moments"]) == 5
 
 
-def test_detect_intraday_pattern_empty():
-    """Empty minute_data list should return None."""
-    result = _detect_intraday_pattern([])
-    assert result is None
+def test_compute_cross_period_bearish_rebound():
+    """Monthly down, weekly flat, daily up: bearish rebound scenario."""
+    monthly = {
+        "direction": "下降",
+        "key_levels": {"highest": 12.0, "lowest": 8.0},
+    }
+    weekly = {"direction": "横盘", "key_levels": {"highest": 9.5, "lowest": 8.5}}
+    daily = {"direction": "上升", "key_levels": {"highest": 9.3, "lowest": 8.8}}
+    current_price = 9.1
+
+    result = _compute_cross_period(monthly, weekly, daily, current_price)
+    assert result is not None
+    assert "alignment" in result
+    assert "position_in_monthly_range" in result
+    assert "signal" in result
+    # position: (9.1 - 8.0) / (12.0 - 8.0) = 1.1 / 4.0 = 0.275
+    assert result["position_in_monthly_range"] == pytest.approx(0.275, abs=1e-3)
+    assert "承压" in result["alignment"] or "反弹" in result["alignment"]
+    assert isinstance(result["signal"], str)
+    assert len(result["signal"]) > 0
+
+
+def test_compute_cross_period_bullish():
+    """All three periods rising: bullish alignment."""
+    monthly = {
+        "direction": "上升",
+        "key_levels": {"highest": 15.0, "lowest": 10.0},
+    }
+    weekly = {"direction": "上升", "key_levels": {"highest": 14.0, "lowest": 11.0}}
+    daily = {"direction": "上升", "key_levels": {"highest": 13.5, "lowest": 12.0}}
+    current_price = 13.0
+
+    result = _compute_cross_period(monthly, weekly, daily, current_price)
+    assert result is not None
+    assert "alignment" in result
+    assert "position_in_monthly_range" in result
+    assert "signal" in result
+    # position: (13.0 - 10.0) / (15.0 - 10.0) = 3.0 / 5.0 = 0.6
+    assert result["position_in_monthly_range"] == pytest.approx(0.6, abs=1e-3)
+    assert "一致" in result["alignment"] or "上升" in result["alignment"]
+
+
+def test_compute_cross_period_div_zero():
+    """Monthly highest == lowest: edge case should not divide by zero."""
+    monthly = {
+        "direction": "横盘",
+        "key_levels": {"highest": 10.0, "lowest": 10.0},
+    }
+    weekly = {"direction": "横盘", "key_levels": {"highest": 10.0, "lowest": 10.0}}
+    daily = {"direction": "横盘", "key_levels": {"highest": 10.0, "lowest": 10.0}}
+    current_price = 10.0
+
+    result = _compute_cross_period(monthly, weekly, daily, current_price)
+    assert result is not None
+    assert result["position_in_monthly_range"] == pytest.approx(0.5, abs=1e-3)

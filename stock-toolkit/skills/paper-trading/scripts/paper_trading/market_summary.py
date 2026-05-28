@@ -269,3 +269,89 @@ def _build_key_moments(data: List[dict], high: float, low: float) -> List[dict]:
 
     return deduped[:5]
 
+
+def _compute_cross_period(monthly: dict, weekly: dict, daily: dict, current_price: float) -> dict:
+    """Compute cross-period trend alignment and signal.
+
+    Args:
+        monthly: Trend dict for monthly period (must contain ``direction`` and ``key_levels``).
+        weekly: Trend dict for weekly period.
+        daily: Trend dict for daily period.
+        current_price: Current market price.
+
+    Returns:
+        Dict with ``alignment``, ``position_in_monthly_range`` (0-1), and ``signal``.
+    """
+    # Extract directions with defaults
+    m_dir = monthly.get("direction") if monthly else None
+    w_dir = weekly.get("direction") if weekly else None
+    d_dir = daily.get("direction") if daily else None
+
+    m_dir = m_dir or "横盘"
+    w_dir = w_dir or "横盘"
+    d_dir = d_dir or "横盘"
+
+    # position_in_monthly_range
+    if monthly:
+        key_levels = monthly.get("key_levels", {})
+        highest = key_levels.get("highest")
+        lowest = key_levels.get("lowest")
+    else:
+        highest = None
+        lowest = None
+
+    if highest is None or lowest is None or highest == lowest:
+        position = 0.5
+    else:
+        position = (current_price - lowest) / (highest - lowest)
+        if position < 0:
+            position = 0.0
+        elif position > 1:
+            position = 1.0
+        position = round(position, 3)
+
+    # alignment logic
+    up_count = sum(1 for d in (m_dir, w_dir, d_dir) if d == "上升")
+    down_count = sum(1 for d in (m_dir, w_dir, d_dir) if d == "下降")
+
+    if up_count >= 2 and down_count == 0:
+        alignment = "多周期共振上升"
+    elif down_count >= 2 and up_count == 0:
+        alignment = "多周期共振下降"
+    elif m_dir == "下降" and d_dir == "上升":
+        alignment = "中长期承压，短期反弹"
+    elif m_dir == "上升" and d_dir == "下降":
+        alignment = "中长期向好，短期回调"
+    elif w_dir == "横盘" and d_dir == "上升":
+        alignment = "中期震荡，短期反弹"
+    elif w_dir == "横盘" and d_dir == "下降":
+        alignment = "中期震荡，短期回调"
+    else:
+        alignment = "趋势分化，需观察"
+
+    # signal logic
+    signal_parts = []
+    if position < 0.2:
+        signal_parts.append("处于长期区间低位")
+    elif position > 0.8:
+        signal_parts.append("处于长期区间高位")
+
+    if m_dir == "下降" and w_dir == "横盘" and d_dir == "上升":
+        signal_parts.append("日线反弹但周线仍处下降通道，谨慎乐观")
+    elif m_dir == "上升" and d_dir == "下降":
+        signal_parts.append("长期趋势向好，短期回调或为低吸机会")
+    elif up_count == 3:
+        signal_parts.append("全线上涨，注意追高风险")
+    elif down_count == 3:
+        signal_parts.append("全线下跌，等待企稳信号")
+    else:
+        signal_parts.append("趋势不明确，建议观望")
+
+    signal = "。".join(signal_parts)
+
+    return {
+        "alignment": alignment,
+        "position_in_monthly_range": position,
+        "signal": signal,
+    }
+

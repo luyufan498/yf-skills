@@ -1,7 +1,7 @@
 """Tests for market_summary trend computation."""
 
 import pytest
-from paper_trading.market_summary import _compute_trend
+from paper_trading.market_summary import _compute_trend, _detect_intraday_pattern
 
 
 def test_compute_trend_rising():
@@ -65,3 +65,92 @@ def test_compute_trend_single_bar():
     result = _compute_trend(bars, period_type="day")
     assert result is not None
     assert result["change_pct"] == pytest.approx(0.0)
+
+
+def test_detect_intraday_pattern_fallback():
+    """冲高回落/高开低走 pattern: open=9.42, high=9.46 at 09:32, low=9.20 at 14:30, close=9.21."""
+    minute_data = []
+    # Build data from 0930 to 1500 (excluding noon 1130-1300)
+    times = []
+    for h, m in [(9, 30), (9, 31), (9, 32)]:
+        times.append(f"{h:02d}{m:02d}")
+    for h in range(10, 11):
+        for m in range(0, 60):
+            times.append(f"{h:02d}{m:02d}")
+    for m in range(0, 31):
+        times.append(f"11{m:02d}")
+    for h in range(13, 15):
+        for m in range(0, 60):
+            times.append(f"{h:02d}{m:02d}")
+    for m in range(0, 1):
+        times.append(f"15{m:02d}")
+
+    # Create prices: start at 9.42, spike to 9.46 at 0932, then drift down to 9.20 at 1430, close 9.21
+    base = 9.42
+    for t in times:
+        if t == "0930":
+            price = base
+        elif t == "0932":
+            price = 9.46
+        elif t == "1430":
+            price = 9.20
+        elif t == "1500":
+            price = 9.21
+        else:
+            # Interpolate between known points
+            minute_idx = times.index(t)
+            idx_0932 = times.index("0932")
+            idx_1430 = times.index("1430")
+            idx_1500 = times.index("1500")
+            if minute_idx < idx_0932:
+                price = base + (9.46 - base) * (minute_idx / idx_0932)
+            elif minute_idx < idx_1430:
+                price = 9.46 + (9.20 - 9.46) * ((minute_idx - idx_0932) / (idx_1430 - idx_0932))
+            else:
+                price = 9.20 + (9.21 - 9.20) * ((minute_idx - idx_1430) / (idx_1500 - idx_1430))
+        minute_data.append({"time": t, "price": round(price, 2), "volume": 1000})
+
+    result = _detect_intraday_pattern(minute_data)
+    assert result is not None
+    assert result["open"] == pytest.approx(9.42)
+    assert result["high"] == pytest.approx(9.46)
+    assert result["low"] == pytest.approx(9.20)
+    assert result["close"] == pytest.approx(9.21)
+    assert result["pattern"] in ("冲高回落", "高开低走")
+    assert result["amplitude"] > 0
+    assert "volume_estimate" in result
+    assert result["volume_estimate"] is None or isinstance(result["volume_estimate"], int)
+    assert "key_moments" in result
+    assert len(result["key_moments"]) == 5
+    for km in result["key_moments"]:
+        assert "time" in km
+        assert "price" in km
+        assert "event" in km
+
+
+def test_detect_intraday_pattern_rising():
+    """Prices steadily rising from 9.10 to 9.50: expect 单边上涨 pattern."""
+    minute_data = []
+    start_price = 9.10
+    end_price = 9.50
+    n_points = 20
+    for i in range(n_points):
+        time_str = f"09{30 + i:02d}"
+        price = start_price + (end_price - start_price) * (i / (n_points - 1))
+        minute_data.append({"time": time_str, "price": round(price, 2), "volume": 500})
+
+    result = _detect_intraday_pattern(minute_data)
+    assert result is not None
+    assert result["open"] == pytest.approx(start_price)
+    assert result["close"] == pytest.approx(end_price)
+    assert result["close"] > result["open"]
+    assert result["pattern"] == "单边上涨"
+    assert result["amplitude"] > 0
+    assert "key_moments" in result
+    assert len(result["key_moments"]) == 5
+
+
+def test_detect_intraday_pattern_empty():
+    """Empty minute_data list should return None."""
+    result = _detect_intraday_pattern([])
+    assert result is None

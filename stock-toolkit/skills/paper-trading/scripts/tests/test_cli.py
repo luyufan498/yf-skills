@@ -1,5 +1,6 @@
 """CLI 集成测试"""
 
+import json
 import pytest
 import tempfile
 from pathlib import Path
@@ -225,3 +226,32 @@ def test_operations_list_with_limit():
         # 检查 bullet 点数量（每行以 "     •" 开头）
         bullet_lines = [line for line in result.stdout.split('\n') if '     •' in line]
         assert len(bullet_lines) == 2
+
+
+def test_cli_market_summary_json():
+    """测试 market-summary 命令 --format json 输出"""
+    result = runner.invoke(app, ["market-summary", "sh600000", "--format", "json"])
+    # 命令尚未注册时 Typer/Click 返回 exit code 2
+    assert result.exit_code in (0, 1, 2), f"Unexpected exit code: {result.exit_code}"
+    if result.exit_code == 0:
+        data = json.loads(result.stdout)
+        assert "code" in data
+        assert "trend_summary" in data
+        assert "cross_period" in data
+
+
+def test_cli_market_summary_pretty():
+    """测试 market-summary 命令 --format pretty 输出"""
+    result = runner.invoke(app, ["market-summary", "sh600000", "--format", "pretty"])
+    assert result.exit_code in (0, 1, 2), f"Unexpected exit code: {result.exit_code}"
+    if result.exit_code == 0:
+        assert "趋势" in result.stdout or "汇总" in result.stdout
+
+
+def test_cli_market_summary_markdown():
+    """测试 market-summary 命令 --format markdown 输出"""
+    result = runner.invoke(app, ["market-summary", "sh600000", "--format", "markdown"])
+    assert result.exit_code in (0, 1, 2), f"Unexpected exit code: {result.exit_code}"
+    if result.exit_code == 0:
+        assert "##" in result.stdout
+

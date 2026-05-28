@@ -35,6 +35,7 @@ from paper_trading.code_searcher import StockCodeSearcher
 from paper_trading.analysis import AnalysisManager
 from paper_trading.temp_data_manager import TempDataManager
 from paper_trading.config import get_workspace_config
+from paper_trading.market_summary import MarketSummaryAnalyzer
 
 # 从已安装包读取版本号
 try:
@@ -634,6 +635,33 @@ def fetch_kline(
 
     except Exception as e:
         typer.echo(f"❌ 获取K线数据失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def market_summary(
+    code: str = typer.Argument(..., help="股票代码"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json/markdown)")
+):
+    """获取股票多周期市场趋势汇总 (月K/周K/日K/分时)"""
+    try:
+        analyzer = MarketSummaryAnalyzer()
+        data = analyzer.analyze(code)
+
+        if data.get("error"):
+            typer.echo(f"❌ {data['error']}", err=True)
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        elif format == "markdown":
+            typer.echo(analyzer.format_markdown(data))
+        else:
+            typer.echo(analyzer.format_pretty(data))
+
+    except Exception as e:
+        typer.echo(f"❌ 获取市场汇总失败: {e}", err=True)
         raise typer.Exit(1)
 
 

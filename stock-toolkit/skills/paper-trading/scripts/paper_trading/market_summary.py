@@ -471,14 +471,19 @@ class MarketSummaryAnalyzer:
 
         return result
 
-    def _fmt_bar(self, bar: dict) -> str:
-        """Format a single OHLC bar for pretty output."""
+    def _fmt_bar(self, bar: dict, prev_close: Optional[float] = None) -> str:
+        """Format a single OHLC bar for pretty output, with optional change from previous."""
         parts = [f"  {bar.get('date', '')}:"]
         for key in ["open", "close", "high", "low"]:
             val = bar.get(key)
             if val is not None:
                 name_map = {"open": "开", "close": "收", "high": "高", "low": "低"}
                 parts.append(f" {name_map[key]}{val}")
+        close = bar.get("close")
+        if prev_close is not None and close is not None and prev_close != 0:
+            change = round((close - prev_close) / prev_close * 100, 2)
+            sign = "+" if change > 0 else ""
+            parts.append(f" 涨跌:{sign}{change}%")
         return "".join(parts)
 
     def _fmt_period_block(self, label: str, period_key: str, data: dict) -> list:
@@ -503,8 +508,10 @@ class MarketSummaryAnalyzer:
         else:
             lines.append(f"  开盘: {kl.get('period_start', 'N/A')}  收盘: {kl.get('period_end', 'N/A')}")
 
+        prev_close = None
         for bar in bars:
-            lines.append(self._fmt_bar(bar))
+            lines.append(self._fmt_bar(bar, prev_close))
+            prev_close = bar.get("close")
 
         lines.append("")
         return lines

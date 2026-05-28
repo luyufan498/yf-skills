@@ -471,8 +471,46 @@ class MarketSummaryAnalyzer:
 
         return result
 
+    def _fmt_bar(self, bar: dict) -> str:
+        """Format a single OHLC bar for pretty output."""
+        parts = [f"  {bar.get('date', '')}:"]
+        for key in ["open", "close", "high", "low"]:
+            val = bar.get(key)
+            if val is not None:
+                name_map = {"open": "开", "close": "收", "high": "高", "low": "低"}
+                parts.append(f" {name_map[key]}{val}")
+        return "".join(parts)
+
+    def _fmt_period_block(self, label: str, period_key: str, data: dict) -> list:
+        """Format one period block (monthly/weekly/daily)."""
+        lines = []
+        period = data.get(period_key, {})
+        trend = data.get("trend_summary", {}).get(
+            {"monthly": "long_term", "weekly": "medium_term", "daily": "short_term"}.get(period_key, "")
+        )
+        count = period.get("count", 0)
+        kl = period.get("key_levels", {})
+        bars = period.get("bars", [])
+
+        lines.append(f"{label} ({count}条)")
+        lines.append("-" * 40)
+        lines.append(f"  最高: {kl.get('highest', 'N/A')}  最低: {kl.get('lowest', 'N/A')}")
+
+        change = trend.get("change_pct") if trend else None
+        if change is not None:
+            sign = "+" if change > 0 else ""
+            lines.append(f"  开盘: {kl.get('period_start', 'N/A')}  收盘: {kl.get('period_end', 'N/A')}  涨跌: {sign}{change}%")
+        else:
+            lines.append(f"  开盘: {kl.get('period_start', 'N/A')}  收盘: {kl.get('period_end', 'N/A')}")
+
+        for bar in bars:
+            lines.append(self._fmt_bar(bar))
+
+        lines.append("")
+        return lines
+
     def format_pretty(self, data: dict) -> str:
-        """Human-readable text output."""
+        """Human-readable text output with objective data only."""
         lines = []
         header = (
             f"{data.get('name', '')} ({data.get('code', '')})  "
@@ -482,57 +520,39 @@ class MarketSummaryAnalyzer:
         lines.append("=" * len(header))
         lines.append("")
 
-        # Trend summary
-        lines.append("趋势概览")
-        lines.append("-" * 40)
-        trend_summary = data.get("trend_summary", {})
-        for label, key in [("长期", "long_term"), ("中期", "medium_term"), ("短期", "short_term"), ("今日", "today")]:
-            trend = trend_summary.get(key)
-            if trend:
-                direction = trend.get("direction", "N/A")
-                change = trend.get("change_pct", "N/A")
-                vol = trend.get("volatility", "N/A")
-                lines.append(f"  {label}: 方向={direction}, 涨跌={change}%, 波动={vol}")
-            else:
-                lines.append(f"  {label}: 无数据")
-        lines.append("")
+        # Monthly block
+        lines.extend(self._fmt_period_block("近6月", "monthly", data))
 
-        # Cross-period
-        cross = data.get("cross_period")
-        if cross:
-            lines.append("跨周期信号")
-            lines.append("-" * 40)
-            lines.append(f"  共振: {cross.get('alignment', 'N/A')}")
-            lines.append(f"  位置: {cross.get('position_in_monthly_range', 'N/A')}")
-            lines.append(f"  建议: {cross.get('signal', 'N/A')}")
-            lines.append("")
+        # Weekly block
+        lines.extend(self._fmt_period_block("近8周", "weekly", data))
 
-        # Bar summaries
-        for label, key in [("月线", "monthly"), ("周线", "weekly"), ("日线", "daily")]:
-            period = data.get(key, {})
-            count = period.get("count", 0)
-            key_levels = period.get("key_levels", {})
-            lines.append(f"{label}数据 ({count}条)")
-            lines.append("-" * 40)
-            lines.append(f"  最高: {key_levels.get('highest', 'N/A')}")
-            lines.append(f"  最低: {key_levels.get('lowest', 'N/A')}")
-            lines.append(f"  开盘: {key_levels.get('period_start', 'N/A')}")
-            lines.append(f"  收盘: {key_levels.get('period_end', 'N/A')}")
-            lines.append("")
+        # Daily block
+        lines.extend(self._fmt_period_block("近5日", "daily", data))
 
-        # Intraday
+        # Intraday block
+        today_trend = data.get("trend_summary", {}).get("today")
         intraday = data.get("intraday")
-        if intraday and intraday.get("key_moments"):
-            lines.append("分时关键节点")
-            lines.append("-" * 40)
-            for km in intraday["key_moments"]:
-                lines.append(f"  {km.get('time', '')}  {km.get('event', '')}  {km.get('price', '')}")
-            lines.append("")
+        lines.append("当日分时")
+        lines.append("-" * 40)
 
+        if today_trend:
+            change = today_trend.get("change_pct")
+            if change is not None:
+                sign = "+" if change > 0 else ""
+                lines.append(f"  涨跌: {sign}{change}%")
+            amplitude = today_trend.get("amplitude")
+            if amplitude is not None:
+                lines.append(f"  振幅: {amplitude}%")
+
+        if intraday and intraday.get("key_moments"):
+            for km in intraday["key_moments"]:
+                lines.append(f"  {km.get('time', '')} {km.get('event', '')} {km.get('price', '')}")
+
+        lines.append("")
         return "\n".join(lines)
 
     def format_markdown(self, data: dict) -> str:
-        """Markdown formatted output."""
+        """Markdown formatted output with objective data only."""
         lines = []
         lines.append(f"# {data.get('name', '')} ({data.get('code', '')}) 市场摘要")
         lines.append("")
@@ -541,32 +561,51 @@ class MarketSummaryAnalyzer:
         lines.append(f"**昨收**: {data.get('pre_close', 'N/A')}")
         lines.append("")
 
-        # Trend summary table
-        lines.append("## 趋势概览")
+        # Objective period summary table
+        lines.append("## 周期变化")
         lines.append("")
-        lines.append("| 周期 | 方向 | 涨跌幅 | 波动率 |")
-        lines.append("|------|------|--------|--------|")
-        trend_summary = data.get("trend_summary", {})
-        for label, key in [("长期", "long_term"), ("中期", "medium_term"), ("短期", "short_term"), ("今日", "today")]:
-            trend = trend_summary.get(key)
-            if trend:
-                direction = trend.get("direction", "N/A")
-                change = trend.get("change_pct", "N/A")
-                vol = trend.get("volatility", "N/A")
-                lines.append(f"| {label} | {direction} | {change}% | {vol} |")
-            else:
-                lines.append(f"| {label} | N/A | N/A | N/A |")
-        lines.append("")
+        lines.append("| 时间区间 | 涨跌幅 | 开盘 | 收盘 | 最高 | 最低 |")
+        lines.append("|----------|--------|------|------|------|------|")
 
-        # Cross-period
-        cross = data.get("cross_period")
-        if cross:
-            lines.append("## 跨周期分析")
-            lines.append("")
-            lines.append(f"**共振**: {cross.get('alignment', 'N/A')}")
-            lines.append(f"**长期区间位置**: {cross.get('position_in_monthly_range', 'N/A')}")
-            lines.append(f"**信号**: {cross.get('signal', 'N/A')}")
-            lines.append("")
+        trend_summary = data.get("trend_summary", {})
+        monthly = trend_summary.get("long_term")
+        weekly = trend_summary.get("medium_term")
+        daily = trend_summary.get("short_term")
+        today = trend_summary.get("today")
+
+        if monthly:
+            change = monthly.get("change_pct", "N/A")
+            kl = monthly.get("key_levels", {})
+            lines.append(
+                f"| 近6个月 | {change}% | {kl.get('period_start', 'N/A')} | "
+                f"{kl.get('period_end', 'N/A')} | {kl.get('highest', 'N/A')} | {kl.get('lowest', 'N/A')} |"
+            )
+
+        if weekly:
+            change = weekly.get("change_pct", "N/A")
+            kl = weekly.get("key_levels", {})
+            lines.append(
+                f"| 近8周 | {change}% | {kl.get('period_start', 'N/A')} | "
+                f"{kl.get('period_end', 'N/A')} | {kl.get('highest', 'N/A')} | {kl.get('lowest', 'N/A')} |"
+            )
+
+        if daily:
+            change = daily.get("change_pct", "N/A")
+            kl = daily.get("key_levels", {})
+            lines.append(
+                f"| 近5日 | {change}% | {kl.get('period_start', 'N/A')} | "
+                f"{kl.get('period_end', 'N/A')} | {kl.get('highest', 'N/A')} | {kl.get('lowest', 'N/A')} |"
+            )
+
+        if today:
+            change = today.get("change_pct", "N/A")
+            intraday = data.get("intraday", {})
+            lines.append(
+                f"| 今日 | {change}% | {data.get('pre_close', 'N/A')} | "
+                f"{data.get('current_price', 'N/A')} | {intraday.get('high', 'N/A')} | {intraday.get('low', 'N/A')} |"
+            )
+
+        lines.append("")
 
         # Intraday table
         intraday = data.get("intraday")
@@ -580,8 +619,8 @@ class MarketSummaryAnalyzer:
             lines.append("")
 
         # Daily bars table
-        daily = data.get("daily", {})
-        bars = daily.get("bars", [])
+        daily_data = data.get("daily", {})
+        bars = daily_data.get("bars", [])
         if bars:
             lines.append("## 日线数据")
             lines.append("")

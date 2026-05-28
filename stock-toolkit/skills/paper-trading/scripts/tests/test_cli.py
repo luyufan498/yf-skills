@@ -245,7 +245,7 @@ def test_cli_market_summary_pretty():
     result = runner.invoke(app, ["market-summary", "sh600000", "--format", "pretty"])
     assert result.exit_code in (0, 1, 2), f"Unexpected exit code: {result.exit_code}"
     if result.exit_code == 0:
-        assert "趋势" in result.stdout or "汇总" in result.stdout
+        assert "近6个月" in result.stdout or "近8周" in result.stdout
 
 
 def test_cli_market_summary_markdown():

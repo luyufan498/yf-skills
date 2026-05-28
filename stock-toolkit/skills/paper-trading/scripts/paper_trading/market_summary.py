@@ -1,6 +1,16 @@
 """Market summary utilities for paper trading."""
 
+from datetime import datetime
 from typing import List, Optional
+
+from paper_trading.price_fetcher import StockPriceFetcher
+from paper_trading.kline_fetcher import KLineDataFetcher
+
+
+def _trim_bars(bars: List[dict]) -> List[dict]:
+    """Keep only essential OHLCV fields."""
+    fields = {"date", "open", "close", "high", "low", "volume"}
+    return [{k: v for k, v in bar.items() if k in fields} for bar in bars]
 
 
 def _compute_trend(bars: List[dict], period_type: str) -> Optional[dict]:
@@ -354,4 +364,236 @@ def _compute_cross_period(monthly: dict, weekly: dict, daily: dict, current_pric
         "position_in_monthly_range": position,
         "signal": signal,
     }
+
+
+class MarketSummaryAnalyzer:
+    """Orchestrates data fetching and produces a structured market summary."""
+
+    def __init__(self):
+        self.price_fetcher = StockPriceFetcher()
+        self.kline_fetcher = KLineDataFetcher()
+
+    def analyze(self, code: str) -> dict:
+        stock_info = self.price_fetcher.get_realtime_price(code)
+
+        monthly_bars = self.kline_fetcher.fetch_kline_data(code, "month", 6)
+        weekly_bars = self.kline_fetcher.fetch_kline_data(code, "week", 8)
+        daily_bars = self.kline_fetcher.fetch_kline_data(code, "day", 5)
+
+        raw_minute = self.kline_fetcher.fetch_minute_data(code)
+        if isinstance(raw_minute, dict):
+            minute_list = raw_minute.get("data", [])
+        else:
+            minute_list = raw_minute if isinstance(raw_minute, list) else []
+
+        # Current price fallback
+        current_price = None
+        pre_close = None
+        name = ""
+        if stock_info is not None:
+            current_price = getattr(stock_info, "current_price", None)
+            pre_close = getattr(stock_info, "pre_close", None)
+            name = getattr(stock_info, "name", "") or ""
+
+        if current_price is None and daily_bars:
+            current_price = daily_bars[-1].get("close")
+
+        # Compute trends
+        monthly_trend = _compute_trend(monthly_bars, "month")
+        weekly_trend = _compute_trend(weekly_bars, "week")
+        daily_trend = _compute_trend(daily_bars, "day")
+
+        # Intraday pattern
+        intraday = _detect_intraday_pattern(minute_list)
+
+        # Cross-period
+        cross_period = None
+        if current_price is not None:
+            cross_period = _compute_cross_period(
+                monthly_trend, weekly_trend, daily_trend, current_price
+            )
+
+        # Today's trend summary
+        today_change_pct = 0.0
+        if pre_close and pre_close != 0 and current_price is not None:
+            today_change_pct = round((current_price - pre_close) / pre_close * 100, 2)
+
+        # Volume vs avg
+        volume_vs_avg = None
+        minute_total_volume = None
+        if minute_list:
+            minute_volumes = [m.get("volume") for m in minute_list if m.get("volume") is not None]
+            if minute_volumes:
+                minute_total_volume = sum(minute_volumes)
+
+        if daily_bars and minute_total_volume is not None:
+            daily_volumes = [b.get("volume") for b in daily_bars if b.get("volume") is not None]
+            if daily_volumes:
+                avg_volume = sum(daily_volumes) / len(daily_volumes)
+                if avg_volume:
+                    volume_vs_avg = round(minute_total_volume / avg_volume, 2)
+
+        today_trend = {
+            "direction": intraday.get("pattern", "横盘震荡") if intraday else "横盘震荡",
+            "change_pct": today_change_pct,
+            "volume_vs_avg": volume_vs_avg,
+            "amplitude": intraday.get("amplitude") if intraday else None,
+        }
+
+        trend_summary = {
+            "long_term": monthly_trend,
+            "medium_term": weekly_trend,
+            "short_term": daily_trend,
+            "today": today_trend,
+        }
+
+        # Build period summaries
+        def _period_summary(bars, trend):
+            return {
+                "count": len(bars),
+                "bars": _trim_bars(bars),
+                "key_levels": trend.get("key_levels", {}) if trend else {},
+            }
+
+        result = {
+            "code": code,
+            "name": name,
+            "current_price": current_price,
+            "pre_close": pre_close,
+            "current_date": datetime.now().strftime("%Y-%m-%d"),
+            "trend_summary": trend_summary,
+            "cross_period": cross_period,
+            "monthly": _period_summary(monthly_bars, monthly_trend),
+            "weekly": _period_summary(weekly_bars, weekly_trend),
+            "daily": _period_summary(daily_bars, daily_trend),
+            "intraday": intraday,
+        }
+
+        return result
+
+    def format_pretty(self, data: dict) -> str:
+        """Human-readable text output."""
+        lines = []
+        header = (
+            f"{data.get('name', '')} ({data.get('code', '')})  "
+            f"{data.get('current_date', '')}  现价: {data.get('current_price', 'N/A')}"
+        )
+        lines.append(header)
+        lines.append("=" * len(header))
+        lines.append("")
+
+        # Trend summary
+        lines.append("趋势概览")
+        lines.append("-" * 40)
+        trend_summary = data.get("trend_summary", {})
+        for label, key in [("长期", "long_term"), ("中期", "medium_term"), ("短期", "short_term"), ("今日", "today")]:
+            trend = trend_summary.get(key)
+            if trend:
+                direction = trend.get("direction", "N/A")
+                change = trend.get("change_pct", "N/A")
+                vol = trend.get("volatility", "N/A")
+                lines.append(f"  {label}: 方向={direction}, 涨跌={change}%, 波动={vol}")
+            else:
+                lines.append(f"  {label}: 无数据")
+        lines.append("")
+
+        # Cross-period
+        cross = data.get("cross_period")
+        if cross:
+            lines.append("跨周期信号")
+            lines.append("-" * 40)
+            lines.append(f"  共振: {cross.get('alignment', 'N/A')}")
+            lines.append(f"  位置: {cross.get('position_in_monthly_range', 'N/A')}")
+            lines.append(f"  建议: {cross.get('signal', 'N/A')}")
+            lines.append("")
+
+        # Bar summaries
+        for label, key in [("月线", "monthly"), ("周线", "weekly"), ("日线", "daily")]:
+            period = data.get(key, {})
+            count = period.get("count", 0)
+            key_levels = period.get("key_levels", {})
+            lines.append(f"{label}数据 ({count}条)")
+            lines.append("-" * 40)
+            lines.append(f"  最高: {key_levels.get('highest', 'N/A')}")
+            lines.append(f"  最低: {key_levels.get('lowest', 'N/A')}")
+            lines.append(f"  开盘: {key_levels.get('period_start', 'N/A')}")
+            lines.append(f"  收盘: {key_levels.get('period_end', 'N/A')}")
+            lines.append("")
+
+        # Intraday
+        intraday = data.get("intraday")
+        if intraday and intraday.get("key_moments"):
+            lines.append("分时关键节点")
+            lines.append("-" * 40)
+            for km in intraday["key_moments"]:
+                lines.append(f"  {km.get('time', '')}  {km.get('event', '')}  {km.get('price', '')}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def format_markdown(self, data: dict) -> str:
+        """Markdown formatted output."""
+        lines = []
+        lines.append(f"# {data.get('name', '')} ({data.get('code', '')}) 市场摘要")
+        lines.append("")
+        lines.append(f"**日期**: {data.get('current_date', '')}")
+        lines.append(f"**现价**: {data.get('current_price', 'N/A')}")
+        lines.append(f"**昨收**: {data.get('pre_close', 'N/A')}")
+        lines.append("")
+
+        # Trend summary table
+        lines.append("## 趋势概览")
+        lines.append("")
+        lines.append("| 周期 | 方向 | 涨跌幅 | 波动率 |")
+        lines.append("|------|------|--------|--------|")
+        trend_summary = data.get("trend_summary", {})
+        for label, key in [("长期", "long_term"), ("中期", "medium_term"), ("短期", "short_term"), ("今日", "today")]:
+            trend = trend_summary.get(key)
+            if trend:
+                direction = trend.get("direction", "N/A")
+                change = trend.get("change_pct", "N/A")
+                vol = trend.get("volatility", "N/A")
+                lines.append(f"| {label} | {direction} | {change}% | {vol} |")
+            else:
+                lines.append(f"| {label} | N/A | N/A | N/A |")
+        lines.append("")
+
+        # Cross-period
+        cross = data.get("cross_period")
+        if cross:
+            lines.append("## 跨周期分析")
+            lines.append("")
+            lines.append(f"**共振**: {cross.get('alignment', 'N/A')}")
+            lines.append(f"**长期区间位置**: {cross.get('position_in_monthly_range', 'N/A')}")
+            lines.append(f"**信号**: {cross.get('signal', 'N/A')}")
+            lines.append("")
+
+        # Intraday table
+        intraday = data.get("intraday")
+        if intraday and intraday.get("key_moments"):
+            lines.append("## 分时关键节点")
+            lines.append("")
+            lines.append("| 时间 | 事件 | 价格 |")
+            lines.append("|------|------|------|")
+            for km in intraday["key_moments"]:
+                lines.append(f"| {km.get('time', '')} | {km.get('event', '')} | {km.get('price', '')} |")
+            lines.append("")
+
+        # Daily bars table
+        daily = data.get("daily", {})
+        bars = daily.get("bars", [])
+        if bars:
+            lines.append("## 日线数据")
+            lines.append("")
+            lines.append("| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 |")
+            lines.append("|------|------|------|------|------|--------|")
+            for bar in bars:
+                lines.append(
+                    f"| {bar.get('date', '')} | {bar.get('open', '')} | "
+                    f"{bar.get('close', '')} | {bar.get('high', '')} | "
+                    f"{bar.get('low', '')} | {bar.get('volume', '')} |"
+                )
+            lines.append("")
+
+        return "\n".join(lines)
 

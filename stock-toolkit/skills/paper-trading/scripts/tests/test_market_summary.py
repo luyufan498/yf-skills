@@ -1,6 +1,7 @@
 """Tests for market_summary trend computation."""
 
 import pytest
+from unittest.mock import patch, MagicMock
 from paper_trading.market_summary import _compute_trend, _detect_intraday_pattern, _compute_cross_period
 
 
@@ -205,3 +206,99 @@ def test_compute_cross_period_div_zero():
     result = _compute_cross_period(monthly, weekly, daily, current_price)
     assert result is not None
     assert result["position_in_monthly_range"] == pytest.approx(0.5, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# MarketSummaryAnalyzer.analyze tests (class does not exist yet)
+# ---------------------------------------------------------------------------
+
+def test_analyze_with_mocked_data():
+    """Mock fetchers and verify MarketSummaryAnalyzer.analyze returns expected keys."""
+    from paper_trading.market_summary import MarketSummaryAnalyzer
+
+    mock_stock_info = MagicMock()
+    mock_stock_info.name = "浦发银行"
+    mock_stock_info.current_price = 9.21
+    mock_stock_info.pre_close = 9.43
+
+    monthly_bars = [
+        {"date": "2026-01-01", "open": 10.0, "close": 10.5, "high": 11.0, "low": 9.8},
+        {"date": "2026-02-01", "open": 10.5, "close": 11.0, "high": 11.5, "low": 10.2},
+    ]
+    weekly_bars = [
+        {"date": "2026-05-19", "open": 9.5, "close": 9.4, "high": 9.6, "low": 9.3},
+        {"date": "2026-05-26", "open": 9.4, "close": 9.3, "high": 9.5, "low": 9.2},
+    ]
+    daily_bars = [
+        {"date": "2026-05-25", "open": 9.40, "close": 9.38, "high": 9.42, "low": 9.35},
+        {"date": "2026-05-26", "open": 9.38, "close": 9.30, "high": 9.40, "low": 9.28},
+        {"date": "2026-05-27", "open": 9.30, "close": 9.21, "high": 9.32, "low": 9.18},
+    ]
+    minute_data = [
+        {"time": "0930", "price": 9.42, "volume": 1000},
+        {"time": "0931", "price": 9.44, "volume": 1200},
+        {"time": "0932", "price": 9.46, "volume": 1500},
+        {"time": "1430", "price": 9.20, "volume": 800},
+        {"time": "1500", "price": 9.21, "volume": 900},
+    ]
+
+    with patch("paper_trading.market_summary.StockPriceFetcher") as MockPriceFetcher, \
+         patch("paper_trading.market_summary.KLineDataFetcher") as MockKLineFetcher:
+
+        mock_price_instance = MagicMock()
+        mock_price_instance.get_realtime_price.return_value = mock_stock_info
+        MockPriceFetcher.return_value = mock_price_instance
+
+        mock_kline_instance = MagicMock()
+        mock_kline_instance.fetch_kline_data.side_effect = lambda stock_code, kline_type, count=None: {
+            "month": monthly_bars,
+            "week": weekly_bars,
+            "day": daily_bars,
+        }.get(kline_type, [])
+        mock_kline_instance.fetch_minute_data.return_value = minute_data
+        MockKLineFetcher.return_value = mock_kline_instance
+
+        analyzer = MarketSummaryAnalyzer()
+        result = analyzer.analyze("sh600000")
+
+        assert "code" in result
+        assert "name" in result
+        assert "current_price" in result
+        assert "trend_summary" in result
+        assert "cross_period" in result
+        assert "monthly" in result
+        assert "weekly" in result
+        assert "daily" in result
+        assert "intraday" in result
+
+        assert result["code"] == "sh600000"
+        assert result["name"] == "浦发银行"
+        assert result["current_price"] == 9.21
+
+        assert "long_term" in result["trend_summary"]
+        assert "short_term" in result["trend_summary"]
+        assert "direction" in result["trend_summary"]["long_term"]
+        assert "direction" in result["trend_summary"]["short_term"]
+
+
+def test_analyze_empty_data():
+    """Mock fetchers returning empty/None data; verify analyze handles gracefully."""
+    from paper_trading.market_summary import MarketSummaryAnalyzer
+
+    with patch("paper_trading.market_summary.StockPriceFetcher") as MockPriceFetcher, \
+         patch("paper_trading.market_summary.KLineDataFetcher") as MockKLineFetcher:
+
+        mock_price_instance = MagicMock()
+        mock_price_instance.get_realtime_price.return_value = None
+        MockPriceFetcher.return_value = mock_price_instance
+
+        mock_kline_instance = MagicMock()
+        mock_kline_instance.fetch_kline_data.return_value = []
+        mock_kline_instance.fetch_minute_data.return_value = []
+        MockKLineFetcher.return_value = mock_kline_instance
+
+        analyzer = MarketSummaryAnalyzer()
+        result = analyzer.analyze("sh600000")
+
+        assert isinstance(result, dict)
+        assert "error" in result or result.get("code") == "sh600000"

@@ -65,6 +65,9 @@ ptrade fetch-price sh600000
 # 查询K线数据
 ptrade fetch-kline sh600000 --type day --count 30
 
+# 多周期市场趋势汇总 (月K/周K/日K/分时)
+ptrade market-summary sh600000
+
 # 搜索股票代码
 ptrade search 茅台 --limit 5
 

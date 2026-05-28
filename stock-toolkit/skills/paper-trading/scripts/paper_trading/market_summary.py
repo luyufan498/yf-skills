@@ -558,6 +558,36 @@ class MarketSummaryAnalyzer:
         lines.append("")
         return "\n".join(lines)
 
+    def _md_bars_table(self, label: str, period_data: dict, prev_close: Optional[float] = None) -> list:
+        """Generate markdown bar table for a period."""
+        lines = []
+        bars = period_data.get("bars", [])
+        if not bars:
+            return lines
+
+        lines.append(f"## {label}")
+        lines.append("")
+        lines.append("| 日期 | 开盘 | 收盘 | 最高 | 最低 | 涨跌 |")
+        lines.append("|------|------|------|------|------|------|")
+
+        for bar in bars:
+            close = bar.get("close")
+            change_str = ""
+            if prev_close is not None and close is not None and prev_close != 0:
+                change = round((close - prev_close) / prev_close * 100, 2)
+                sign = "+" if change > 0 else ""
+                change_str = f"{sign}{change}%"
+            prev_close = close
+
+            lines.append(
+                f"| {bar.get('date', '')} | {bar.get('open', '')} | "
+                f"{bar.get('close', '')} | {bar.get('high', '')} | "
+                f"{bar.get('low', '')} | {change_str} |"
+            )
+
+        lines.append("")
+        return lines
+
     def format_markdown(self, data: dict) -> str:
         """Markdown formatted output with objective data only."""
         lines = []
@@ -568,7 +598,7 @@ class MarketSummaryAnalyzer:
         lines.append(f"**昨收**: {data.get('pre_close', 'N/A')}")
         lines.append("")
 
-        # Objective period summary table
+        # Period summary table
         lines.append("## 周期变化")
         lines.append("")
         lines.append("| 时间区间 | 涨跌幅 | 开盘 | 收盘 | 最高 | 最低 |")
@@ -607,12 +637,23 @@ class MarketSummaryAnalyzer:
         if today:
             change = today.get("change_pct", "N/A")
             intraday = data.get("intraday", {})
+            amplitude = today.get("amplitude")
+            amp_str = f" 振幅{amplitude}%" if amplitude is not None else ""
             lines.append(
-                f"| 今日 | {change}% | {data.get('pre_close', 'N/A')} | "
+                f"| 今日 | {change}%{amp_str} | {data.get('pre_close', 'N/A')} | "
                 f"{data.get('current_price', 'N/A')} | {intraday.get('high', 'N/A')} | {intraday.get('low', 'N/A')} |"
             )
 
         lines.append("")
+
+        # Monthly bars
+        lines.extend(self._md_bars_table("月线数据", data.get("monthly", {})))
+
+        # Weekly bars
+        lines.extend(self._md_bars_table("周线数据", data.get("weekly", {})))
+
+        # Daily bars
+        lines.extend(self._md_bars_table("日线数据", data.get("daily", {})))
 
         # Intraday table
         intraday = data.get("intraday")
@@ -623,22 +664,6 @@ class MarketSummaryAnalyzer:
             lines.append("|------|------|------|")
             for km in intraday["key_moments"]:
                 lines.append(f"| {km.get('time', '')} | {km.get('event', '')} | {km.get('price', '')} |")
-            lines.append("")
-
-        # Daily bars table
-        daily_data = data.get("daily", {})
-        bars = daily_data.get("bars", [])
-        if bars:
-            lines.append("## 日线数据")
-            lines.append("")
-            lines.append("| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 |")
-            lines.append("|------|------|------|------|------|--------|")
-            for bar in bars:
-                lines.append(
-                    f"| {bar.get('date', '')} | {bar.get('open', '')} | "
-                    f"{bar.get('close', '')} | {bar.get('high', '')} | "
-                    f"{bar.get('low', '')} | {bar.get('volume', '')} |"
-                )
             lines.append("")
 
         return "\n".join(lines)

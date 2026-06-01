@@ -4,7 +4,7 @@
 """
 
 import typer
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 import importlib.metadata
 import re
@@ -1027,6 +1027,257 @@ def search(
     except Exception as e:
         typer.echo(f"❌ 搜索失败: {e}", err=True)
         raise typer.Exit(1)
+
+
+from paper_trading.conditions import ConditionType, ConditionCategory
+from paper_trading.conditions_manager import ConditionsManager
+
+
+@app.command("conditions")
+def conditions_command(
+    stock_name: str = typer.Argument(..., help="股票名称"),
+    action: str = typer.Option("show", "--action", "-a", help="操作: show/set/update/remove/trigger/expire/check"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式: pretty/markdown/json"),
+    template: str = typer.Option("trigger-table", "--template", "-t", help="模板: trigger-table/audit-table/expired-table/execution-check/all"),
+    # --set / --update params
+    condition_type: Optional[str] = typer.Option(None, "--type", help="条件类型: trailing_stop/cost_protection/take_profit_1/take_profit_2/add_position"),
+    price: Optional[float] = typer.Option(None, "--price", "-p", help="价格"),
+    action_str: Optional[str] = typer.Option(None, "--action-str", help="触发动作描述"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="类别: hard/soft"),
+    expiry_days: Optional[int] = typer.Option(None, "--expiry-days", "-e", help="软条件有效期（天）"),
+    # --update reason
+    reason: Optional[str] = typer.Option(None, "--reason", "-r", help="修改理由（Level 2）"),
+    # --override params
+    override_trigger: Optional[str] = typer.Option(None, "--override-trigger", help="强制复审触发器（逗号分隔）"),
+    override_reason: Optional[str] = typer.Option(None, "--override-reason", help="解锁理由（Level 3，不少于20字）"),
+    # --trigger / --expire
+    trigger_price: Optional[float] = typer.Option(None, "--trigger-price", help="触发时价格"),
+):
+    """条件管理：查看、设定、修改、触发、过期股票交易条件"""
+    stock_name = _normalize_stock_name(stock_name)
+    manager = ConditionsManager()
+
+    # 获取当前价格（用于校验）
+    def _get_current_price():
+        try:
+            from paper_trading.portfolio import PortfolioManager
+            pm = PortfolioManager()
+            summary = pm.get_account_summary(stock_name)
+            if summary and summary.get("positions", {}).get("current_price"):
+                return summary["positions"]["current_price"]
+        except Exception:
+            pass
+        return None
+
+    def _get_avg_cost():
+        try:
+            from paper_trading.portfolio import PortfolioManager
+            pm = PortfolioManager()
+            summary = pm.get_account_summary(stock_name)
+            if summary and summary.get("positions", {}).get("total_quantity", 0) > 0:
+                total_cost = summary["positions"]["total_cost"]
+                total_qty = summary["positions"]["total_quantity"]
+                return total_cost / total_qty if total_qty > 0 else 0
+        except Exception:
+            pass
+        return None
+
+    def _has_position():
+        try:
+            from paper_trading.portfolio import PortfolioManager
+            pm = PortfolioManager()
+            summary = pm.get_account_summary(stock_name)
+            if summary:
+                return summary.get("positions", {}).get("total_quantity", 0) > 0
+        except Exception:
+            pass
+        return False
+
+    def _type_map(t: str) -> ConditionType:
+        mapping = {
+            "trailing_stop": ConditionType.TRAILING_STOP,
+            "cost_protection": ConditionType.COST_PROTECTION,
+            "take_profit_1": ConditionType.TAKE_PROFIT_1,
+            "take_profit_2": ConditionType.TAKE_PROFIT_2,
+            "add_position": ConditionType.ADD_POSITION,
+        }
+        return mapping.get(t)
+
+    def _cat_map(c: str) -> ConditionCategory:
+        mapping = {"hard": ConditionCategory.HARD, "soft": ConditionCategory.SOFT}
+        return mapping.get(c)
+
+    # ===== show =====
+    if action == "show":
+        if format == "markdown":
+            output = manager.format_markdown(stock_name, template=template)
+            typer.echo(output)
+        elif format == "json":
+            import json
+            data = manager.format_json(stock_name)
+            typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        else:
+            output = manager.format_pretty(stock_name)
+            typer.echo(output)
+        return
+
+    # ===== set =====
+    if action == "set":
+        if not condition_type or price is None or not category:
+            typer.echo("❌ 错误: --set 需要 --type, --price, --category 参数", err=True)
+            raise typer.Exit(1)
+
+        ct = _type_map(condition_type)
+        cc = _cat_map(category)
+        if not ct:
+            typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
+            raise typer.Exit(1)
+        if not cc:
+            typer.echo(f"❌ 错误: 未知类别 '{category}'", err=True)
+            raise typer.Exit(1)
+
+        auto_link = (ct == ConditionType.COST_PROTECTION)
+
+        record = manager.set_condition(
+            stock_name=stock_name,
+            condition_type=ct,
+            price=price,
+            action=action_str or "执行",
+            category=cc,
+            expiry_days=expiry_days,
+            auto_link_cost=auto_link,
+        )
+
+        typer.echo(f"✅ 条件设定成功: {stock_name}")
+        typer.echo(f"   类型: {ct.value}")
+        typer.echo(f"   价格: ¥{price:.2f}")
+        typer.echo(f"   类别: {cc.value}")
+        if cc == ConditionCategory.SOFT and expiry_days:
+            from paper_trading.conditions import calculate_expiry_date
+            typer.echo(f"   失效日期: {calculate_expiry_date(expiry_days)}")
+        return
+
+    # ===== update =====
+    if action == "update":
+        if not condition_type or price is None:
+            typer.echo("❌ 错误: --update 需要 --type, --price 参数", err=True)
+            raise typer.Exit(1)
+
+        ct = _type_map(condition_type)
+        if not ct:
+            typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
+            raise typer.Exit(1)
+
+        current_price = _get_current_price() or price
+        avg_cost = _get_avg_cost() or price
+        has_pos = _has_position()
+
+        # Parse comma-separated trigger string
+        active_triggers_list = []
+        if override_trigger:
+            active_triggers_list = [t.strip() for t in override_trigger.split(",") if t.strip()]
+
+        result, record = manager.update_condition(
+            stock_name=stock_name,
+            condition_type=ct,
+            new_price=price,
+            current_price=current_price,
+            avg_cost=avg_cost,
+            has_position=has_pos,
+            active_triggers=active_triggers_list,
+            override_reason=override_reason or "",
+            user_reason=reason or "",
+        )
+
+        if result.allowed:
+            icon = "✅" if result.level.value == "auto" else "⚠️"
+            typer.echo(f"{icon} 修改成功（{result.level.value.upper()}）")
+            typer.echo(f"   条件: {ct.value}")
+            typer.echo(f"   旧价格: ¥{record.get(ct).history[-1].old_price:.2f}")
+            typer.echo(f"   新价格: ¥{price:.2f}")
+            typer.echo(f"   理由: {result.message}")
+            if result.requires_warning:
+                typer.echo(f"   ⚠️ 警告: 这是重大变更，请确保理由充分")
+        else:
+            typer.echo(f"❌ 修改被阻断（{result.level.value.upper()}）")
+            typer.echo(f"   {result.message}")
+            raise typer.Exit(1)
+        return
+
+    # ===== remove =====
+    if action == "remove":
+        if not condition_type:
+            typer.echo("❌ 错误: --remove 需要 --type 参数", err=True)
+            raise typer.Exit(1)
+
+        ct = _type_map(condition_type)
+        if not ct:
+            typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
+            raise typer.Exit(1)
+
+        if manager.remove_condition(stock_name, ct):
+            typer.echo(f"✅ 已移除条件: {ct.value}")
+        else:
+            typer.echo(f"❌ 未找到条件: {ct.value}")
+            raise typer.Exit(1)
+        return
+
+    # ===== trigger =====
+    if action == "trigger":
+        if not condition_type:
+            typer.echo("❌ 错误: --trigger 需要 --type 参数", err=True)
+            raise typer.Exit(1)
+
+        ct = _type_map(condition_type)
+        if not ct:
+            typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
+            raise typer.Exit(1)
+
+        tp = trigger_price or price or _get_current_price() or 0
+
+        record = manager.trigger_condition(stock_name, ct, tp)
+        if record:
+            typer.echo(f"✅ 条件已触发: {ct.value}")
+            typer.echo(f"   触发价格: ¥{tp:.2f}")
+        else:
+            typer.echo(f"❌ 未找到条件: {ct.value}")
+            raise typer.Exit(1)
+        return
+
+    # ===== expire =====
+    if action == "expire":
+        if not condition_type:
+            typer.echo("❌ 错误: --expire 需要 --type 参数", err=True)
+            raise typer.Exit(1)
+
+        ct = _type_map(condition_type)
+        if not ct:
+            typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
+            raise typer.Exit(1)
+
+        record = manager.expire_condition(stock_name, ct)
+        if record:
+            typer.echo(f"✅ 条件已标记过期: {ct.value}")
+        else:
+            typer.echo(f"❌ 未找到条件: {ct.value}")
+            raise typer.Exit(1)
+        return
+
+    # ===== check =====
+    if action == "check":
+        from datetime import datetime
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        expired = manager.check_expired(stock_name, current_date)
+        if expired:
+            typer.echo(f"⚠️ 发现 {len(expired)} 个过期条件:")
+            for c in expired:
+                typer.echo(f"   • {c.name}（过期日期: {c.expiry_date}）")
+        else:
+            typer.echo("✅ 无过期条件")
+        return
+
+    typer.echo(f"❌ 不支持的操作: {action}", err=True)
+    raise typer.Exit(1)
 
 
 if __name__ == "__main__":

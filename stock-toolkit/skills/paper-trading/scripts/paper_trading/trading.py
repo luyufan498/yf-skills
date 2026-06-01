@@ -221,6 +221,9 @@ class PaperTrader:
         )
         self.storage.save_operation(stock_name, buy_operation)
 
+        # 同步条件：买入后更新成本保护（如果设置了auto_link_cost）
+        self._sync_conditions_after_buy(stock_name, account)
+
         return account
 
     def sell_stock(
@@ -305,6 +308,9 @@ class PaperTrader:
             note=note
         )
         self.storage.save_operation(stock_name, sell_operation)
+
+        # 同步条件：卖出后更新成本保护或暂停条件
+        self._sync_conditions_after_sell(stock_name, account)
 
         return account
 
@@ -498,3 +504,41 @@ class PaperTrader:
         total_quantity = sum(q[0] for q in fifo_queue)
         total_cost = sum(q[0] * q[1] for q in fifo_queue)
         return total_quantity, total_cost
+
+    def _sync_conditions_after_buy(self, stock_name: str, account: Account):
+        """
+        买入后同步条件：
+        - 更新成本保护（如果 auto_link_cost=True）
+        - 如果之前是空仓（条件暂停），恢复条件
+        """
+        try:
+            from paper_trading.conditions_manager import ConditionsManager
+            cond_mgr = ConditionsManager(self.storage)
+
+            total_qty, total_cost = self.get_remaining_position(account)
+            if total_qty > 0:
+                avg_cost = total_cost / total_qty
+                cond_mgr.sync_cost_protection(stock_name, avg_cost)
+                cond_mgr.resume_all(stock_name)
+        except Exception:
+            pass
+
+    def _sync_conditions_after_sell(self, stock_name: str, account: Account):
+        """
+        卖出后同步条件：
+        - 更新成本保护（如果 auto_link_cost=True）
+        - 如果全部清仓，暂停所有硬条件
+        """
+        try:
+            from paper_trading.conditions_manager import ConditionsManager
+            cond_mgr = ConditionsManager(self.storage)
+
+            total_qty, total_cost = self.get_remaining_position(account)
+            if total_qty > 0:
+                avg_cost = total_cost / total_qty
+                cond_mgr.sync_cost_protection(stock_name, avg_cost)
+            else:
+                # 全部清仓，暂停硬条件
+                cond_mgr.suspend_all(stock_name)
+        except Exception:
+            pass

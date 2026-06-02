@@ -99,6 +99,134 @@ class ReportGenerator:
 
         return output
 
+    def generate_info_markdown_table(
+        self,
+        stock_name: str,
+        storage: Optional[StorageBackend] = None
+    ) -> str:
+        """
+        生成模拟盘状态的 Markdown 表格，供分析报告直接复制粘贴
+
+        Args:
+            stock_name: 股票名称
+            storage: 存储后端
+
+        Returns:
+            Markdown 格式的表格字符串
+        """
+        from paper_trading.portfolio import PortfolioManager
+
+        manager = PortfolioManager(storage=storage)
+        summary = manager.get_account_summary(stock_name)
+
+        if not summary:
+            return f"❌ 未找到股票 '{stock_name}' 的账户记录"
+
+        pool = summary["capital_pool"]
+        positions = summary["positions"]
+        profit = summary["profit"]
+
+        total_capital = pool["total"]
+        available = pool["available"]
+        used = pool["used"]
+        usage_rate = pool["usage_rate"]
+
+        qty = positions["total_quantity"]
+        total_cost = positions["total_cost"]
+        current_price = positions.get("current_price")
+
+        realized = profit["realized"]
+        floating = profit["floating"]
+        total_profit = profit["total"]
+        return_rate = (total_profit / total_capital * 100) if total_capital > 0 else 0.0
+
+        if qty > 0:
+            avg_cost = total_cost / qty
+            market_value = qty * current_price if current_price else 0.0
+            qty_str = f"{qty}股"
+            avg_cost_str = f"¥{avg_cost:,.2f}"
+            market_value_str = f"¥{market_value:,.2f}"
+            price_str = f"¥{current_price:.2f}" if current_price else "-"
+            cost_str = f"¥{total_cost:,.2f}"
+            used_str = f"¥{used:,.2f}"
+            usage_str = f"{usage_rate:.1f}%"
+        else:
+            qty_str = "空仓"
+            avg_cost_str = "-"
+            market_value_str = "-"
+            price_str = "-"
+            cost_str = "¥0.00"
+            used_str = "¥0.00"
+            usage_str = "0.0%"
+
+        def fmt_profit(value: float) -> str:
+            if value >= 0:
+                return f"📈 +¥{value:,.2f}"
+            return f"📉 -¥{abs(value):,.2f}"
+
+        realized_str = fmt_profit(realized)
+        floating_str = fmt_profit(floating)
+        total_str = fmt_profit(total_profit)
+
+        if return_rate >= 0:
+            ret_str = f"📈 +{return_rate:.2f}%"
+        else:
+            ret_str = f"📉 -{abs(return_rate):.2f}%"
+
+        # 构建对齐的 Markdown 表格
+        rows = [
+            ["资金池状态", "-", "持仓信息", "-", "收益情况", "-"],
+            ["总资金", f"¥{total_capital:,.2f}", "当前持仓", qty_str, "已投入总成本", cost_str],
+            ["可用资金", f"¥{available:,.2f}", "平均成本", avg_cost_str, "已实现盈亏", realized_str],
+            ["已用资金", used_str, "持仓市值", market_value_str, "浮动盈亏", floating_str],
+            ["使用率", usage_str, "当前价格", price_str, "总盈亏", total_str],
+            ["", "", "", "", "总收益率", ret_str],
+        ]
+
+        import unicodedata
+
+        def _display_width(s: str) -> int:
+            """计算字符串在等宽字体中的显示宽度（CJK/emoji 占 2 列）"""
+            w = 0
+            for ch in s:
+                eaw = unicodedata.east_asian_width(ch)
+                if eaw in ('F', 'W', 'A'):
+                    w += 2
+                elif eaw == 'C':
+                    w += 0
+                else:
+                    w += 1
+            return w
+
+        def _pad(cell: str, width: int, align: str = "left") -> str:
+            """按显示宽度填充，使 | 严格垂直对齐"""
+            pad_len = width - _display_width(cell)
+            if align == "right":
+                return " " * pad_len + cell
+            return cell + " " * pad_len
+
+        # 按显示宽度计算每列最大宽度
+        col_widths = [max(_display_width(cell) for cell in col) for col in zip(*rows)]
+
+        lines = []
+        for i, row in enumerate(rows):
+            if i == 0:
+                # 表头
+                padded = [_pad(cell, col_widths[j], "left") for j, cell in enumerate(row)]
+                lines.append("| " + " | ".join(padded) + " |")
+                # 分隔线
+                separators = ["-" * w for w in col_widths]
+                lines.append("| " + " | ".join(separators) + " |")
+            else:
+                # 数据行：标签列左对齐，数值列右对齐
+                aligned = []
+                for j, cell in enumerate(row):
+                    align = "right" if j % 2 == 1 else "left"
+                    aligned.append(_pad(cell, col_widths[j], align))
+                lines.append("| " + " | ".join(aligned) + " |")
+
+        return "\n".join(lines)
+
     def generate_operations_report(
         self,
         stock_name: str,

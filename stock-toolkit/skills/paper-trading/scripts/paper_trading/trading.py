@@ -331,52 +331,80 @@ class PaperTrader:
         """
         按FIFO消耗持仓，返回成本，并更新account的fifo指针
 
-        如果fifo指针未初始化或已损坏，会自动重建
+        支持除权除息（exright_bonus / exright_dividend）的前复权计算
+        buy_queue 存储: [数量, 每股成本]
         """
-        self._ensure_fifo_pointer(account)
-        if account.fifo_index < 0:
-            return 0.0
+        from collections import deque
+        buy_queue = deque()
 
+        for pos in account.positions:
+            if pos.operation == OperationType.BUY:
+                cost_per_share = pos.total_cost / pos.quantity if pos.quantity > 0 else 0
+                buy_queue.append([float(pos.quantity), cost_per_share])
+            elif pos.operation == OperationType.SELL:
+                qty = pos.quantity
+                while qty > 0 and buy_queue:
+                    if buy_queue[0][0] <= qty:
+                        qty -= buy_queue[0][0]
+                        buy_queue.popleft()
+                    else:
+                        buy_queue[0][0] -= qty
+                        qty = 0
+            elif pos.operation == OperationType.EXRIGHT_BONUS:
+                if buy_queue:
+                    split_ratio = 1 + (pos.quantity / sum(q[0] for q in buy_queue))
+                    for item in buy_queue:
+                        item[0] *= split_ratio
+                        item[1] /= split_ratio
+            elif pos.operation == OperationType.EXRIGHT_DIVIDEND:
+                if buy_queue:
+                    total_dividend = abs(pos.total_cost)
+                    total_qty = sum(q[0] for q in buy_queue)
+                    if total_qty > 0:
+                        dividend_per_share = total_dividend / total_qty
+                        for item in buy_queue:
+                            item[1] -= dividend_per_share
+
+        # 从队列中消耗 quantity
         cost_amount = 0.0
         remaining = quantity
-
-        while remaining > 0 and account.fifo_index < len(account.positions):
-            pos = account.positions[account.fifo_index]
-
-            if pos.operation != OperationType.BUY:
-                account.fifo_index += 1
-                account.fifo_offset = 0
-                continue
-
-            available = pos.quantity - account.fifo_offset
-            if available <= 0:
-                account.fifo_index += 1
-                account.fifo_offset = 0
-                continue
-
-            cost_per_share = pos.total_cost / pos.quantity
-
-            if available <= remaining:
-                cost_amount += available * cost_per_share
-                remaining -= available
-                account.fifo_index += 1
-                account.fifo_offset = 0
+        while remaining > 0 and buy_queue:
+            if buy_queue[0][0] <= remaining:
+                cost_amount += buy_queue[0][0] * buy_queue[0][1]
+                remaining -= buy_queue[0][0]
+                buy_queue.popleft()
             else:
-                cost_amount += remaining * cost_per_share
-                account.fifo_offset += remaining
+                cost_amount += remaining * buy_queue[0][1]
+                buy_queue[0][0] -= remaining
                 remaining = 0
+
+        # 更新 fifo 指针：找到第一个未完全消耗的 BUY position
+        account.fifo_index = -1
+        account.fifo_offset = 0
+        for i, pos in enumerate(account.positions):
+            if pos.operation != OperationType.BUY:
+                continue
+            if buy_queue:
+                if pos.quantity == buy_queue[0][0]:
+                    account.fifo_index = i
+                    break
+                elif buy_queue[0][0] < pos.quantity:
+                    account.fifo_index = i
+                    account.fifo_offset = pos.quantity - buy_queue[0][0]
+                    break
+                buy_queue.popleft()
 
         return cost_amount
 
     def get_realized_profit_from_positions(self, account: Account) -> float:
-        """从 positions 按 FIFO 重新计算已实现盈亏（不依赖 ops.profit，兼容旧数据）"""
+        """从 positions 按 FIFO 重新计算已实现盈亏（感知除权除息）"""
         from collections import deque
         buy_queue = deque()
         realized = 0.0
         for pos in account.positions:
             if pos.operation == OperationType.BUY:
-                cost_per_share = pos.total_cost / pos.quantity
-                buy_queue.append([pos.quantity, cost_per_share])
+                cost_per_share = pos.total_cost / pos.quantity if pos.quantity > 0 else 0
+                buy_queue.append([float(pos.quantity), cost_per_share])
             elif pos.operation == OperationType.SELL:
                 qty = pos.quantity
                 cost = 0.0
@@ -390,6 +418,20 @@ class PaperTrader:
                         buy_queue[0][0] -= qty
                         qty = 0
                 realized += (pos.quantity * pos.price) - cost
+            elif pos.operation == OperationType.EXRIGHT_BONUS:
+                if buy_queue:
+                    split_ratio = 1 + (pos.quantity / sum(q[0] for q in buy_queue))
+                    for item in buy_queue:
+                        item[0] *= split_ratio
+                        item[1] /= split_ratio
+            elif pos.operation == OperationType.EXRIGHT_DIVIDEND:
+                if buy_queue:
+                    total_dividend = abs(pos.total_cost)
+                    total_qty = sum(q[0] for q in buy_queue)
+                    if total_qty > 0:
+                        dividend_per_share = total_dividend / total_qty
+                        for item in buy_queue:
+                            item[1] -= dividend_per_share
         return realized
 
     def fix_operations(self, stock_name: str) -> dict:
@@ -424,8 +466,8 @@ class PaperTrader:
 
         for pos in account.positions:
             if pos.operation == OperationType.BUY:
-                cost_per_share = pos.total_cost / pos.quantity
-                fifo_queue.append([pos.quantity, cost_per_share])
+                cost_per_share = pos.total_cost / pos.quantity if pos.quantity > 0 else 0
+                fifo_queue.append([float(pos.quantity), cost_per_share])
             elif pos.operation == OperationType.SELL:
                 qty = pos.quantity
                 cost = 0.0
@@ -453,6 +495,20 @@ class PaperTrader:
                     fixed += 1
 
                 sell_idx += 1
+            elif pos.operation == OperationType.EXRIGHT_BONUS:
+                if fifo_queue:
+                    split_ratio = 1 + (pos.quantity / sum(q[0] for q in fifo_queue))
+                    for item in fifo_queue:
+                        item[0] *= split_ratio
+                        item[1] /= split_ratio
+            elif pos.operation == OperationType.EXRIGHT_DIVIDEND:
+                if fifo_queue:
+                    total_dividend = abs(pos.total_cost)
+                    total_qty = sum(q[0] for q in fifo_queue)
+                    if total_qty > 0:
+                        dividend_per_share = total_dividend / total_qty
+                        for item in fifo_queue:
+                            item[1] -= dividend_per_share
 
         self.storage.save_account(account)
         self.storage.save_operations(stock_name, ops_data)
@@ -461,48 +517,64 @@ class PaperTrader:
 
     def get_remaining_position(self, account: Account) -> tuple[int, float]:
         """
-        获取当前剩余持仓数量和原始成本
+        获取当前剩余持仓数量和成本（感知除权除息）
 
-        Returns:
-            (quantity, cost)
+        buy_queue 存储: [数量, 每股成本]
         """
-        # 优先使用FIFO指针
-        if account.fifo_index >= 0:
-            total_quantity = 0
-            total_cost = 0.0
-
-            for i, pos in enumerate(account.positions):
-                if pos.operation != OperationType.BUY:
-                    continue
-                if i == account.fifo_index:
-                    remaining = pos.quantity - account.fifo_offset
-                    if remaining > 0:
-                        total_quantity += remaining
-                        total_cost += remaining * (pos.total_cost / pos.quantity)
-                elif i > account.fifo_index:
-                    total_quantity += pos.quantity
-                    total_cost += pos.total_cost
-
-            return total_quantity, total_cost
-
-        # 备选：从positions历史动态计算（兼容旧数据）
         from collections import deque
-        fifo_queue = deque()
+        buy_queue = deque()
+
         for pos in account.positions:
             if pos.operation == OperationType.BUY:
-                fifo_queue.append([pos.quantity, pos.total_cost / pos.quantity])
+                cost_per_share = pos.total_cost / pos.quantity if pos.quantity > 0 else 0
+                buy_queue.append([float(pos.quantity), cost_per_share])
             elif pos.operation == OperationType.SELL:
                 qty = pos.quantity
-                while qty > 0 and fifo_queue:
-                    if fifo_queue[0][0] <= qty:
-                        qty -= fifo_queue[0][0]
-                        fifo_queue.popleft()
+                while qty > 0 and buy_queue:
+                    if buy_queue[0][0] <= qty:
+                        qty -= buy_queue[0][0]
+                        buy_queue.popleft()
                     else:
-                        fifo_queue[0][0] -= qty
+                        buy_queue[0][0] -= qty
                         qty = 0
+            elif pos.operation == OperationType.EXRIGHT_BONUS:
+                if buy_queue:
+                    split_ratio = 1 + (pos.quantity / sum(q[0] for q in buy_queue))
+                    for item in buy_queue:
+                        item[0] *= split_ratio
+                        item[1] /= split_ratio
+            elif pos.operation == OperationType.EXRIGHT_DIVIDEND:
+                if buy_queue:
+                    total_dividend = abs(pos.total_cost)
+                    total_qty = sum(q[0] for q in buy_queue)
+                    if total_qty > 0:
+                        dividend_per_share = total_dividend / total_qty
+                        for item in buy_queue:
+                            item[1] -= dividend_per_share
 
-        total_quantity = sum(q[0] for q in fifo_queue)
-        total_cost = sum(q[0] * q[1] for q in fifo_queue)
+        total_quantity = int(sum(q[0] for q in buy_queue))
+        total_cost = max(0.0, sum(q[0] * q[1] for q in buy_queue))
+
+        # 清仓保护
+        if total_quantity == 0:
+            total_cost = 0.0
+
+        # 更新 fifo 指针
+        account.fifo_index = -1
+        account.fifo_offset = 0
+        for i, pos in enumerate(account.positions):
+            if pos.operation != OperationType.BUY:
+                continue
+            if buy_queue:
+                if pos.quantity == buy_queue[0][0]:
+                    account.fifo_index = i
+                    break
+                elif buy_queue[0][0] < pos.quantity:
+                    account.fifo_index = i
+                    account.fifo_offset = pos.quantity - buy_queue[0][0]
+                    break
+                buy_queue.popleft()
+
         return total_quantity, total_cost
 
     def _sync_conditions_after_buy(self, stock_name: str, account: Account):

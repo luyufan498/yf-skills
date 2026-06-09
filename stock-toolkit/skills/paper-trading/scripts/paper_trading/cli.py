@@ -36,6 +36,8 @@ from paper_trading.analysis import AnalysisManager
 from paper_trading.temp_data_manager import TempDataManager
 from paper_trading.config import get_workspace_config
 from paper_trading.market_summary import MarketSummaryAnalyzer
+from paper_trading.exright_cache import ExRightCache
+from paper_trading.exright_handler import ExRightHandler
 
 # 从已安装包读取版本号
 try:
@@ -62,6 +64,23 @@ def _get_stock_name_suggestions(stock_name: str, manager: PortfolioManager) -> s
         suggestions = "、".join([f"'{m}'" for m in matches])
         return f"\n   💡 您是否想找：{suggestions}？"
     return ""
+
+
+def _auto_exright_check(trader: PaperTrader, stock_name: str) -> bool:
+    """自动除权检查（懒加载），返回是否发生了变更"""
+    try:
+        account = trader.get_account(stock_name)
+        if not account or not account.stock_code:
+            return False
+
+        cache = ExRightCache()
+        handler = ExRightHandler(trader, cache)
+        changed, msg = handler.check_and_apply(stock_name, account)
+        if changed:
+            typer.echo(f"📢 除权除息已处理: {msg}")
+        return changed
+    except Exception:
+        return False
 
 
 @app.command()
@@ -114,6 +133,7 @@ def buy(
     stock_name = _normalize_stock_name(stock_name)
     try:
         trader = PaperTrader()
+        _auto_exright_check(trader, stock_name)
         account = trader.buy_stock(
             stock_name=stock_name,
             quantity=qty,
@@ -140,6 +160,7 @@ def sell(
     stock_name = _normalize_stock_name(stock_name)
     try:
         trader = PaperTrader()
+        _auto_exright_check(trader, stock_name)
         account = trader.sell_stock(
             stock_name=stock_name,
             quantity=qty,
@@ -165,6 +186,12 @@ def info(
     manager = PortfolioManager()
 
     if stock_name:
+        # 自动除权检查
+        try:
+            trader = PaperTrader()
+            _auto_exright_check(trader, stock_name)
+        except Exception:
+            pass
         # 查询单个股票的完整信息
         summary = manager.get_account_summary(stock_name)
 
@@ -1040,14 +1067,42 @@ def search(
         raise typer.Exit(1)
 
 
-from paper_trading.conditions import ConditionType, ConditionCategory
+from paper_trading.conditions import ConditionType, ConditionCategory, EventConditionType
 from paper_trading.conditions_manager import ConditionsManager
+
+
+@app.command("check-exright")
+def check_exright(
+    stock_name: str = typer.Argument(..., help="股票名称"),
+    force: bool = typer.Option(False, "--force", "-f", help="强制刷新缓存"),
+):
+    """检查并应用除权除息"""
+    stock_name = _normalize_stock_name(stock_name)
+    try:
+        trader = PaperTrader()
+        account = trader.get_account(stock_name)
+        if not account:
+            typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户", err=True)
+            raise typer.Exit(1)
+
+        if force:
+            cache = ExRightCache()
+            cache.clear(account.stock_code)
+
+        changed, msg = _auto_exright_check(trader, stock_name)
+        if changed:
+            typer.echo(f"✅ {msg}")
+        else:
+            typer.echo(f"ℹ️ {msg}")
+    except Exception as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command("conditions")
 def conditions_command(
     stock_name: str = typer.Argument(..., help="股票名称"),
-    action: str = typer.Option("show", "--action", "-a", help="操作: show/set/update/remove/trigger/expire/check"),
+    action: str = typer.Option("show", "--action", "-a", help="操作: show/set/update/remove/trigger/expire/check/event-set/event-remove/event-trigger/event-list"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式: pretty/markdown/json"),
     template: str = typer.Option("trigger-table", "--template", "-t", help="模板: trigger-table/audit-table/expired-table/execution-check/all"),
     # --set / --update params
@@ -1063,9 +1118,20 @@ def conditions_command(
     override_reason: Optional[str] = typer.Option(None, "--override-reason", help="解锁理由（Level 3，不少于20字）"),
     # --trigger / --expire
     trigger_price: Optional[float] = typer.Option(None, "--trigger-price", help="触发时价格"),
+    # event condition params
+    event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect/loss_protect/tech_break/target_profit/fundamental/market_risk"),
+    event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
 ):
     """条件管理：查看、设定、修改、触发、过期股票交易条件"""
     stock_name = _normalize_stock_name(stock_name)
+
+    # 自动除权检查
+    try:
+        trader = PaperTrader()
+        _auto_exright_check(trader, stock_name)
+    except Exception:
+        pass
+
     manager = ConditionsManager()
 
     # 获取当前价格（用于校验）
@@ -1287,8 +1353,98 @@ def conditions_command(
             typer.echo("✅ 无过期条件")
         return
 
+    # ===== event-set =====
+    if action == "event-set":
+        if not event_type or price is None or not category:
+            typer.echo("❌ 错误: --action event-set 需要 --event-type, --price, --category 参数", err=True)
+            raise typer.Exit(1)
+
+        if event_type not in [e.value for e in EventConditionType]:
+            valid = ", ".join([e.value for e in EventConditionType])
+            typer.echo(f"❌ 错误: 未知事件类型 '{event_type}'，有效类型: {valid}", err=True)
+            raise typer.Exit(1)
+
+        cc = _cat_map(category)
+        if not cc:
+            typer.echo(f"❌ 错误: 未知类别 '{category}'", err=True)
+            raise typer.Exit(1)
+
+        event_id, record = manager.add_event_condition(
+            stock_name=stock_name,
+            event_type=event_type,
+            price=price,
+            action=action_str or "执行",
+            category=cc,
+            expiry_days=expiry_days,
+        )
+
+        if event_id:
+            typer.echo(f"✅ 事件条件设定成功: {stock_name}")
+            typer.echo(f"   ID: {event_id}")
+            typer.echo(f"   事件类型: {event_type}")
+            typer.echo(f"   名称: {record.get_event(event_id).name}")
+            typer.echo(f"   价格: ¥{price:.2f}")
+            typer.echo(f"   动作: {action_str or '执行'}")
+            typer.echo(f"   类别: {cc.value}")
+            if cc == ConditionCategory.SOFT and expiry_days:
+                from paper_trading.conditions import calculate_expiry_date
+                typer.echo(f"   失效日期: {calculate_expiry_date(expiry_days)}")
+        else:
+            typer.echo("❌ 事件条件设定失败（请先初始化条件记录）", err=True)
+            raise typer.Exit(1)
+        return
+
+    # ===== event-remove =====
+    if action == "event-remove":
+        if not event_id:
+            typer.echo("❌ 错误: --action event-remove 需要 --event-id 参数", err=True)
+            raise typer.Exit(1)
+
+        if manager.remove_event_condition(stock_name, event_id):
+            typer.echo(f"✅ 已移除事件条件: {event_id}")
+        else:
+            typer.echo(f"❌ 未找到事件条件: {event_id}")
+            raise typer.Exit(1)
+        return
+
+    # ===== event-trigger =====
+    if action == "event-trigger":
+        if not event_id:
+            typer.echo("❌ 错误: --action event-trigger 需要 --event-id 参数", err=True)
+            raise typer.Exit(1)
+
+        tp = trigger_price or price or _get_current_price() or 0
+
+        record = manager.trigger_event_condition(stock_name, event_id, tp)
+        if record:
+            typer.echo(f"✅ 事件条件已触发: {event_id}")
+            typer.echo(f"   触发价格: ¥{tp:.2f}")
+        else:
+            typer.echo(f"❌ 未找到事件条件: {event_id}")
+            raise typer.Exit(1)
+        return
+
+    # ===== event-list =====
+    if action == "event-list":
+        record = manager.load_conditions(stock_name)
+        if not record or not record.events:
+            typer.echo("📭 无事件条件")
+            return
+
+        active_events = record.list_active_events()
+        if not active_events:
+            typer.echo("📭 无有效事件条件（可能全部已触发/过期）")
+            return
+
+        typer.echo(f"📋 {stock_name} 事件条件列表 ({len(active_events)}个):")
+        for e in active_events:
+            status_icon = "✅" if e.status.value == "active" else "🚫"
+            typer.echo(f"   {status_icon} [{e.id}] {e.name} ¥{e.price:.2f} — {e.action} ({e.category.value})")
+        return
+
     typer.echo(f"❌ 不支持的操作: {action}", err=True)
     raise typer.Exit(1)
+
 
 
 if __name__ == "__main__":

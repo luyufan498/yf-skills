@@ -10,6 +10,7 @@
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Optional, Dict, Any
+from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
@@ -78,8 +79,19 @@ class ConditionChange(BaseModel):
     override_triggers: List[str] = Field(default_factory=list, description="Level 3 解锁时勾选的触发器")
 
 
+class EventConditionType(str, Enum):
+    """事件条件类型（用于events列表，支持同类型多实例）"""
+    PROFIT_PROTECT = "profit_protect"       # 利润保护
+    LOSS_PROTECT = "loss_protect"           # 亏损保护
+    TECH_BREAK = "tech_break"               # 技术破位
+    TARGET_PROFIT = "target_profit"         # 目标价止盈
+    FUNDAMENTAL = "fundamental"             # 基本面事件
+    MARKET_RISK = "market_risk"             # 市场风险
+
+
 class Condition(BaseModel):
     """单个条件"""
+    id: str = Field(default_factory=lambda: str(uuid4())[:8], description="条件唯一ID")
     type: ConditionType = Field(..., description="条件类型")
     name: str = Field(..., description="显示名称")
     price: float = Field(..., description="触发价格")
@@ -140,47 +152,86 @@ class ConditionsRecord(BaseModel):
     """一只股票的全部条件"""
     stock_name: str = Field(..., description="股票名称")
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="更新时间")
-    conditions: Dict[str, Condition] = Field(default_factory=dict, description="条件字典")
+    conditions: Dict[str, Condition] = Field(default_factory=dict, description="条件字典（向后兼容，5种标准条件）")
+    events: List[Condition] = Field(default_factory=list, description="事件条件列表（支持同类型多实例）")
 
     def get(self, condition_type: ConditionType) -> Optional[Condition]:
-        """获取指定类型的条件"""
+        """获取指定类型的标准条件"""
         return self.conditions.get(condition_type.value)
 
     def set(self, condition: Condition):
-        """设置条件"""
+        """设置标准条件"""
         self.conditions[condition.type.value] = condition
         self.updated_at = datetime.now().isoformat()
 
     def remove(self, condition_type: ConditionType):
-        """移除条件"""
+        """移除标准条件"""
         if condition_type.value in self.conditions:
             del self.conditions[condition_type.value]
             self.updated_at = datetime.now().isoformat()
 
+    def add_event(self, condition: Condition) -> str:
+        """添加事件条件，返回条件ID"""
+        self.events.append(condition)
+        self.updated_at = datetime.now().isoformat()
+        return condition.id
+
+    def remove_event(self, event_id: str) -> bool:
+        """移除指定ID的事件条件"""
+        for i, e in enumerate(self.events):
+            if e.id == event_id:
+                self.events.pop(i)
+                self.updated_at = datetime.now().isoformat()
+                return True
+        return False
+
+    def get_event(self, event_id: str) -> Optional[Condition]:
+        """获取指定ID的事件条件"""
+        for e in self.events:
+            if e.id == event_id:
+                return e
+        return None
+
     def list_active(self) -> List[Condition]:
-        """列出所有有效条件"""
+        """列出所有有效标准条件"""
         return [c for c in self.conditions.values() if c.status == ConditionStatus.ACTIVE]
 
+    def list_active_events(self) -> List[Condition]:
+        """列出所有有效事件条件"""
+        return [e for e in self.events if e.status in (ConditionStatus.ACTIVE, ConditionStatus.SUSPENDED)]
+
     def list_hard(self) -> List[Condition]:
-        """列出所有硬条件"""
-        return [c for c in self.conditions.values() if c.category == ConditionCategory.HARD]
+        """列出所有硬条件（标准+事件）"""
+        standard = [c for c in self.conditions.values() if c.category == ConditionCategory.HARD]
+        events = [e for e in self.events if e.category == ConditionCategory.HARD]
+        return standard + events
 
     def list_soft(self) -> List[Condition]:
-        """列出所有软条件"""
-        return [c for c in self.conditions.values() if c.category == ConditionCategory.SOFT]
+        """列出所有软条件（标准+事件）"""
+        standard = [c for c in self.conditions.values() if c.category == ConditionCategory.SOFT]
+        events = [e for e in self.events if e.category == ConditionCategory.SOFT]
+        return standard + events
 
     def list_expired(self, current_date: str = None) -> List[Condition]:
-        """列出已过期条件（按日期过期或状态标记为过期）"""
+        """列出已过期条件（标准+事件）"""
         if not current_date:
             current_date = datetime.now().strftime("%Y-%m-%d")
 
         expired = []
+        # 标准条件
         for c in self.conditions.values():
             if c.status == ConditionStatus.EXPIRED:
                 expired.append(c)
             elif c.category == ConditionCategory.SOFT and c.expiry_date:
                 if current_date > c.expiry_date:
                     expired.append(c)
+        # 事件条件
+        for e in self.events:
+            if e.status == ConditionStatus.EXPIRED:
+                expired.append(e)
+            elif e.category == ConditionCategory.SOFT and e.expiry_date:
+                if current_date > e.expiry_date:
+                    expired.append(e)
         return expired
 
 

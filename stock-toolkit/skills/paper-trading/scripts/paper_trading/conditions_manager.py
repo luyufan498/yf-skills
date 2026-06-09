@@ -317,6 +317,91 @@ class ConditionsManager:
         self.save_conditions(record)
         return True
 
+    # ========== 事件条件管理 ==========
+
+    def add_event_condition(self, stock_name: str,
+                            event_type: str,
+                            price: float,
+                            action: str,
+                            category: ConditionCategory,
+                            expiry_days: int = None) -> tuple:
+        """
+        添加事件条件（支持同类型多实例）
+
+        返回: (event_id, ConditionsRecord)
+        """
+        record = self.load_conditions(stock_name)
+        if not record:
+            return None, None
+
+        now = datetime.now().isoformat()
+        expiry_date = None
+        if expiry_days and category == ConditionCategory.SOFT:
+            expiry_date = calculate_expiry_date(expiry_days)
+
+        # 事件条件名称映射
+        event_names = {
+            "profit_protect": "利润保护",
+            "loss_protect": "亏损保护",
+            "tech_break": "技术破位",
+            "target_profit": "目标价止盈",
+            "fundamental": "基本面事件",
+            "market_risk": "市场风险",
+        }
+
+        condition = Condition(
+            type=ConditionType.TRAILING_STOP,  # 事件条件统一用TRAILING_STOP作为基础类型
+            name=event_names.get(event_type, event_type),
+            price=round(price, 2),
+            action=action,
+            category=category,
+            expiry_date=expiry_date,
+            created_at=now,
+            modified_at=now,
+            history=[ConditionChange(
+                old_price=0,
+                new_price=round(price, 2),
+                reason="首次设定（事件条件）",
+                level=ConditionLevel.LEVEL_1,
+            )],
+        )
+
+        event_id = record.add_event(condition)
+        self.save_conditions(record)
+        return event_id, record
+
+    def remove_event_condition(self, stock_name: str, event_id: str) -> bool:
+        """移除指定ID的事件条件"""
+        record = self.load_conditions(stock_name)
+        if not record:
+            return False
+
+        return record.remove_event(event_id)
+
+    def trigger_event_condition(self, stock_name: str,
+                                event_id: str,
+                                trigger_price: float) -> Optional[ConditionsRecord]:
+        """记录事件条件触发"""
+        record = self.load_conditions(stock_name)
+        if not record:
+            return None
+
+        event = record.get_event(event_id)
+        if not event:
+            return None
+
+        event.status = ConditionStatus.TRIGGERED
+        event.modified_at = datetime.now().isoformat()
+        event.history.append(ConditionChange(
+            old_price=event.price,
+            new_price=trigger_price,
+            reason=f"条件已触发（触发价: ¥{trigger_price:.2f}）",
+            level=ConditionLevel.LEVEL_1,
+        ))
+
+        self.save_conditions(record)
+        return record
+
     def trigger_condition(self, stock_name: str,
                           condition_type: ConditionType,
                           trigger_price: float) -> Optional[ConditionsRecord]:
@@ -398,7 +483,7 @@ class ConditionsManager:
         return record
 
     def suspend_all(self, stock_name: str) -> Optional[ConditionsRecord]:
-        """空仓时暂停所有硬条件"""
+        """空仓时暂停所有硬条件（标准+事件）"""
         record = self.load_conditions(stock_name)
         if not record:
             return None
@@ -408,11 +493,16 @@ class ConditionsManager:
                 c.status = ConditionStatus.SUSPENDED
                 c.modified_at = datetime.now().isoformat()
 
+        for e in record.events:
+            if e.category == ConditionCategory.HARD:
+                e.status = ConditionStatus.SUSPENDED
+                e.modified_at = datetime.now().isoformat()
+
         self.save_conditions(record)
         return record
 
     def resume_all(self, stock_name: str) -> Optional[ConditionsRecord]:
-        """重新建仓后恢复所有硬条件"""
+        """重新建仓后恢复所有硬条件（标准+事件）"""
         record = self.load_conditions(stock_name)
         if not record:
             return None
@@ -422,11 +512,16 @@ class ConditionsManager:
                 c.status = ConditionStatus.ACTIVE
                 c.modified_at = datetime.now().isoformat()
 
+        for e in record.events:
+            if e.category == ConditionCategory.HARD and e.status == ConditionStatus.SUSPENDED:
+                e.status = ConditionStatus.ACTIVE
+                e.modified_at = datetime.now().isoformat()
+
         self.save_conditions(record)
         return record
 
     def check_expired(self, stock_name: str, current_date: str = None) -> List[Condition]:
-        """检查并返回已过期条件"""
+        """检查并返回已过期条件（标准+事件）"""
         if not current_date:
             current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -435,12 +530,21 @@ class ConditionsManager:
             return []
 
         expired = []
+        # 标准条件
         for c in record.conditions.values():
             if c.category == ConditionCategory.SOFT and c.expiry_date:
                 if current_date > c.expiry_date and c.status == ConditionStatus.ACTIVE:
                     c.status = ConditionStatus.EXPIRED
                     c.modified_at = datetime.now().isoformat()
                     expired.append(c)
+
+        # 事件条件
+        for e in record.events:
+            if e.category == ConditionCategory.SOFT and e.expiry_date:
+                if current_date > e.expiry_date and e.status == ConditionStatus.ACTIVE:
+                    e.status = ConditionStatus.EXPIRED
+                    e.modified_at = datetime.now().isoformat()
+                    expired.append(e)
 
         if expired:
             self.save_conditions(record)
@@ -468,7 +572,9 @@ class ConditionsManager:
 
         if template in ("trigger-table", "all"):
             active = [c for c in record.conditions.values() if c.status in (ConditionStatus.ACTIVE, ConditionStatus.SUSPENDED)]
-            lines.append(format_trigger_table(active, current_date))
+            active_events = [e for e in record.events if e.status in (ConditionStatus.ACTIVE, ConditionStatus.SUSPENDED)]
+            all_active = active + active_events
+            lines.append(format_trigger_table(all_active, current_date))
             lines.append("")
 
         if template in ("audit-table", "all"):
@@ -497,7 +603,8 @@ class ConditionsManager:
             lines.append("")
             lines.append("| 上期设定 | 价格 | 失效日期 | 当前日期 | 是否过期 | 是否触发 | 执行状态 |")
             lines.append("|----------|------|----------|----------|----------|----------|----------|")
-            for c in record.conditions.values():
+            all_conditions = list(record.conditions.values()) + record.events
+            for c in all_conditions:
                 if c.category == ConditionCategory.HARD:
                     expiry = "持仓周期内"
                     is_expired = "否"
@@ -530,7 +637,8 @@ class ConditionsManager:
 
         lines = [f"🔒 {stock_name} 触发条件", ""]
 
-        for c in record.conditions.values():
+        all_conditions = list(record.conditions.values()) + record.events
+        for c in all_conditions:
             category_icon = "🔒" if c.category == ConditionCategory.HARD else "🔧"
             status_icon = {
                 ConditionStatus.ACTIVE: "⬜",

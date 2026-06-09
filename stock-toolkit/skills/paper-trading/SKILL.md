@@ -101,6 +101,27 @@ ptrade analyze
 ptrade export --format json
 ```
 
+### 条件管理（交易纪律）
+
+```bash
+# 查看当前条件
+ptrade conditions "股票名称" --format markdown --template all
+
+# 设定标准条件（5种固定类型，会覆盖同类型旧条件）
+ptrade conditions "股票名称" --action set --type trailing_stop --price 65.0 --action-str "减仓50%" --category hard
+
+# 设定事件条件（支持同类型多实例，不覆盖）
+ptrade conditions "股票名称" --action event-set --event-type loss_protect --price 68.6 --action-str "减仓20%" --category hard
+
+# 查看事件条件列表
+ptrade conditions "股票名称" --action event-list
+
+# 移除事件条件
+ptrade conditions "股票名称" --action event-remove --event-id XXX
+```
+
+详细文档：[条件管理](references/conditions.md)
+
 ### 分析报告管理
 
 ```bash
@@ -157,6 +178,7 @@ ptrade temp-data 赛力斯 --action read --category deep-search
 | 备份数据 | [数据管理](references/data-management.md) |
 | 临时数据存储 | [临时数据存储](references/temp-data.md) |
 | 市场数据分析 | [市场数据查询](references/market-data.md) |
+| 条件管理 | [条件管理](references/conditions.md) |
 | 交易策略 | [交易原则与策略](references/trading-principles.md) |
 | 理解数据结构 | [数据存储结构](references/data-storage.md) |
 | 解决问题 | [常见问题与故障排除](references/troubleshooting.md) |
@@ -172,6 +194,7 @@ ptrade temp-data 赛力斯 --action read --category deep-search
 | **数据备份** | [data-management.md](references/data-management.md) | 导出、删除、恢复 |
 | **临时数据** | [temp-data.md](references/temp-data.md) | 中间数据存储、读取、管理 |
 | **市场数据** | [market-data.md](references/market-data.md) | 价格、K线、搜索、新闻 |
+| **条件管理** | [conditions.md](references/conditions.md) | 标准条件、事件条件、纪律规则 |
 | **交易策略** | [trading-principles.md](references/trading-principles.md) | 纪律、止盈止损 |
 | **数据机制** | [data-storage.md](references/data-storage.md) | 文件结构、存储原理 |
 | **故障排除** | [troubleshooting.md](references/troubleshooting.md) | 22个常见问题诊断 |

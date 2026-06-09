@@ -21,6 +21,20 @@ class OperationType(str, Enum):
     INIT = "init"
     BUY = "buy"
     SELL = "sell"
+    EXRIGHT_BONUS = "exright_bonus"
+    EXRIGHT_DIVIDEND = "exright_dividend"
+
+
+class ExRightAppliedRecord(BaseModel):
+    """已应用的除权记录"""
+    cqr: str = Field(..., description="除权除息日")
+    fhcontent: str = Field(default="", description="方案内容")
+    applied_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    reason: str = Field(default="", description="应用原因或备注")
+    migrated: bool = Field(default=False, description="是否为迁移记录")
+
+    class Config:
+        use_enum_values = True
 
 
 class StockInfo(BaseModel):
@@ -99,9 +113,9 @@ class CapitalPool(BaseModel):
 class Position(BaseModel):
     """持仓记录"""
     stock_code: str
-    quantity: int = Field(..., gt=0)
-    price: float = Field(..., gt=0)
-    total_cost: float = Field(..., gt=0)
+    quantity: int = Field(..., ge=0, description="股数，除权分红时为0")
+    price: float = Field(..., ge=0, description="价格，除权送转股时为0")
+    total_cost: float = Field(..., description="总成本，除权分红时为负值（成本减少）")
     operation: OperationType
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     note: str = ""
@@ -135,7 +149,8 @@ class Account(BaseModel):
     capital_pool: CapitalPool
     positions: List[Position] = Field(default_factory=list)
     fifo_index: int = Field(default=-1, description="FIFO指针：当前成本基准BUY position在positions列表中的索引")
-    fifo_offset: int = Field(default=0, description="当前fifo_index指向的BUY position中已消耗的股数")
+    fifo_offset: float = Field(default=0.0, description="当前fifo_index指向的BUY position中已消耗的股数（除权后可能为小数）")
+    exright_applied: List[ExRightAppliedRecord] = Field(default_factory=list, description="已应用的除权记录")
 
     class Config:
         json_schema_extra = {
@@ -147,7 +162,8 @@ class Account(BaseModel):
                     "available": 100000.0,
                     "used": 0.0
                 },
-                "positions": []
+                "positions": [],
+                "exright_applied": []
             }
         }
 

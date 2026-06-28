@@ -88,19 +88,20 @@ class ConditionsManager:
 
         # 成本保护
         if cost_protection is not None:
+            buffered_price = round(cost_protection * (1 - self.COST_PROTECTION_BUFFER), 2)
             record.set(Condition(
                 type=ConditionType.COST_PROTECTION,
                 name="成本保护",
-                price=round(cost_protection, 2),
-                action="清仓",
+                price=buffered_price,
+                action="亏1.5%清仓",
                 category=ConditionCategory.HARD,
                 auto_link_cost=True,
                 created_at=now,
                 modified_at=now,
                 history=[ConditionChange(
                     old_price=0,
-                    new_price=round(cost_protection, 2),
-                    reason="首次设定（绑定持仓成本）",
+                    new_price=buffered_price,
+                    reason=f"首次设定（绑定持仓成本，缓冲{self.COST_PROTECTION_BUFFER*100:.1f}%）",
                     level=ConditionLevel.LEVEL_1,
                 )],
             ))
@@ -345,6 +346,7 @@ class ConditionsManager:
             "loss_protect": "亏损保护",
             "tech_break": "技术破位",
             "target_profit": "目标价止盈",
+            "add_position": "加仓条件",
             "fundamental": "基本面事件",
             "market_risk": "市场风险",
         }
@@ -376,7 +378,10 @@ class ConditionsManager:
         if not record:
             return False
 
-        return record.remove_event(event_id)
+        result = record.remove_event(event_id)
+        if result:
+            self.save_conditions(record)
+        return result
 
     def trigger_event_condition(self, stock_name: str,
                                 event_id: str,
@@ -449,10 +454,25 @@ class ConditionsManager:
         self.save_conditions(record)
         return record
 
+    # 成本保护缓冲系数：保护价 = 成本价 × (1 - BUFFER)
+    # 作用是吸收日内正常波动，避免极轻仓被"回本就清仓"误伤
+    COST_PROTECTION_BUFFER = 0.015
+
+    # 分批建仓期间的保护底线缓冲：保护价 = 最低买点 × (1 - BUILD_FLOOR_BUFFER)
+    # 作用是分批建仓期间容忍计划内浮亏（如 ¥82 买入预期可能跌到 ¥80），
+    # 同时在真正破位（跌破买点下沿 2%）时止损，避免"计划内浮亏"被误判为"判断错误"
+    BUILD_FLOOR_BUFFER = 0.02
+
     def sync_cost_protection(self, stock_name: str, avg_cost: float) -> Optional[ConditionsRecord]:
         """
         同步成本保护（buy/sell 后自动调用）
-        如果 auto_link_cost=True，自动更新成本保护价格为当前持仓成本
+        如果 auto_link_cost=True，自动更新成本保护价格。
+
+        两种场景：
+        1. 正常持仓（无未触发的 add_position 事件）：保护价 = 成本价 × (1 - 1.5%)
+        2. 分批建仓期间（存在未触发的 add_position 事件）：
+           保护价 = min(成本价 × 0.985, 最低买点 × 0.98)
+           建仓期间容忍计划内浮亏，建仓完成后自动切换回正常成本保护。
         """
         record = self.load_conditions(stock_name)
         if not record:
@@ -465,17 +485,40 @@ class ConditionsManager:
         if not condition.auto_link_cost:
             return record
 
+        # 检查是否存在未触发的 add_position 事件（分批建仓期间）
+        # 事件条件的 type 字段统一为 TRAILING_STOP，需通过 name 字段识别 add_position
+        pending_build_events = [
+            e for e in record.events
+            if e.name == "加仓条件" and e.status == ConditionStatus.ACTIVE
+        ]
+
+        cost_based_price = round(avg_cost * (1 - self.COST_PROTECTION_BUFFER), 2)
+
+        if pending_build_events:
+            # 分批建仓期间：取 min(成本×0.985, 最低买点×0.98)
+            min_buy_price = min(e.price for e in pending_build_events)
+            build_floor = round(min_buy_price * (1 - self.BUILD_FLOOR_BUFFER), 2)
+            target_price = min(cost_based_price, build_floor)
+            reason = (
+                f"分批建仓期间保护（成本¥{avg_cost:.2f}→{cost_based_price:.2f}，"
+                f"最低买点¥{min_buy_price:.2f}→底线¥{build_floor:.2f}，取小值¥{target_price:.2f}）"
+            )
+        else:
+            # 正常持仓：成本 × (1 - 1.5%)
+            target_price = cost_based_price
+            reason = f"自动同步持仓成本（缓冲{self.COST_PROTECTION_BUFFER*100:.1f}%，成本¥{avg_cost:.2f}）"
+
         # 检查是否需要更新
-        if abs(condition.price - avg_cost) < 0.01:
+        if abs(condition.price - target_price) < 0.01:
             return record  # 无需更新
 
         old_price = condition.price
-        condition.price = round(avg_cost, 2)
+        condition.price = target_price
         condition.modified_at = datetime.now().isoformat()
         condition.history.append(ConditionChange(
             old_price=old_price,
-            new_price=round(avg_cost, 2),
-            reason="自动同步持仓成本",
+            new_price=target_price,
+            reason=reason,
             level=ConditionLevel.LEVEL_1,
         ))
 

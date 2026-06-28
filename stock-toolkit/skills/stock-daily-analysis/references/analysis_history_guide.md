@@ -39,9 +39,16 @@ ptrade analysis 股票名称 --action list --limit 30
 
 ### 步骤 2: 智能选择分析报告
 
-根据列出的历史报告，智能选择具有代表性的报告进行读取：
+根据列出的历史报告，智能选择具有代表性的报告进行读取。**根据分析模式灵活选择，避免机械读取过多报告**：
 
-**选择策略**：
+#### 按问题聚焦选择（问题驱动分析模式）
+
+- **用户问"为什么今天XX"**：只读最近 1-2 份报告，聚焦当日交易逻辑
+- **用户问"这周表现如何"**：读最近 5-7 份报告，覆盖一周演进
+- **用户问"这个月趋势"**：读近 30 天的 7-10 份报告，覆盖长周期
+
+#### 按时间维度选择（通用日分析模式）
+
 1. **短期分析**（最近 1-3 天）：选择最近 1-2 份报告
    - 了解最新的观点变化
    - 追踪短期预测验证情况
@@ -72,7 +79,8 @@ ptrade analysis 股票名称 --action list --limit 30
 # - 2026-03-25-0947.md (19天前) ✓ 长期
 # - 2026-03-20-0947.md (24天前) ✓ 长期
 
-# 最终选择 7-10 份报告进行读取
+# 通用日分析：最终选择 7-10 份报告进行读取
+# 问题驱动分析：按问题聚焦选择 1-7 份
 ```
 
 **注意事项**：
@@ -239,8 +247,8 @@ ptrade analysis 股票名称 --action read --file <中期报告路径>
 📂 保存位置：ptrade 工作的 workspace/temp-data 目录（通过 STOCK_ANALYSIS_WORKSPACE 环境变量配置）
 
 ```bash
-# 1. 先将连续性分析报告保存到临时文件
-cat > /tmp/{股票名称}_history_continuity_${CLAUDE_SESSION_ID}.md << 'EOF'
+# 1. 先将连续性分析报告保存到临时文件（使用 date +%s 生成唯一时间戳）
+cat > "/tmp/{股票名称}_history_continuity_$(date +%s).md" << 'EOF'
 {连续性分析报告内容}
 EOF
 
@@ -248,7 +256,7 @@ EOF
 ptrade temp-data "股票名称" \
   --action save \
   --category history-continuity \
-  --file /tmp/{股票名称}_history_continuity_${CLAUDE_SESSION_ID}.md
+  --file "/tmp/{股票名称}_history_continuity_$(date +%s).md"
 ```
 
 ⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据

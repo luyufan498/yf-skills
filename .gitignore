@@ -64,3 +64,6 @@ docs/superpowers/
 
 # Validation reports
 validation_report.json
+
+# CloudTap traces
+.traces/

@@ -233,6 +233,23 @@ def info(
             if positions.get('current_price'):
                 typer.echo(f"   当前价格：¥{positions['current_price']:.2f}")
 
+            # 除权复权记录（直接从 positions 中提取，体现股数和成本变化）
+            exright_positions = summary.get("exright_positions", [])
+            if exright_positions:
+                typer.echo(f"   除权记录:")
+                for p in exright_positions:
+                    ts = p.get("timestamp", "")[:10]
+                    op = p.get("operation", "")
+                    qty = p.get("quantity", 0)
+                    cost = p.get("total_cost", 0.0)
+                    note = p.get("note", "")
+                    if op == "exright_bonus" and qty > 0:
+                        typer.echo(f"      📅 {ts}: 送转 {qty}股 | 成本不变 | {note}")
+                    elif op == "exright_dividend" and cost < 0:
+                        typer.echo(f"      📅 {ts}: 分红 ¥{abs(cost):,.2f} | 股数不变 | {note}")
+                    elif note:
+                        typer.echo(f"      📅 {ts}: {note}")
+
         # 收益信息
         profit = summary["profit"]
         typer.echo(f"\n💵 收益状况")
@@ -934,7 +951,8 @@ def analysis(
     content: Optional[str] = typer.Option(None, "--content", "-c", help="分析内容"),
     file: Optional[str] = typer.Option(None, "--file", "-f", help="从文件读取内容"),
     limit: int = typer.Option(15, "--limit", "-l", help="最多显示的记录数"),
-    count: int = typer.Option(1, "--count", "-n", help="读取的报告数量（仅 read 操作，默认 1）")
+    count: int = typer.Option(1, "--count", "-n", help="读取的报告数量（仅 read 操作，默认 1）"),
+    report_id: Optional[str] = typer.Option(None, "--id", help="指定报告文件名（仅 read 操作）")
 ):
     """
     分析报告管理
@@ -947,6 +965,7 @@ def analysis(
       ptrade analysis 赛力斯 --action save --file analysis.md
       ptrade analysis 赛力斯 --action read
       ptrade analysis 赛力斯 --action read --count 3
+      ptrade analysis 赛力斯 --action read --id 赛力斯-2026-06-17-1007.md
       ptrade analysis --action list
     """
     manager = AnalysisManager()
@@ -972,31 +991,42 @@ def analysis(
         typer.echo(f"   路径: {record.file_path}")
 
     elif action == "read":
-        # 读取分析报告（支持读取最近 N 份）
-        records = manager.read_analyses_count(stock_name, count=count)
-
-        if not records:
-            typer.echo(f"❌ 未找到股票 '{stock_name}' 的分析记录")
-            raise typer.Exit(1)
-
-        # 如果只有一份报告，保持简洁显示
-        if len(records) == 1:
-            record = records[0]
-            typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）\n")
+        if report_id:
+            # 按指定文件名读取单份报告
+            record = manager.read_analysis(stock_name, filename=report_id)
+            if not record:
+                typer.echo(f"❌ 未找到股票 '{stock_name}' 的报告 '{report_id}'")
+                raise typer.Exit(1)
+            file_name = Path(record.file_path).name
+            typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）")
+            typer.echo(f"📁 文件: {file_name}\n")
             typer.echo(record.content)
         else:
-            # 多份报告时，显示分隔符和文件名
-            total = len(records)
-            for idx, record in enumerate(records, 1):
-                file_name = Path(record.file_path).name
-                typer.echo(f"{'='*60}")
-                typer.echo(f"报告 {idx}/{total}")
-                typer.echo(f"{'='*60}")
-                typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）")
-                typer.echo(f"📁 文件: {file_name}\n")
+            # 读取分析报告（支持读取最近 N 份）
+            records = manager.read_analyses_count(stock_name, count=count)
+
+            if not records:
+                typer.echo(f"❌ 未找到股票 '{stock_name}' 的分析记录")
+                raise typer.Exit(1)
+
+            # 如果只有一份报告，保持简洁显示
+            if len(records) == 1:
+                record = records[0]
+                typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）\n")
                 typer.echo(record.content)
-                if idx < total:
-                    typer.echo()  # 报告之间添加空行
+            else:
+                # 多份报告时，显示分隔符和文件名
+                total = len(records)
+                for idx, record in enumerate(records, 1):
+                    file_name = Path(record.file_path).name
+                    typer.echo(f"{'='*60}")
+                    typer.echo(f"报告 {idx}/{total}")
+                    typer.echo(f"{'='*60}")
+                    typer.echo(f"📄 {record.stock_name} 分析报告（{record.timestamp[:10]}）")
+                    typer.echo(f"📁 文件: {file_name}\n")
+                    typer.echo(record.content)
+                    if idx < total:
+                        typer.echo()  # 报告之间添加空行
 
     elif action == "list":
         # 列出分析记录
@@ -1119,7 +1149,7 @@ def conditions_command(
     # --trigger / --expire
     trigger_price: Optional[float] = typer.Option(None, "--trigger-price", help="触发时价格"),
     # event condition params
-    event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect/loss_protect/tech_break/target_profit/fundamental/market_risk"),
+    event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect(利润保护)/loss_protect(亏损保护)/tech_break(技术破位)/target_profit(目标价止盈, 别名 take_profit)/add_position(加仓)/fundamental(基本面)/market_risk(市场风险)"),
     event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
 ):
     """条件管理：查看、设定、修改、触发、过期股票交易条件"""
@@ -1358,6 +1388,10 @@ def conditions_command(
         if not event_type or price is None or not category:
             typer.echo("❌ 错误: --action event-set 需要 --event-type, --price, --category 参数", err=True)
             raise typer.Exit(1)
+
+        # 命名别名归一化：吸收 ConditionType 与 EventConditionType 之间的命名不一致
+        # 旧系统用 take_profit_1/2，新事件系统用 target_profit，两者中文都对应"止盈"
+        event_type = {"take_profit": "target_profit"}.get(event_type, event_type)
 
         if event_type not in [e.value for e in EventConditionType]:
             valid = ", ".join([e.value for e in EventConditionType])

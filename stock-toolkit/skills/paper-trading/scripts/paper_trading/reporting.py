@@ -225,6 +225,24 @@ class ReportGenerator:
                     aligned.append(_pad(cell, col_widths[j], align))
                 lines.append("| " + " | ".join(aligned) + " |")
 
+        # 追加除权复权记录（直接从 positions 中提取，体现股数和成本变化）
+        exright_positions = summary.get("exright_positions", [])
+        if exright_positions:
+            lines.append("")
+            lines.append("> **除权复权记录**")
+            for p in exright_positions:
+                ts = p.get("timestamp", "")[:10]
+                op = p.get("operation", "")
+                qty = p.get("quantity", 0)
+                cost = p.get("total_cost", 0.0)
+                note = p.get("note", "")
+                if op == "exright_bonus" and qty > 0:
+                    lines.append(f"> - 📅 {ts}: 送转 {qty}股 | 成本不变 | {note}")
+                elif op == "exright_dividend" and cost < 0:
+                    lines.append(f"> - 📅 {ts}: 分红 ¥{abs(cost):,.2f} | 股数不变 | {note}")
+                elif note:
+                    lines.append(f"> - 📅 {ts}: {note}")
+
         return "\n".join(lines)
 
     def generate_operations_report(

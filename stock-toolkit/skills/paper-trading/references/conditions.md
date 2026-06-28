@@ -53,8 +53,8 @@ ptrade conditions "股票名称" --action set --type trailing_stop --price 65.0 
 # 设定止盈条件（soft，7天有效）
 ptrade conditions "股票名称" --action set --type take_profit_1 --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
 
-# 设定成本保护（hard，自动跟随持仓成本）
-ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "保本出" --category hard
+# 设定成本保护（hard，自动跟随持仓成本，含1.5%缓冲）
+ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "亏1.5%清仓" --category hard
 ```
 
 ### 修改条件
@@ -98,6 +98,14 @@ ptrade conditions "股票名称" --action event-set --event-type tech_break --pr
 
 # 目标价止盈（soft，7天有效）
 ptrade conditions "股票名称" --action event-set --event-type target_profit --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
+
+# 加仓条件（soft，支持同类型多实例）
+ptrade conditions "股票名称" --action event-set --event-type add_position --price 45.36 --action-str "成本区补仓-加仓30%" --category soft --expiry-days 7
+
+# 分批建仓条件（soft，空仓状态下首次建仓，通过多个独立事件覆盖买点区间）
+ptrade conditions "股票名称" --action event-set --event-type add_position --price 80.00 --action-str "买点下沿-建仓30%" --category soft --expiry-days 7
+ptrade conditions "股票名称" --action event-set --event-type add_position --price 81.00 --action-str "买点中沿-建仓30%" --category soft --expiry-days 7
+ptrade conditions "股票名称" --action event-set --event-type add_position --price 82.00 --action-str "买点上沿-建仓40%" --category soft --expiry-days 7
 ```
 
 ### 查看事件条件
@@ -138,7 +146,7 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 | 类型 | 用途 | 建议类别 |
 |------|------|---------|
 | `trailing_stop` | 移动止损/技术破位 | hard |
-| `cost_protection` | 成本保护（回本） | hard |
+| `cost_protection` | 成本保护（亏1.5%清仓） | hard |
 | `take_profit_1` | 第一止盈位 | soft |
 | `take_profit_2` | 第二止盈位 | soft |
 | `add_position` | 加仓条件 | soft |
@@ -151,6 +159,7 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 | `loss_protect` | 亏损保护梯度 | 浮亏状态下设定亏损止损线 |
 | `tech_break` | 技术破位 | 跌破关键支撑位减仓 |
 | `target_profit` | 目标价到达 | 分析报告目标价减仓20% |
+| `add_position` | 加仓条件 / 分批建仓条件 | 成本区/支撑位/急跌/突破加仓；空仓状态下的首批/第二批/第三批建仓 |
 | `fundamental` | 基本面事件 | 业绩暴雷/重大利好 |
 | `market_risk` | 市场风险 | 大盘系统性风险 |
 
@@ -194,7 +203,7 @@ ptrade conditions "股票名称" --format markdown --template execution-check
 ptrade init "英维克" --capital 500000
 
 # 2. 设定标准条件
-ptrade conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "保本出" --category hard
+ptrade conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "亏1.5%清仓" --category hard
 ptrade conditions "英维克" --action set --type trailing_stop --price 65.0 --action-str "技术破位-减仓50%" --category hard
 
 # 3. 设定事件条件（亏损梯度）
@@ -231,7 +240,34 @@ A: 事件条件和标准条件一样支持 `expiry_days`。过期后会显示在
 
 ### Q: 除权后条件需要重置吗？
 
-A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）会自动跟随持仓成本同步，无需手动调整。
+A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）会自动跟随持仓成本同步（保护价 = 成本价 × 0.985），无需手动调整。
+
+### Q: `add_position` 事件类型可以用于空仓建仓吗？
+
+A: 可以。`add_position` 事件类型有两种语义：
+- **加仓**（已有持仓）：`--action-str` 使用 `"<触发类型>-加仓<比例>%"` 格式，如 `"成本区补仓-加仓30%"`、`"支撑位补仓-加仓25%"`
+- **分批建仓**（空仓 → 目标仓位）：通过多个独立的 `add_position` 事件覆盖买点区间，每个事件用 `--action-str` 描述批次和比例，如 `"买点下沿-建仓30%"`、`"买点中沿-建仓30%"`、`"买点上沿-建仓40%"`。事件之间是 OR 关系——任一触发即完成部分建仓，触发后 agent 手动 `event-remove` 其他未触发的事件。
+
+> **命名规范**：`--action-str` 推荐使用 `"<触发位置>-建仓<比例>%"` 格式，便于 agent 在步骤 7 审查时识别批次。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0 节"分配建仓策略"。
+
+### Q: 分批建仓的多个事件之间有依赖关系吗？
+
+A: 没有。每个 `add_position` 事件条件独立存储和触发，CLI 不维护批次之间的依赖。多个事件是 OR 关系——任一价位触及即触发对应建仓。agent 在生成报告时需要在步骤 7 审查所有同类型事件的触发状态，并在步骤 8 根据投资决策决定是否移除未触发的事件（如区间捕捉完成后移除其他未触发的买点条件）。
+
+### Q: 分批建仓期间成本保护价为什么低于"成本×0.985"？
+
+A: 分批建仓期间，CLI 会自动调整成本保护价，避免"计划内浮亏"被误判为"判断错误"强制清仓。
+
+**调整逻辑**：`sync_cost_protection`（每次 `buy` 后自动调用）会检查是否存在未触发的 `add_position` 事件：
+
+| 阶段 | 保护价计算 | 语义 |
+|------|----------|------|
+| 建仓期间（有未触发的 `add_position`） | `min(加权成本 × 0.985, 最低买点 × 0.98)` | 容忍计划内浮亏，但跌破买点下沿 2% 仍止损 |
+| 建仓完成（无未触发的 `add_position`） | `加权成本 × 0.985` | 正常成本保护，亏损 1.5% 清仓 |
+
+**示例**：买点区间 ¥80-82，¥82 首批建仓后加权成本 ¥82，正常成本保护应为 ¥80.77。但存在未触发的 ¥80/81 买点事件，保护价取 `min(80.77, 80×0.98=78.40) = ¥78.40`。这样股价跌到 ¥80 时会按计划触发第二批建仓，而不是触发成本保护清仓。建仓完成后（所有买点事件触发或移除），下次 `buy` 操作触发 `sync_cost_protection` 时会自动切换回正常的 `成本×0.985`。
+
+> **agent 无需手动操作**：此调整完全由 CLI 自动完成。agent 在步骤 7 审查时如看到成本保护价低于"成本×0.985"，应理解为建仓期间的正常行为，并在报告"利润保护追踪"章节说明。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
 
 ---
 

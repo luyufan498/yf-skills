@@ -85,6 +85,7 @@ class EventConditionType(str, Enum):
     LOSS_PROTECT = "loss_protect"           # 亏损保护
     TECH_BREAK = "tech_break"               # 技术破位
     TARGET_PROFIT = "target_profit"         # 目标价止盈
+    ADD_POSITION = "add_position"           # 加仓条件
     FUNDAMENTAL = "fundamental"             # 基本面事件
     MARKET_RISK = "market_risk"             # 市场风险
 
@@ -251,13 +252,17 @@ class ConditionRules:
 
     # ---- Level 1: 自动通行 ----
 
+    # 成本保护缓冲系数：保护价 = 成本价 × (1 - BUFFER)
+    COST_PROTECTION_BUFFER = 0.015
+
     @staticmethod
     def auto_sync_cost_protection(avg_cost: float) -> ValidationResult:
-        """成本保护自动跟随持仓成本 — Level 1"""
+        """成本保护自动跟随持仓成本（含1.5%缓冲） — Level 1"""
+        buffered = round(avg_cost * (1 - ConditionRules.COST_PROTECTION_BUFFER), 2)
         return ValidationResult(
             allowed=True,
             level=ConditionLevel.LEVEL_1,
-            message=f"成本保护自动跟随持仓成本（当前: ¥{avg_cost:.2f}）",
+            message=f"成本保护自动跟随持仓成本（成本¥{avg_cost:.2f}，保护价¥{buffered:.2f}）",
             requires_log=True,
             requires_warning=False,
         )
@@ -456,12 +461,14 @@ class ConditionRules:
     ) -> ValidationResult:
         """统一验证：成本保护修改"""
 
-        # 成本保护原则上始终等于持仓成本
-        # 如果新价格等于当前持仓成本，自动通过
-        if abs(new_price - avg_cost) < 0.01:
+        # 成本保护 = 成本价 × (1 - 1.5%)，吸收日内波动
+        expected_price = round(avg_cost * (1 - ConditionRules.COST_PROTECTION_BUFFER), 2)
+
+        # 如果新价格等于期望保护价（带缓冲），自动通过
+        if abs(new_price - expected_price) < 0.01:
             return ConditionRules.auto_sync_cost_protection(avg_cost)
 
-        # 如果不等于持仓成本，需要解锁
+        # 如果不等于期望保护价，需要解锁
         if active_triggers:
             return ConditionRules.can_override_with_review(
                 old_price, new_price, active_triggers, override_reason
@@ -470,8 +477,8 @@ class ConditionRules:
         return ValidationResult(
             allowed=False,
             level=ConditionLevel.BLOCKED,
-            message=f"❌ 成本保护必须等于持仓成本（当前: ¥{avg_cost:.2f}）。"
-                   f"请求: ¥{new_price:.2f}，与持仓成本偏差 ¥{abs(new_price - avg_cost):.2f}。"
+            message=f"❌ 成本保护必须等于 成本价×(1-1.5%) = ¥{expected_price:.2f}（成本¥{avg_cost:.2f}）。"
+                   f"请求: ¥{new_price:.2f}，偏差 ¥{abs(new_price - expected_price):.2f}。"
                    f"如需修改，请使用 --override-trigger 解锁。",
             requires_log=True,
             requires_warning=True,

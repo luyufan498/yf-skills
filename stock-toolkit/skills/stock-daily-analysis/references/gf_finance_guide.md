@@ -178,8 +178,8 @@ python3 scripts/etf_rank.py search 汽车
 **⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据**
 
 ```bash
-# 1. 先将广发证券数据汇总保存到临时文件
-cat > /tmp/{股票名称}_gf_summary_${CLAUDE_SESSION_ID}.md << 'EOF'
+# 1. 先将广发证券数据汇总保存到临时文件（使用 date +%s 生成唯一时间戳）
+cat > "/tmp/{股票名称}_gf_summary_$(date +%s).md" << 'EOF'
 # {股票名称} - 广发证券数据汇总
 
 **数据获取时间**: {YYYY-MM-DD HH:mm:ss}
@@ -209,7 +209,7 @@ EOF
 ptrade temp-data "股票名称" \
   --action save \
   --category gf-summary \
-  --file /tmp/{股票名称}_gf_summary_${CLAUDE_SESSION_ID}.md
+  --file "/tmp/{股票名称}_gf_summary_$(date +%s).md"
 ```
 
 ### 实施检查清单

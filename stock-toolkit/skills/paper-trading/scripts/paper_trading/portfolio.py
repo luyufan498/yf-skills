@@ -69,6 +69,12 @@ class PortfolioManager:
 
         total_profit = realized_profit + floating_profit
 
+        # 从 positions 中提取复权相关记录
+        exright_positions = [
+            p.model_dump() for p in account.positions
+            if p.operation in (OperationType.EXRIGHT_BONUS, OperationType.EXRIGHT_DIVIDEND)
+        ]
+
         return {
             "stock_name": account.stock_name,
             "stock_code": account.stock_code,
@@ -83,6 +89,7 @@ class PortfolioManager:
                 "floating": floating_profit,
                 "total": total_profit,
             },
+            "exright_positions": exright_positions,
         }
 
     def get_account_with_realtime_price(self, stock_name: str) -> Optional[Account]:

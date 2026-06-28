@@ -67,3 +67,6 @@ validation_report.json
 
 # CloudTap traces
 .traces/
+
+# gf-finance MCP config (local only)
+stock-toolkit/skills/gf-finance/assets/mcp_config.json

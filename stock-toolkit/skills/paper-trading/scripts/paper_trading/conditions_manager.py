@@ -458,21 +458,44 @@ class ConditionsManager:
     # 作用是吸收日内正常波动，避免极轻仓被"回本就清仓"误伤
     COST_PROTECTION_BUFFER = 0.015
 
+    # 建仓后短期保护缓冲：建仓后 BUILD_BUFFER_DAYS 个自然日内使用更宽的缓冲
+    # 原因：建仓初期股价尚未脱离成本区，1.5% 缓冲不足以吸收正常日内波动，
+    # 容易在建仓当天或次日就被清仓，本质上等于"买入即止损"
+    BUILD_BUFFER = 0.03
+    BUILD_BUFFER_DAYS = 3
+
     # 分批建仓期间的保护底线缓冲：保护价 = 最低买点 × (1 - BUILD_FLOOR_BUFFER)
     # 作用是分批建仓期间容忍计划内浮亏（如 ¥82 买入预期可能跌到 ¥80），
     # 同时在真正破位（跌破买点下沿 2%）时止损，避免"计划内浮亏"被误判为"判断错误"
     BUILD_FLOOR_BUFFER = 0.02
+
+    def _is_within_build_buffer_period(self, stock_name: str) -> bool:
+        """检查最近一次买入是否在建仓缓冲期内（BUILD_BUFFER_DAYS 个自然日内）"""
+        try:
+            history = self.storage.load_operations(stock_name)
+            if not history or not history.operations:
+                return False
+            for op in reversed(history.operations):
+                if op.type == "buy":
+                    buy_time = datetime.fromisoformat(op.timestamp)
+                    days_since = (datetime.now() - buy_time).days
+                    return days_since < self.BUILD_BUFFER_DAYS
+            return False
+        except Exception:
+            return False
 
     def sync_cost_protection(self, stock_name: str, avg_cost: float) -> Optional[ConditionsRecord]:
         """
         同步成本保护（buy/sell 后自动调用）
         如果 auto_link_cost=True，自动更新成本保护价格。
 
-        两种场景：
-        1. 正常持仓（无未触发的 add_position 事件）：保护价 = 成本价 × (1 - 1.5%)
+        三种场景：
+        1. 建仓后短期（最近一次买入在 BUILD_BUFFER_DAYS 天内）：保护价 = 成本价 × (1 - 3%)
+           建仓初期股价尚未脱离成本区，1.5% 缓冲不足以吸收正常日内波动。
         2. 分批建仓期间（存在未触发的 add_position 事件）：
-           保护价 = min(成本价 × 0.985, 最低买点 × 0.98)
+           保护价 = min(成本价 × (1-BUFFER), 最低买点 × 0.98)
            建仓期间容忍计划内浮亏，建仓完成后自动切换回正常成本保护。
+        3. 正常持仓（无未触发 add_position 事件且已过缓冲期）：保护价 = 成本价 × (1 - 1.5%)
         """
         record = self.load_conditions(stock_name)
         if not record:
@@ -486,16 +509,25 @@ class ConditionsManager:
             return record
 
         # 检查是否存在未触发的 add_position 事件（分批建仓期间）
-        # 事件条件的 type 字段统一为 TRAILING_STOP，需通过 name 字段识别 add_position
         pending_build_events = [
             e for e in record.events
             if e.name == "加仓条件" and e.status == ConditionStatus.ACTIVE
         ]
 
-        cost_based_price = round(avg_cost * (1 - self.COST_PROTECTION_BUFFER), 2)
+        # 检查是否在建仓缓冲期内
+        in_build_buffer = self._is_within_build_buffer_period(stock_name)
+
+        if in_build_buffer:
+            buffer = self.BUILD_BUFFER
+            buffer_label = f"{self.BUILD_BUFFER*100:.1f}%(建仓缓冲{self.BUILD_BUFFER_DAYS}天)"
+        else:
+            buffer = self.COST_PROTECTION_BUFFER
+            buffer_label = f"{self.COST_PROTECTION_BUFFER*100:.1f}%"
+
+        cost_based_price = round(avg_cost * (1 - buffer), 2)
 
         if pending_build_events:
-            # 分批建仓期间：取 min(成本×0.985, 最低买点×0.98)
+            # 分批建仓期间：取 min(成本×(1-buffer), 最低买点×0.98)
             min_buy_price = min(e.price for e in pending_build_events)
             build_floor = round(min_buy_price * (1 - self.BUILD_FLOOR_BUFFER), 2)
             target_price = min(cost_based_price, build_floor)
@@ -504,9 +536,9 @@ class ConditionsManager:
                 f"最低买点¥{min_buy_price:.2f}→底线¥{build_floor:.2f}，取小值¥{target_price:.2f}）"
             )
         else:
-            # 正常持仓：成本 × (1 - 1.5%)
+            # 正常持仓或建仓缓冲期：成本 × (1 - buffer)
             target_price = cost_based_price
-            reason = f"自动同步持仓成本（缓冲{self.COST_PROTECTION_BUFFER*100:.1f}%，成本¥{avg_cost:.2f}）"
+            reason = f"自动同步持仓成本（缓冲{buffer_label}，成本¥{avg_cost:.2f}）"
 
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:

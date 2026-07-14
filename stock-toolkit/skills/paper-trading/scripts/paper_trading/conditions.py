@@ -253,11 +253,13 @@ class ConditionRules:
     # ---- Level 1: 自动通行 ----
 
     # 成本保护缓冲系数：保护价 = 成本价 × (1 - BUFFER)
+    # 正常持仓使用 1.5%，建仓后3天内使用 3%（由 conditions_manager 控制）
     COST_PROTECTION_BUFFER = 0.015
+    BUILD_BUFFER = 0.03
 
     @staticmethod
     def auto_sync_cost_protection(avg_cost: float) -> ValidationResult:
-        """成本保护自动跟随持仓成本（含1.5%缓冲） — Level 1"""
+        """成本保护自动跟随持仓成本（含1.5%缓冲，建仓期3%） — Level 1"""
         buffered = round(avg_cost * (1 - ConditionRules.COST_PROTECTION_BUFFER), 2)
         return ValidationResult(
             allowed=True,

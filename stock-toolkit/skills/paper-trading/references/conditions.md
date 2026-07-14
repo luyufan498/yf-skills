@@ -53,8 +53,8 @@ ptrade conditions "股票名称" --action set --type trailing_stop --price 65.0 
 # 设定止盈条件（soft，7天有效）
 ptrade conditions "股票名称" --action set --type take_profit_1 --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
 
-# 设定成本保护（hard，自动跟随持仓成本，含1.5%缓冲）
-ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "亏1.5%清仓" --category hard
+# 设定成本保护（hard，自动跟随持仓成本，建仓后3天内3%缓冲，之后1.5%）
+ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "成本保护清仓" --category hard
 ```
 
 ### 修改条件
@@ -146,7 +146,7 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 | 类型 | 用途 | 建议类别 |
 |------|------|---------|
 | `trailing_stop` | 移动止损/技术破位 | hard |
-| `cost_protection` | 成本保护（亏1.5%清仓） | hard |
+| `cost_protection` | 成本保护（建仓3天内亏3%清仓，之后亏1.5%清仓） | hard |
 | `take_profit_1` | 第一止盈位 | soft |
 | `take_profit_2` | 第二止盈位 | soft |
 | `add_position` | 加仓条件 | soft |
@@ -203,7 +203,7 @@ ptrade conditions "股票名称" --format markdown --template execution-check
 ptrade init "英维克" --capital 500000
 
 # 2. 设定标准条件
-ptrade conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "亏1.5%清仓" --category hard
+ptrade conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "成本保护清仓" --category hard
 ptrade conditions "英维克" --action set --type trailing_stop --price 65.0 --action-str "技术破位-减仓50%" --category hard
 
 # 3. 设定事件条件（亏损梯度）
@@ -240,7 +240,7 @@ A: 事件条件和标准条件一样支持 `expiry_days`。过期后会显示在
 
 ### Q: 除权后条件需要重置吗？
 
-A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）会自动跟随持仓成本同步（保护价 = 成本价 × 0.985），无需手动调整。
+A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）会自动跟随持仓成本同步（保护价 = 成本价 × (1 - 缓冲系数)），无需手动调整。缓冲系数在建仓后3天内为3%，之后为1.5%。
 
 ### Q: `add_position` 事件类型可以用于空仓建仓吗？
 
@@ -254,7 +254,7 @@ A: 可以。`add_position` 事件类型有两种语义：
 
 A: 没有。每个 `add_position` 事件条件独立存储和触发，CLI 不维护批次之间的依赖。多个事件是 OR 关系——任一价位触及即触发对应建仓。agent 在生成报告时需要在步骤 7 审查所有同类型事件的触发状态，并在步骤 8 根据投资决策决定是否移除未触发的事件（如区间捕捉完成后移除其他未触发的买点条件）。
 
-### Q: 分批建仓期间成本保护价为什么低于"成本×0.985"？
+### Q: 分批建仓期间成本保护价为什么低于"成本×0.97"？
 
 A: 分批建仓期间，CLI 会自动调整成本保护价，避免"计划内浮亏"被误判为"判断错误"强制清仓。
 
@@ -262,12 +262,15 @@ A: 分批建仓期间，CLI 会自动调整成本保护价，避免"计划内浮
 
 | 阶段 | 保护价计算 | 语义 |
 |------|----------|------|
-| 建仓期间（有未触发的 `add_position`） | `min(加权成本 × 0.985, 最低买点 × 0.98)` | 容忍计划内浮亏，但跌破买点下沿 2% 仍止损 |
-| 建仓完成（无未触发的 `add_position`） | `加权成本 × 0.985` | 正常成本保护，亏损 1.5% 清仓 |
+| 建仓期间（有未触发的 `add_position`） | `min(成本保护价, 最低买点 × 0.98)` | 容忍计划内浮亏，但跌破买点下沿 2% 仍止损 |
+| 建仓完成3天内（无未触发的 `add_position`） | `加权成本 × 0.97` | 建仓缓冲期，3%缓冲 |
+| 建仓完成3天后 | `加权成本 × 0.985` | 正常成本保护，亏损 1.5% 清仓 |
 
-**示例**：买点区间 ¥80-82，¥82 首批建仓后加权成本 ¥82，正常成本保护应为 ¥80.77。但存在未触发的 ¥80/81 买点事件，保护价取 `min(80.77, 80×0.98=78.40) = ¥78.40`。这样股价跌到 ¥80 时会按计划触发第二批建仓，而不是触发成本保护清仓。建仓完成后（所有买点事件触发或移除），下次 `buy` 操作触发 `sync_cost_protection` 时会自动切换回正常的 `成本×0.985`。
+> 其中"成本保护价"在建仓后3天内为 `成本 × 0.97`，3天后为 `成本 × 0.985`。
 
-> **agent 无需手动操作**：此调整完全由 CLI 自动完成。agent 在步骤 7 审查时如看到成本保护价低于"成本×0.985"，应理解为建仓期间的正常行为，并在报告"利润保护追踪"章节说明。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
+**示例**：买点区间 ¥80-82，¥82 首批建仓后加权成本 ¥82，建仓3天内的成本保护价为 ¥82×0.97=¥79.54。但存在未触发的 ¥80/81 买点事件，保护价取 `min(79.54, 80×0.98=78.40) = ¥78.40`。这样股价跌到 ¥80 时会按计划触发第二批建仓，而不是触发成本保护清仓。建仓完成后（所有买点事件触发或移除），下次 `buy` 操作触发 `sync_cost_protection` 时会自动切换回正常模式（3天内¥成本×0.97，3天后¥成本×0.985）。
+
+> **agent 无需手动操作**：此调整完全由 CLI 自动完成。agent 在步骤 7 审查时如看到成本保护价低于"成本×0.97"，应理解为建仓期间的正常行为，并在报告"利润保护追踪"章节说明。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
 
 ---
 

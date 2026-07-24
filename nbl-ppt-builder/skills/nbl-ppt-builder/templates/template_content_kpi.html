@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - KPI指标看板布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - KPI 指标看板布局 -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-20 -right-20 w-[300px] h-[300px] rounded-full opacity-5 bg-[#0B3BD3]"></div>
+    <div class="absolute bottom-10 left-10 w-16 h-16 rounded-full opacity-10 bg-[#1D4FED]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 页面标题区 -->
+  <div class="absolute left-[17px] top-[75px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[13.5pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!--
+    指标卡片网格（3列 × 2行，共 6 个指标位）
+    配色规则：仅保留 1 个重点跳色卡片，其余统一蓝色系。
+    跳色用途：标记需要特别关注的指标（如预警、核心增长）。
+    当前跳色位置：指标4（琥珀橙），可根据内容替换为其他卡片。
+  -->
+  <div class="absolute left-[17px] top-[115px] right-[17px] bottom-[45px] grid grid-cols-3 gap-3">
+    <!-- 指标1 -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#0B3BD3] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#0B3BD3] leading-none mb-2">{{指标1数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标1标签}}</p>
+      <p class="text-[9pt] text-[#1D4FED]">{{指标1变化}}</p>
+    </div>
+
+    <!-- 指标2 -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#1D4FED] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#1D4FED] leading-none mb-2">{{指标2数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标2标签}}</p>
+      <p class="text-[9pt] text-[#7986CB]">{{指标2变化}}</p>
+    </div>
+
+    <!-- 指标3 -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#0B3BD3] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#0B3BD3] leading-none mb-2">{{指标3数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标3标签}}</p>
+      <p class="text-[9pt] text-[#1D4FED]">{{指标3变化}}</p>
+    </div>
+
+    <!-- 指标4：重点跳色（琥珀橙） -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#F59E0B] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#F59E0B] leading-none mb-2">{{指标4数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标4标签}}</p>
+      <p class="text-[9pt] text-[#D97706]">{{指标4变化}}</p>
+    </div>
+
+    <!-- 指标5 -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#0B3BD3] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#0B3BD3] leading-none mb-2">{{指标5数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标5标签}}</p>
+      <p class="text-[9pt] text-[#1D4FED]">{{指标5变化}}</p>
+    </div>
+
+    <!-- 指标6 -->
+    <div class="bg-white rounded-2xl p-4 card-shadow flex flex-col justify-center">
+      <div class="w-8 h-1 bg-[#1D4FED] rounded-full mb-3"></div>
+      <p class="text-[28pt] font-black text-[#1D4FED] leading-none mb-2">{{指标6数值}}</p>
+      <p class="text-[10pt] text-[#666] mb-1">{{指标6标签}}</p>
+      <p class="text-[9pt] text-[#7986CB]">{{指标6变化}}</p>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">{{页码}}</span>
+  </div>
+</div>
+
+</body>
+</html>

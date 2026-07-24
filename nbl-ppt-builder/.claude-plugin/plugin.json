@@ -1,7 +1,7 @@
 {
   "name": "nbl-ppt-builder",
   "description": "专门用于构建 NBL 企业 PPT，包含标准模板、配色方案和内容规范",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": {
     "name": "luyufan498"
   },

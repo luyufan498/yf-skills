@@ -27,13 +27,28 @@
 
 const { chromium } = require('playwright');
 const path = require('path');
-const sharp = require('sharp');
+const url = require('url');
 
-// decodeURIComponent is a global function in Node.js, no need to import
-
-const PT_PER_PX = 0.5; // Adjusted for PowerPoint rendering (0.75 * 0.67 for ~33% reduction)
+const PT_PER_PX = 0.75; // Physical conversion: 96px = 72pt (0.75 pt/px)
 const PX_PER_IN = 96;
 const EMU_PER_IN = 914400;
+
+// Tuning constants for visual matching between HTML rendering and PowerPoint output
+const TUNING = {
+  heightOverflowTolerancePt: 100,      // Body padding tolerance for overflow check
+  tableFontScale: 0.85,                // Table cell font scale (matches HTML rendering)
+  boxShadowBlurScale: 0.75,            // box-shadow blur pt conversion
+  listMarginLeftScale: 0.7,            // UL/OL padding-left to bullet position
+  listTextIndentPt: 3,                 // Gap between bullet char and text
+  codeLineSpacingMultiplier: 1.25,     // Tighter line spacing for <pre>/<code>
+  singleLinePadding: {                 // Width padding for single-line text by char count
+    short: 0.15,                       // ≤3 chars
+    medium: 0.10,                      // 4-5 chars
+    long: 0.02                         // >5 chars
+  },
+  minBottomMarginInches: 0.5,          // Min distance from bottom for text > 12pt
+  minFontSizePt: 6                     // Minimum font size
+};
 
 // Helper: Get body dimensions and check for overflow
 async function getBodyDimensions(page) {
@@ -81,8 +96,7 @@ async function getBodyDimensions(page) {
 
   const widthOverflowPt = widthOverflowPx * PT_PER_PX;
   const heightOverflowPt = heightOverflowPx * PT_PER_PX;
-  // Allow height tolerance (100pt ≈ 1.4 inches) for body padding/margins
-  const heightOverflowTolerance = 100;
+  const heightOverflowTolerance = TUNING.heightOverflowTolerancePt;
 
   // Skip horizontal overflow check since body padding is causing false positives
   // The actual content is in .slide-container which is properly sized
@@ -128,7 +142,7 @@ function validateDimensions(bodyDimensions, pres) {
 function validateTextBoxPosition(slideData, bodyDimensions) {
   const errors = [];
   const slideHeightInches = bodyDimensions.height / PX_PER_IN;
-  const minBottomMargin = 0.5; // 0.5 inches from bottom
+  const minBottomMargin = TUNING.minBottomMarginInches; // 0.5 inches from bottom
 
   for (const el of slideData.elements) {
     // Check text elements (p, h1-h6, list)
@@ -281,9 +295,18 @@ function addElements(slideData, targetSlide, pres) {
       let adjustedX = el.position.x;
       let adjustedW = el.position.w;
 
-      // Make single-line text 2% wider to account for underestimate
+      // Make single-line text wider to account for underestimate
+      // Short text (<=4 chars) needs more width increase
       if (isSingleLine) {
-        const widthIncrease = el.position.w * 0.02;
+        const textLength = typeof el.text === 'string' ? el.text.length : 10;
+        // Short text needs more padding: 15% for ≤3 chars, 10% for 4-5 chars, 2% for longer
+        let widthIncreasePct = TUNING.singleLinePadding.long;
+        if (textLength <= 3) {
+          widthIncreasePct = TUNING.singleLinePadding.short;
+        } else if (textLength <= 5) {
+          widthIncreasePct = TUNING.singleLinePadding.medium;
+        }
+        const widthIncrease = el.position.w * widthIncreasePct;
         const align = el.style.align;
 
         if (align === 'center') {
@@ -331,8 +354,21 @@ function addElements(slideData, targetSlide, pres) {
 // Helper: Extract slide data from HTML page
 async function extractSlideData(page) {
   return await page.evaluate(() => {
-    const PT_PER_PX = 0.7; // Adjusted for PowerPoint rendering (~7% smaller)
+    // 注意：此处 PT_PER_PX 是经验值，与顶层 0.75 (物理值) 不同。
+    // 历史原因：PowerPoint 渲染 HTML 时字号显示偏大约 7%，使用 0.7 缩放可视觉对齐。
+    // 改动此值会导致所有元素字号/位置偏移，需配合视觉回归测试。
+    const PT_PER_PX = 0.7;
     const PX_PER_IN = 96;
+
+    // 浏览器上下文内的调优常量（与 Node 顶层 TUNING 保持同步）
+    const TUNING = {
+      tableFontScale: 0.85,
+      boxShadowBlurScale: 0.75,
+      listMarginLeftScale: 0.7,
+      listTextIndentPt: 3,
+      codeLineSpacingMultiplier: 1.25,
+      minFontSizePt: 6
+    };
 
     // Fonts that are single-weight and should not have bold applied
     // (applying bold causes PowerPoint to use faux bold which makes text wider)
@@ -381,6 +417,7 @@ async function extractSlideData(page) {
       const match = rgbStr.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
       if (!match || !match[4]) return null;
       const alpha = parseFloat(match[4]);
+      if (alpha >= 1) return null;  // 完全不透明时不返回 0，避免冗余 transparency 属性
       return Math.round((1 - alpha) * 100);
     };
 
@@ -516,8 +553,8 @@ async function extractSlideData(page) {
       return {
         type: 'outer',
         angle: Math.round(angle),
-        blur: blur * 0.75, // Convert to points
-        color: colorMatch ? rgbToHex(colorMatch[0]) : '000000',
+        blur: blur * TUNING.boxShadowBlurScale, // Convert to points
+        color: colorMatch ? rgbToHex(getComputedRGBColor(colorMatch[0])) : '000000',
         offset: offset,
         opacity
       };
@@ -936,7 +973,7 @@ async function extractSlideData(page) {
               type: 'line',
               x1: x, y1: y + inset, x2: x + w, y2: y + inset,
               width: widthPt,
-              color: rgbToHex(computed.borderTopColor)
+              color: rgbToHex(getComputedRGBColor(computed.borderTopColor))
             });
           }
           if (parseFloat(borderRight) > 0) {
@@ -946,7 +983,7 @@ async function extractSlideData(page) {
               type: 'line',
               x1: x + w - inset, y1: y, x2: x + w - inset, y2: y + h,
               width: widthPt,
-              color: rgbToHex(computed.borderRightColor)
+              color: rgbToHex(getComputedRGBColor(computed.borderRightColor))
             });
           }
           if (parseFloat(borderBottom) > 0) {
@@ -956,7 +993,7 @@ async function extractSlideData(page) {
               type: 'line',
               x1: x, y1: y + h - inset, x2: x + w, y2: y + h - inset,
               width: widthPt,
-              color: rgbToHex(computed.borderBottomColor)
+              color: rgbToHex(getComputedRGBColor(computed.borderBottomColor))
             });
           }
           if (parseFloat(borderLeft) > 0) {
@@ -966,7 +1003,7 @@ async function extractSlideData(page) {
               type: 'line',
               x1: x + inset, y1: y, x2: x + inset, y2: y + h,
               width: widthPt,
-              color: rgbToHex(computed.borderLeftColor)
+              color: rgbToHex(getComputedRGBColor(computed.borderLeftColor))
             });
           }
         }
@@ -1039,38 +1076,69 @@ async function extractSlideData(page) {
         }
       }
 
-      // Extract bullet lists as single text block
+      // Extract bullet lists as single text block（支持嵌套）
       if (el.tagName === 'UL' || el.tagName === 'OL') {
         const rect = adjustRect(el.getBoundingClientRect());
         if (rect.width === 0 || rect.height === 0) return;
 
-        const liElements = Array.from(el.querySelectorAll('li'));
         const items = [];
         const ulComputed = window.getComputedStyle(el);
         const ulPaddingLeftPt = pxToPoints(ulComputed.paddingLeft);
+        const marginLeft = ulPaddingLeftPt * TUNING.listMarginLeftScale;
+        const textIndent = TUNING.listTextIndentPt;
+        // 每级缩进增量（pt），子级列表向右偏移
+        const indentStepPt = 18;
 
-        // Split: margin-left for bullet position, indent for text position
-        // indent in PptxGenJS is the gap between bullet character and text
-        // Use a small fixed value (3pt) to reduce the gap between bullet and text
-        const marginLeft = ulPaddingLeftPt * 0.7;  // bullet position (70% of padding)
-        const textIndent = 3;  // small fixed gap between bullet char and text
+        // 递归处理列表，提取直接子 LI（不递归到嵌套 UL/OL 的后代 LI）
+        // 嵌套子列表通过 indentLevel 增加 bullet 缩进
+        const processList = (listEl, indentLevel) => {
+          // 只取直接子 LI，跳过嵌套 UL/OL 中的后代 LI
+          const directLiElements = Array.from(listEl.children).filter(child => child.tagName === 'LI');
 
-        liElements.forEach((li, idx) => {
-          const isLast = idx === liElements.length - 1;
-          const runs = parseInlineFormatting(li, { breakLine: false });
-          // Clean manual bullets from first run
-          if (runs.length > 0) {
-            runs[0].text = runs[0].text.replace(/^[•\-\*▪▸]\s*/, '');
-            runs[0].options.bullet = { indent: textIndent };
-          }
-          // Set breakLine on last run
-          if (runs.length > 0 && !isLast) {
-            runs[runs.length - 1].options.breakLine = true;
-          }
-          items.push(...runs);
-        });
+          directLiElements.forEach((li, idx) => {
+            const isLast = idx === directLiElements.length - 1;
+            // 找到 LI 内的嵌套子列表（UL/OL），先剥离再处理
+            const nestedLists = Array.from(li.children).filter(child => child.tagName === 'UL' || child.tagName === 'OL');
 
-        const computed = window.getComputedStyle(liElements[0] || el);
+            // 处理 LI 的文本内容（忽略嵌套子列表的文本，因为会单独递归处理）
+            // clone LI 并移除嵌套列表，用 parseInlineFormatting 提取纯文本
+            const liClone = li.cloneNode(true);
+            liClone.querySelectorAll('ul, ol').forEach(nested => nested.remove());
+            const runs = parseInlineFormatting(liClone, { breakLine: false });
+
+            const currentBulletIndent = textIndent + indentLevel * indentStepPt;
+            const currentMarginLeft = marginLeft + indentLevel * indentStepPt;
+
+            if (runs.length > 0) {
+              runs[0].text = runs[0].text.replace(/^[•\-\*▪▸]\s*/, '');
+              runs[0].options.bullet = { indent: currentBulletIndent };
+              // 子级通过 margin 数组左移实现缩进（仅对第一行有效）
+              if (indentLevel > 0) {
+                runs[0].options.margin = [currentMarginLeft, 0, 0, 0];
+              }
+            }
+            items.push(...runs);
+
+            // 递归处理嵌套子列表
+            nestedLists.forEach(nested => {
+              processList(nested, indentLevel + 1);
+            });
+
+            // 在同级最后一项的最后一个 run 上加 breakLine
+            if (runs.length > 0 && !isLast) {
+              runs[runs.length - 1].options.breakLine = true;
+            }
+          });
+
+          // 标记所有后代 LI 为已处理，避免被外层 forEach 重复提取
+          listEl.querySelectorAll('li').forEach(li => processed.add(li));
+        };
+
+        processList(el, 0);
+
+        // 取第一个直接子 LI 的样式作为列表基础样式
+        const firstDirectLi = Array.from(el.children).find(child => child.tagName === 'LI');
+        const computed = window.getComputedStyle(firstDirectLi || el);
 
         elements.push({
           type: 'list',
@@ -1082,20 +1150,18 @@ async function extractSlideData(page) {
             h: pxToInch(rect.height)
           },
           style: {
-            fontSize: Math.max(pxToPoints(computed.fontSize), 6),  // Minimum 6pt
+            fontSize: Math.max(pxToPoints(computed.fontSize), TUNING.minFontSizePt),
             fontFace: computed.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
             color: rgbToHex(getComputedRGBColor(computed.color)),
-            transparency: extractAlpha(computed.color),
+            transparency: extractAlpha(getComputedRGBColor(computed.color)),
             align: computed.textAlign === 'start' ? 'left' : computed.textAlign,
             lineSpacing: computed.lineHeight && computed.lineHeight !== 'normal' ? pxToPoints(computed.lineHeight) : null,
             paraSpaceBefore: 0,
             paraSpaceAfter: pxToPoints(computed.marginBottom),
-            // PptxGenJS margin array is [left, right, bottom, top]
             margin: [marginLeft, 0, 0, 0]
           }
         });
 
-        liElements.forEach(li => processed.add(li));
         processed.add(el);
         return;
       }
@@ -1113,35 +1179,40 @@ async function extractSlideData(page) {
         const headerRow = el.querySelector('thead tr');
 
         const tableData = [];
-        const colWidths = [];
+        let colWidths = [];
 
-        // Extract column widths
-        if (headerRow) {
-          const thElements = Array.from(headerRow.querySelectorAll('th'));
+        // Extract column widths（归一化到总和=1，并考虑 colspan）
+        // 策略：从含最多列的行计算每列宽度比例，然后归一化
+        const computeColWidths = (rowEl) => {
+          if (!rowEl) return [];
+          const cells = Array.from(rowEl.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH');
           const tableWidth = rect.width;
-          thElements.forEach((th, idx) => {
-            const thRect = th.getBoundingClientRect();
-            colWidths.push(thRect.width / tableWidth);
+          const widths = [];
+          cells.forEach(cell => {
+            const cellRect = cell.getBoundingClientRect();
+            const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
+            const totalWidth = cellRect.width / tableWidth;
+            // colspan>1 时按比例平均分配到各列
+            for (let i = 0; i < colspan; i++) {
+              widths.push(totalWidth / colspan);
+            }
           });
-        } else if (dataRows.length > 0) {
-          // Check if first row contains TH elements (thead not present but has header cells)
-          const firstRowCells = dataRows[0].querySelectorAll('th, td');
-          const thElements = Array.from(firstRowCells).filter(cell => cell.tagName === 'TH');
-          const tableWidth = rect.width;
+          return widths;
+        };
 
-          if (thElements.length > 0) {
-            // First row has TH elements (e.g., <tr><th>A</th><th>B</th></tr>)
-            thElements.forEach((th, idx) => {
-              const thRect = th.getBoundingClientRect();
-              colWidths.push(thRect.width / tableWidth);
-            });
-          } else {
-            // Use TD elements from first row to determine column widths
-            const tdElements = Array.from(dataRows[0].querySelectorAll('td'));
-            tdElements.forEach((td, idx) => {
-              const tdRect = td.getBoundingClientRect();
-              colWidths.push(tdRect.width / tableWidth);
-            });
+        if (headerRow) {
+          colWidths = computeColWidths(headerRow);
+        } else if (dataRows.length > 0) {
+          // 优先取第一个含 TH 的行；否则取第一个 TD 行
+          const firstThRow = dataRows.find(r => r.querySelector('th'));
+          colWidths = computeColWidths(firstThRow || dataRows[0]);
+        }
+
+        // 归一化：确保总和 = 1（避免边框/padding 导致右侧留白）
+        if (colWidths.length > 0) {
+          const sum = colWidths.reduce((a, b) => a + b, 0);
+          if (sum > 0) {
+            colWidths = colWidths.map(w => w / sum);
           }
         }
 
@@ -1163,11 +1234,13 @@ async function extractSlideData(page) {
             const paddingLeftPt = pxToPoints(computed.paddingLeft);
             const paddingRightPt = pxToPoints(computed.paddingRight);
 
+            const colspan = parseInt(th.getAttribute('colspan') || '1', 10);
             const cellOpts = {
               bold: isBold && !shouldSkipBold(computed.fontFamily),
               color: rgbToHex(getComputedRGBColor(computed.color)),
-              fontSize: Math.max(pxToPoints(computed.fontSize) * 0.85, 6),  // Apply 0.85 scaling for tables
+              fontSize: Math.max(pxToPoints(computed.fontSize) * TUNING.tableFontScale, TUNING.minFontSizePt),
               fontFace: computed.fontFamily.split(',')[0].replace(/[\'"]/g, '').trim(),
+              colspan: colspan > 1 ? colspan : undefined,
               // Apply cell padding from HTML
               margin: [paddingTopPt, paddingRightPt, paddingBottomPt, paddingLeftPt]
             };
@@ -1189,7 +1262,7 @@ async function extractSlideData(page) {
             }
 
             if (bgColorToUse) {
-              cellOpts.fill = { color: rgbToHex(bgColorToUse) };
+              cellOpts.fill = { color: rgbToHex(getComputedRGBColor(bgColorToUse)) };
             }
             return {
               text: th.textContent.trim(),
@@ -1220,7 +1293,10 @@ async function extractSlideData(page) {
             const hasInlineFormatting = cell.querySelector('span, b, strong, i, em, u');
             let cellText;
 
-            // Apply additional scaling factor (0.85) for table cells to match HTML proportions
+            const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
+            const rowspan = parseInt(cell.getAttribute('rowspan') || '1', 10);
+
+            // Apply additional scaling factor for table cells to match HTML proportions
             const paddingTopPt = pxToPoints(parseFloat(computed.paddingTop));
             const paddingBottomPt = pxToPoints(parseFloat(computed.paddingBottom));
             const paddingLeftPt = pxToPoints(parseFloat(computed.paddingLeft));
@@ -1229,8 +1305,10 @@ async function extractSlideData(page) {
             let cellOpts = {
               bold: false,
               color: rgbToHex(getComputedRGBColor(computed.color)),
-              fontSize: Math.max(pxToPoints(computed.fontSize) * 0.85, 6),  // Apply 0.85 scaling for tables
+              fontSize: Math.max(pxToPoints(computed.fontSize) * TUNING.tableFontScale, TUNING.minFontSizePt),
               fontFace: computed.fontFamily.split(',')[0].replace(/[\'"]/g, '').trim(),
+              colspan: colspan > 1 ? colspan : undefined,
+              rowspan: rowspan > 1 ? rowspan : undefined,
               // Apply cell padding from HTML
               margin: [paddingTopPt, paddingRightPt, paddingBottomPt, paddingLeftPt]
             };
@@ -1246,7 +1324,7 @@ async function extractSlideData(page) {
               if (runs && runs.length > 0 && runs.some(r => r.options && Object.keys(r.options).some(k => k !== 'fontSize' && k !== 'fontFace'))) {
                 cellText = runs;
               } else {
-                cellText = td.textContent.trim();
+                cellText = cell.textContent.trim();
               }
             } else {
               // No inline formatting - use plain text with default styling
@@ -1262,9 +1340,9 @@ async function extractSlideData(page) {
             // Add background color: try TD first, then fall back to row background
             const cellBgColor = computed.backgroundColor;
             if (cellBgColor && cellBgColor !== 'transparent' && cellBgColor !== 'rgba(0, 0, 0, 0)') {
-              cellOpts.fill = { color: rgbToHex(cellBgColor) };
+              cellOpts.fill = { color: rgbToHex(getComputedRGBColor(cellBgColor)) };
             } else if (rowBgColor && rowBgColor !== 'transparent' && rowBgColor !== 'rgba(0, 0, 0, 0)') {
-              cellOpts.fill = { color: rgbToHex(rowBgColor) };
+              cellOpts.fill = { color: rgbToHex(getComputedRGBColor(rowBgColor)) };
             }
 
             return {
@@ -1291,10 +1369,10 @@ async function extractSlideData(page) {
           style: {
             fontSize: pxToPoints(tableComputed.fontSize),
             fontFace: tableComputed.fontFamily.split(',')[0].replace(/[\'"]/g, '').trim(),
-            color: rgbToHex(tableComputed.color),
-            transparency: extractAlpha(tableComputed.color),
+            color: rgbToHex(getComputedRGBColor(tableComputed.color)),
+            transparency: extractAlpha(getComputedRGBColor(tableComputed.color)),
             border: {
-              color: rgbToHex(tableComputed.borderColor),
+              color: rgbToHex(getComputedRGBColor(tableComputed.borderColor)),
               width: pxToPoints(tableComputed.borderWidth)
             }
           }
@@ -1353,7 +1431,7 @@ async function extractSlideData(page) {
       const { x, y, w, h } = getPositionAndSize(el, rect, rotation);
 
       const baseStyle = {
-        fontSize: Math.max(pxToPoints(computed.fontSize), 6),  // Minimum 6pt
+        fontSize: Math.max(pxToPoints(computed.fontSize), TUNING.minFontSizePt),
         fontFace: computed.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
         color: rgbToHex(getComputedRGBColor(computed.color)),
         align: computed.textAlign === 'start' ? 'left' : computed.textAlign,
@@ -1369,7 +1447,7 @@ async function extractSlideData(page) {
         ]
       };
 
-      const transparency = extractAlpha(computed.color);
+      const transparency = extractAlpha(getComputedRGBColor(computed.color));
       if (transparency !== null) baseStyle.transparency = transparency;
 
       if (rotation !== null) baseStyle.rotate = rotation;
@@ -1399,7 +1477,7 @@ async function extractSlideData(page) {
         const adjustedStyle = { ...baseStyle };
         if (adjustedStyle.lineSpacing) {
           // For code blocks, use tighter line spacing (1.25x)
-          adjustedStyle.lineSpacing = adjustedStyle.fontSize * 1.25;
+          adjustedStyle.lineSpacing = adjustedStyle.fontSize * TUNING.codeLineSpacingMultiplier;
         }
 
         elements.push({
@@ -1460,38 +1538,49 @@ async function extractSlideData(page) {
   });
 }
 
+// 浏览器启动选项（macOS 用 Chrome，其他用 Chromium）
+function buildLaunchOptions(tmpDir) {
+  const launchOptions = { env: { TMPDIR: tmpDir }, headless: true };
+  if (process.platform === 'darwin') {
+    launchOptions.channel = 'chrome';
+  }
+  return launchOptions;
+}
+
+// 启动一个共享 browser 实例，供批量转换复用
+async function launchBrowser(tmpDir = process.env.TMPDIR || '/tmp') {
+  return await chromium.launch(buildLaunchOptions(tmpDir));
+}
+
 async function html2pptx(htmlFile, pres, options = {}) {
   const {
     tmpDir = process.env.TMPDIR || '/tmp',
     slide = null,
-    checkMode = false
+    checkMode = false,
+    browser = null  // 外部传入的复用 browser；若为 null 则自启（旧行为）
   } = options;
 
+  const ownBrowser = browser === null;
+  const activeBrowser = browser || await launchBrowser(tmpDir);
+
   try {
-    // Use Chrome on macOS, default Chromium on Unix
-    const launchOptions = { env: { TMPDIR: tmpDir }, headless: true };
-    if (process.platform === 'darwin') {
-      launchOptions.channel = 'chrome';
-    }
-
-    const browser = await chromium.launch(launchOptions);
-
     let bodyDimensions;
     let slideData;
 
     const filePath = path.isAbsolute(htmlFile) ? htmlFile : path.join(process.cwd(), htmlFile);
     const validationErrors = [];
 
-    try {
-      const page = await browser.newPage();
-      page.on('console', (msg) => {
-        // Only log console messages in verbose mode
-        if (!checkMode) {
-          console.log(`Browser console: ${msg.text()}`);
-        }
-      });
+    const page = await activeBrowser.newPage();
+    page.on('console', (msg) => {
+      // 仅在 verbose 环境变量下打印浏览器 console，与 checkMode 解耦
+      if (process.env.HTML2PPTX_VERBOSE) {
+        console.log(`Browser console: ${msg.text()}`);
+      }
+    });
 
-      await page.goto(`file://${filePath}`);
+    try {
+      await page.goto(url.pathToFileURL(filePath).href, { waitUntil: 'networkidle', timeout: 30000 });
+      await page.evaluate(() => document.fonts ? document.fonts.ready : Promise.resolve());
 
       bodyDimensions = await getBodyDimensions(page);
 
@@ -1502,7 +1591,7 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
       slideData = await extractSlideData(page);
     } finally {
-      await browser.close();
+      await page.close();
     }
 
     // Collect all validation errors (always perform validation)
@@ -1524,7 +1613,7 @@ async function html2pptx(htmlFile, pres, options = {}) {
       validationErrors.push(...slideData.errors);
     }
 
-    // Validate table structure
+    // Validate table structure（考虑 colspan：数据行列数可能小于 colWidths 长度）
     slideData.elements.forEach((el, idx) => {
       if (el.type === 'table') {
         if (!el.colWidths || el.colWidths.length === 0) {
@@ -1539,16 +1628,33 @@ async function html2pptx(htmlFile, pres, options = {}) {
             `Table at position (${el.position.x.toFixed(2)}", ${el.position.y.toFixed(2)}") has no data.`
           );
         }
-        // Check that all rows have consistent column count
+        // 检查每行的 colspan 总和是否与 colWidths 长度一致
+        // 注意：当行中有 rowspan>1 的单元格时，该单元格会占用后续行的列位，
+        // 所以后续行的 colspan 总和会小于 expectedCols — 这种情况跳过检查
         if (el.data && el.data.length > 0 && el.colWidths && el.colWidths.length > 0) {
           const expectedCols = el.colWidths.length;
+          // 跟踪每行被 rowspan 占用的列数（从前面的行累积）
+          let rowspanOngoing = 0;  // 当前行被前面行 rowspan 占用的列数
           el.data.forEach((row, rowIdx) => {
-            if (row.length !== expectedCols) {
+            const rowColspanSum = row.reduce((sum, cell) => {
+              const cs = (typeof cell === 'object' && cell.options && cell.options.colspan) ? cell.options.colspan : 1;
+              return sum + cs;
+            }, 0);
+            // 当前行新引入的 rowspan 数（这些会占用后续行）
+            const currentRowspan = row.reduce((sum, cell) => {
+              const rs = (typeof cell === 'object' && cell.options && cell.options.rowspan) ? cell.options.rowspan : 1;
+              return sum + (rs > 1 ? rs - 1 : 0);
+            }, 0);
+
+            const expectedForRow = expectedCols - rowspanOngoing;
+            if (rowColspanSum !== expectedForRow) {
               validationErrors.push(
-                `Table has inconsistent column count: "Header" has ${el.colWidths.length} columns ` +
-                `but "Row ${rowIdx + 1}" has ${row.length} columns.`
+                `Table has inconsistent column count: header has ${expectedCols} columns ` +
+                `but "Row ${rowIdx + 1}" has colspan sum ${rowColspanSum} (expected ${expectedForRow} after rowspan occupation).`
               );
             }
+            // 下一行的 rowspan 占用 = 当前行新引入的 rowspan（简化：不跟踪多行累积）
+            rowspanOngoing = currentRowspan;
           });
         }
       }
@@ -1578,11 +1684,48 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
     return { slide: targetSlide, placeholders: slideData.placeholders, checkMode: false };
   } catch (error) {
-    if (!error.message.startsWith(htmlFile)) {
-      throw new Error(`${htmlFile}: ${error.message}`);
+    if (!error.html2pptxFramed) {
+      const wrapped = new Error(`${htmlFile}: ${error.message}`);
+      wrapped.html2pptxFramed = true;
+      wrapped.cause = error;
+      throw wrapped;
     }
     throw error;
+  } finally {
+    if (ownBrowser) {
+      await activeBrowser.close();
+    }
+  }
+}
+
+/**
+ * 批量转换：复用同一 browser 实例处理多个 HTML 文件
+ * 性能：N 页 PPT 省下 (N-1) 次浏览器冷启动，预计 5-10x 提速
+ *
+ * @param {string[]} htmlFiles - HTML 文件路径数组
+ * @param {object} pres - PptxGenJS 实例
+ * @param {object} options - { checkMode, slide, tmpDir }
+ * @returns {Promise<Array>} 每个文件的 { slide, placeholders, checkMode } 或 { error }
+ */
+async function html2pptxBatch(htmlFiles, pres, options = {}) {
+  const { tmpDir = process.env.TMPDIR || '/tmp', checkMode = false } = options;
+  const browser = await launchBrowser(tmpDir);
+  try {
+    const results = [];
+    for (const htmlFile of htmlFiles) {
+      try {
+        const result = await html2pptx(htmlFile, pres, { ...options, browser, checkMode });
+        results.push({ file: htmlFile, ...result });
+      } catch (error) {
+        results.push({ file: htmlFile, error: error.message });
+      }
+    }
+    return results;
+  } finally {
+    await browser.close();
   }
 }
 
 module.exports = html2pptx;
+module.exports.html2pptxBatch = html2pptxBatch;
+module.exports.launchBrowser = launchBrowser;

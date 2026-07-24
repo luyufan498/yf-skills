@@ -6,7 +6,6 @@
 <title>正文页 - 数据图表布局</title>
 <script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet"/>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.0/dist/echarts.min.js"></script>
 <style>
   body {
     font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
@@ -21,6 +20,87 @@
   }
   .card-shadow {
     box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+  .chart-grid {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    position: relative;
+  }
+  .chart-y-axis {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 32px;
+    width: 40px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-right: 8px;
+  }
+  .chart-y-label {
+    font-size: 9pt;
+    color: #666;
+    line-height: 1;
+  }
+  .chart-area {
+    margin-left: 40px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border-left: 1px solid #ddd;
+  }
+  .chart-bars-row {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-around;
+    position: relative;
+    padding-bottom: 8px;
+  }
+  .chart-x-axis {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    height: 32px;
+    border-top: 1px solid #ddd;
+  }
+  .chart-grid-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px dashed #f0f0f0;
+  }
+  .chart-bar-group {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex: 1;
+    justify-content: center;
+  }
+  .chart-bar {
+    width: 28px;
+    border-radius: 4px 4px 0 0;
+    position: relative;
+  }
+  .chart-bar-value {
+    position: absolute;
+    top: -16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 8pt;
+    color: #666;
+    white-space: nowrap;
+  }
+  .chart-x-label {
+    font-size: 10pt;
+    color: #333;
+    white-space: nowrap;
+    text-align: center;
+    flex: 1;
+    font-weight: 500;
   }
 </style>
 </head>
@@ -46,20 +126,12 @@
     <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
   </div>
 
-  <!-- 页面标题区 -->
-  <div class="absolute left-[17px] top-[80px]">
-    <div class="flex items-center gap-3">
-      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
-      <h2 class="text-[20pt] font-bold text-[#202665]">{{页面标题}}</h2>
-    </div>
-  </div>
-
   <!-- 图表区域 -->
-  <div class="absolute left-[17px] top-[140px] right-[17px] bottom-[60px] bg-white rounded-2xl p-5 card-shadow">
+  <div class="absolute left-[17px] top-[80px] right-[17px] bottom-[45px] bg-white rounded-2xl p-5 card-shadow">
     <div class="h-full flex flex-col">
-      <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center justify-between mb-4">
         <h3 class="text-[15pt] font-bold text-[#202665]">{{图表标题}}</h3>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-4">
           <div class="flex items-center gap-1.5">
             <div class="w-2.5 h-2.5 rounded-full bg-[#0B3BD3]"></div>
             <span class="text-[9pt] text-[#666]">{{数据系列1}}</span>
@@ -70,7 +142,94 @@
           </div>
         </div>
       </div>
-      <div class="flex-1" id="chart-container" style="min-height: 280px;"></div>
+      <div class="flex-1">
+        <div class="chart-grid">
+          <!-- Y轴刻度 -->
+          <div class="chart-y-axis">
+            <span class="chart-y-label">250</span>
+            <span class="chart-y-label">200</span>
+            <span class="chart-y-label">150</span>
+            <span class="chart-y-label">100</span>
+            <span class="chart-y-label">50</span>
+            <span class="chart-y-label">0</span>
+          </div>
+          <!-- 柱状图区域 -->
+          <div class="chart-area">
+            <!-- 柱子行 -->
+            <div class="chart-bars-row">
+              <!-- 网格线 -->
+              <div class="chart-grid-line" style="bottom: 20%;"></div>
+              <div class="chart-grid-line" style="bottom: 40%;"></div>
+              <div class="chart-grid-line" style="bottom: 60%;"></div>
+              <div class="chart-grid-line" style="bottom: 80%;"></div>
+
+              <!-- 类别1 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 110px; background: #0B3BD3;">
+                  <span class="chart-bar-value">120</span>
+                </div>
+                <div class="chart-bar" style="height: 74px; background: #7986CB;">
+                  <span class="chart-bar-value">80</span>
+                </div>
+              </div>
+              <!-- 类别2 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 184px; background: #0B3BD3;">
+                  <span class="chart-bar-value">200</span>
+                </div>
+                <div class="chart-bar" style="height: 110px; background: #7986CB;">
+                  <span class="chart-bar-value">120</span>
+                </div>
+              </div>
+              <!-- 类别3 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 138px; background: #0B3BD3;">
+                  <span class="chart-bar-value">150</span>
+                </div>
+                <div class="chart-bar" style="height: 166px; background: #7986CB;">
+                  <span class="chart-bar-value">180</span>
+                </div>
+              </div>
+              <!-- 类别4 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 74px; background: #0B3BD3;">
+                  <span class="chart-bar-value">80</span>
+                </div>
+                <div class="chart-bar" style="height: 110px; background: #7986CB;">
+                  <span class="chart-bar-value">120</span>
+                </div>
+              </div>
+              <!-- 类别5 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 64px; background: #0B3BD3;">
+                  <span class="chart-bar-value">70</span>
+                </div>
+                <div class="chart-bar" style="height: 82px; background: #7986CB;">
+                  <span class="chart-bar-value">90</span>
+                </div>
+              </div>
+              <!-- 类别6 -->
+              <div class="chart-bar-group">
+                <div class="chart-bar" style="height: 102px; background: #0B3BD3;">
+                  <span class="chart-bar-value">110</span>
+                </div>
+                <div class="chart-bar" style="height: 130px; background: #7986CB;">
+                  <span class="chart-bar-value">140</span>
+                </div>
+              </div>
+            </div>
+            <!-- X轴标签行 -->
+            <div class="chart-x-axis">
+              <span class="chart-x-label">{{类别1}}</span>
+              <span class="chart-x-label">{{类别2}}</span>
+              <span class="chart-x-label">{{类别3}}</span>
+              <span class="chart-x-label">{{类别4}}</span>
+              <span class="chart-x-label">{{类别5}}</span>
+              <span class="chart-x-label">{{类别6}}</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -80,96 +239,7 @@
   </div>
 </div>
 
-<script>
-  // 图表配置
-  var chartDom = document.getElementById('chart-container');
-  if (chartDom) {
-    var myChart = echarts.init(chartDom);
-    var option = {
-      tooltip: {
-        trigger: 'axis',
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
-        borderColor: '#0B3BD3',
-        borderWidth: 1,
-        textStyle: {
-          color: '#1a1a2e'
-        }
-      },
-      legend: {
-        data: ['{{数据系列1}}', '{{数据系列2}}'],
-        top: 0,
-        textStyle: {
-          color: '#1a1a2e',
-          fontSize: 11
-        }
-      },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '3%',
-        top: '15%',
-        containLabel: true
-      },
-      xAxis: {
-        type: 'category',
-        data: ['{{类别1}}', '{{类别2}}', '{{类别3}}', '{{类别4}}', '{{类别5}}', '{{类别6}}'],
-        axisLine: {
-          lineStyle: {
-            color: '#ddd'
-          }
-        },
-        axisLabel: {
-          color: '#666',
-          fontSize: 10
-        }
-      },
-      yAxis: {
-        type: 'value',
-        axisLine: {
-          show: false
-        },
-        axisTick: {
-          show: false
-        },
-        axisLabel: {
-          color: '#666',
-          fontSize: 10
-        },
-        splitLine: {
-          lineStyle: {
-            color: '#f0f0f0'
-          }
-        }
-      },
-      series: [
-        {
-          name: '{{数据系列1}}',
-          type: 'bar',
-          data: [120, 200, 150, 80, 70, 110],
-          itemStyle: {
-            color: '#0B3BD3',
-            borderRadius: [4, 4, 0, 0]
-          },
-          barWidth: '30%'
-        },
-        {
-          name: '{{数据系列2}}',
-          type: 'bar',
-          data: [80, 120, 180, 120, 90, 140],
-          itemStyle: {
-            color: '#7986CB',
-            borderRadius: [4, 4, 0, 0]
-          },
-          barWidth: '30%'
-        }
-      ]
-    };
-    myChart.setOption(option);
-    window.addEventListener('resize', function() {
-      myChart.resize();
-    });
-  }
-</script>
+<!-- 静态柱状图，无需 JavaScript -->
 
 </body>
 </html>

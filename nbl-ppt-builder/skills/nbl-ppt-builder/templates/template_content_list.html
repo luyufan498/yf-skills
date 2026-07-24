@@ -54,68 +54,63 @@
   </div>
 
   <!-- 双列列表内容 -->
-  <!-- 备注：列表项数量可根据实际需要调整，删除或复制 <div class="flex items-baseline gap-2">...</div> 块即可 -->
-  <div class="absolute left-[20px] top-[120px] right-[20px] bottom-[100px] grid grid-cols-2 gap-6">
-    <!-- 左列 -->
+  <!-- 备注：列表项数量可根据实际需要调整，删除或复制条目块即可 -->
+  <div class="absolute left-[20px] top-[120px] right-[20px] bottom-[55px] grid grid-cols-2 gap-6">
+    <!-- 左列：深蓝主题 -->
     <div class="bg-white rounded-xl p-5 card-shadow">
-      <h3 class="text-[12pt] font-bold text-[#0B3BD3] mb-4 pb-2 border-b border-[#0B3BD3] border-opacity-20">{{左列标题}}</h3>
+      <h3 class="text-[13pt] font-bold text-[#0B3BD3] mb-4">{{左列标题}}</h3>
       <div class="space-y-3">
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#0B3BD3] font-medium">1.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{列表项1}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#0B3BD3]">
+          <div class="w-5 h-5 bg-[#0B3BD3] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">1</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{列表项1}}</span>
         </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#1D4FED] font-medium">2.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{列表项2}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#0B3BD3]">
+          <div class="w-5 h-5 bg-[#0B3BD3] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">2</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{列表项2}}</span>
         </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#202665] font-medium">3.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{列表项3}}</span>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#0B3BD3] font-medium">4.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{列表项4}}</span>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#1D4FED] font-medium">5.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{列表项5}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#0B3BD3]">
+          <div class="w-5 h-5 bg-[#0B3BD3] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">3</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{列表项3}}</span>
         </div>
       </div>
     </div>
 
-    <!-- 右列 -->
+    <!-- 右列：亮蓝主题 -->
     <div class="bg-white rounded-xl p-5 card-shadow">
-      <h3 class="text-[12pt] font-bold text-[#1D4FED] mb-4 pb-2 border-b border-[#1D4FED] border-opacity-20">{{右列标题}}</h3>
+      <h3 class="text-[13pt] font-bold text-[#1D4FED] mb-4">{{右列标题}}</h3>
       <div class="space-y-3">
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#0B3BD3] font-medium">1.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{右列项1}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#1D4FED]">
+          <div class="w-5 h-5 bg-[#1D4FED] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">1</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{右列项1}}</span>
         </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#1D4FED] font-medium">2.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{右列项2}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#1D4FED]">
+          <div class="w-5 h-5 bg-[#1D4FED] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">2</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{右列项2}}</span>
         </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#202665] font-medium">3.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{右列项3}}</span>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#0B3BD3] font-medium">4.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{右列项4}}</span>
-        </div>
-        <div class="flex items-baseline gap-2">
-          <span class="text-[12pt] text-[#1D4FED] font-medium">5.</span>
-          <span class="text-[12pt] text-[#1a1a2e]">{{右列项5}}</span>
+        <div class="flex items-center gap-3 bg-[#f8f9ff] rounded-lg py-4 px-3 border-l-[3px] border-[#1D4FED]">
+          <div class="w-5 h-5 bg-[#1D4FED] flex items-center justify-center flex-shrink-0">
+            <span class="text-white text-[8pt] font-bold">3</span>
+          </div>
+          <span class="text-[11pt] text-[#1a1a2e]">{{右列项3}}</span>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 底部说明文字 -->
-  <div class="absolute left-[20px] right-[20px] bottom-[35px]">
-    <div class="bg-[#f8f9ff] rounded-lg p-3 border-l-4 border-[#1D4FED]">
-      <p class="text-[11pt] text-[#595959]">{{说明文字：这里是底部说明文字区域，可以用来添加备注或补充信息。}}</p>
-    </div>
+  <div class="absolute left-[20px] right-[20px] bottom-[25px] flex items-center gap-2">
+    <div class="w-1 h-4 bg-[#1D4FED] rounded-full"></div>
+    <p class="text-[10pt] text-[#666]">{{说明文字}}</p>
   </div>
 
   <!-- 页码 -->

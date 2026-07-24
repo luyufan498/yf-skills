@@ -7,102 +7,51 @@ import argparse
 import asyncio
 import sys
 import json
-import os
 import re
 from pathlib import Path
+from urllib.parse import quote
 
-# 保存原始工作目录（在import其他模块之前）
-ORIGINAL_CWD = Path(os.getcwd())
-
-
-# ==================== CSS 验证功能 ====================
-
-class CSSValidator:
-    """CSS语法验证器"""
-
-    def __init__(self):
-        # 定义Tailwind类名模式的正则表达式
-        self.tailwind_patterns = [
-            # 文本颜色: text-[#COLOR], text-COLOR
-            re.compile(r'text-\[#?([a-fA-F0-9]{3,8}|[a-z]+)\]'),
-            # 背景颜色: bg-[#COLOR], bg-COLOR
-            re.compile(r'bg-\[#?([a-fA-F0-9]{3,8}|[a-z]+)\]'),
-            # 字体大小: font-[SIZE]
-            re.compile(r'font-\[(\d+\.?\d*(pt|px|em|rem|%|%)?)\]'),
-            # 内边距: p-[SIZE], px-[SIZE], py-[SIZE], pl-[SIZE], pr-[SIZE], pt-[SIZE], pb-[SIZE]
-            re.compile(r'(?:p|px|py|pl|pr|pt|pb)-\[(\d+\.?\d*(px|em|rem|%))\]'),
-            # 外边距: m-[SIZE], mx-[SIZE], my-[SIZE], ml-[SIZE], mr-[SIZE], mt-[SIZE], mb-[SIZE]
-            re.compile(r'(?:m|mx|my|ml|mr|mt|mb)-\[(\d+\.?\d*(px|em|rem|%))\]'),
-            # 方括号格式的任意属性
-            re.compile(r'[a-zA-Z]+-\[[^\]]*\]'),
-        ]
-
-    def validate_html_file(self, html_file):
-        """
-        验证HTML文件中的CSS语法，返回错误列表
-        """
-        errors = []
-
-        with open(html_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        lines = content.split('\n')
-
-        for line_num, line in enumerate(lines, start=1):
-            # 匹配 style="..." 或 style='...'
-            match = re.search(r'style\s*=\s*["\']([^"\']+)["\']', line)
-            if match:
-                style_content = match.group(1)
-
-                # 快速检测Tailwind类名语法
-                for pattern in self.tailwind_patterns:
-                    if pattern.search(style_content):
-                        errors.append({
-                            "type": "E",
-                            "category": "css_syntax_error",
-                            "severity": "high",
-                            "description": f"CSS语法错误: 在style属性中使用了Tailwind class语法",
-                            "details": {
-                                "line": line_num,
-                                "context": match.group(0),
-                                "suggestion": "请使用标准CSS语法，例如: color: #0B3BD3 而不是 text-[#0B3BD3]"
-                            },
-                        })
-                        break  # 找到一个错误后就停止检查该style属性
-
-        return errors
+from css_validator import CSSValidator
 
 
 def check_scroll_with_playwright(html_file):
-    """使用 Playwright 真实检测滚动条"""
-    issues = []
-
-    try:
-        # 使用 Playwright 实际检测滚动状态
-        return asyncio.run(detect_with_playwright_async(html_file))
-
-    except Exception as e:
-        print(f"检测失败: {e}")
-        script_dir = Path(__file__).parent
-        print(f"💡 使用绝对路径执行:")
-        print(f"   uv run --directory {script_dir} validate_with_playwright.py /path/to/slides/")
-        print(f"   或切换到项目目录: cd <项目目录> && uv run --directory {script_dir} validate_with_playwright.py slides/")
-        sys.exit(1)
+    """使用 Playwright 真实检测滚动条（保持向后兼容的同步接口）"""
+    return asyncio.run(_check_scroll_with_playwright_async_wrapper(html_file))
 
 
-async def detect_with_playwright_async(html_file):
-    """使用 Playwright 检测内容是否溢出幻灯片底部"""
+async def _check_scroll_with_playwright_async_wrapper(html_file):
+    """单文件包装器：使用共享 browser 池检测一个文件"""
+    async with _get_browser_pool() as (browser, _):
+        return await detect_with_playwright_async(html_file, browser)
+
+
+async def detect_with_playwright_async(html_file, browser=None):
+    """使用 Playwright 检测内容是否溢出幻灯片底部
+
+    Args:
+        html_file: HTML 文件路径
+        browser: 可选，外部传入的复用 browser。若为 None 则自启 browser（兼容旧行为）
+    """
     from playwright.async_api import async_playwright
 
     issues = []
+    own_browser = browser is None
+    if own_browser:
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(headless=True)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    try:
         page = await browser.new_page(viewport={"width": 960, "height": 540})
-        await page.goto(f"file://{Path(html_file).absolute()}")
+        file_url = f"file://{quote(str(Path(html_file).absolute()))}"
+        await page.goto(file_url, wait_until="networkidle", timeout=30000)
 
-        # 等待页面完全加载
-        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+        # 等待 .slide-container 就绪（再兜底一个短超时）
+        try:
+            await page.wait_for_selector(".slide-container", timeout=5000)
+        except Exception:
+            # 没有 .slide-container 的页面，继续走原逻辑（返回空 issues）
+            await page.close()
+            return []
 
         # 获取 .slide-container 容器的位置（作为参考点）
         container_box = await page.evaluate("""
@@ -120,12 +69,8 @@ async def detect_with_playwright_async(html_file):
         """)
 
         if not container_box:
-            await browser.close()
+            await page.close()
             return []
-
-        # 检测所有绝对定位的同级元素（包括卡片和底部说明框等）
-        # 策略：查找 .slide-container 下所有绝对定位的 div 元素
-        cards = []
 
         # 查找所有绝对定位的直接子元素
         absolute_elements = await page.evaluate("""
@@ -135,12 +80,13 @@ async def detect_with_playwright_async(html_file):
 
                 const children = Array.from(container.children);
                 const absoluteDivs = children.filter(el => {
-                    // 只检测 div 元素
                     if (el.tagName.toLowerCase() !== 'div') return false;
 
-                    // 获取计算样式，检查是否为绝对定位
                     const style = window.getComputedStyle(el);
                     if (style.position !== 'absolute') return false;
+
+                    // 排除显式标记为装饰性的元素（data-decorative 或 .decorative 类）
+                    if (el.hasAttribute('data-decorative') || el.classList.contains('decorative')) return false;
 
                     // 排除装饰性元素（pointer-events: none 或完全透明）
                     if (style.pointerEvents === 'none' || style.opacity === '0') return false;
@@ -153,37 +99,35 @@ async def detect_with_playwright_async(html_file):
                     if (rect.height < 3 || rect.width < 3) return false;
 
                     // 排除纯装饰性的背景块（没有文字内容的背景色块）
-                    // 判断条件：没有子文本节点或文本为空，且设置了背景
                     const textContent = el.textContent.trim();
                     const hasText = textContent.length > 0;
                     const hasBackground = style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
                                          style.backgroundColor !== 'transparent';
                     const hasChildren = el.children.length > 0;
 
-                    // 如果元素没有文本、没有子元素、但有背景色，认为是装饰性背景块
                     if (!hasText && !hasChildren && hasBackground) {
                         return false;
                     }
 
                     // 排除只包含图片的装饰性元素
-                    // 判断条件：子元素只有img标签，没有其他文字内容
                     if (hasChildren && !hasText) {
                         const childElements = Array.from(el.children);
                         const onlyHasImages = childElements.every(child =>
                             child.tagName.toLowerCase() === 'img' ||
                             (child.tagName.toLowerCase() === 'div' && child.children.length === 0)
                         );
-                        // 如果只包含图片或空div，认为是装饰性元素
                         if (onlyHasImages) {
                             return false;
                         }
                     }
 
-                    // 排除页码元素（通常在右下角，只包含数字或很小的区域）
-                    // 页码元素通常高度小于30px，且包含数字文本
+                    // 排除页码元素：优先识别带 page-number / pagination 类的元素
+                    if (el.classList.contains('page-number') || el.classList.contains('pagination')) {
+                        return false;
+                    }
+                    // 兜底启发式：右下角小区域且只含数字
                     if (rect.height < 30 && rect.width < 50) {
                         const text = el.textContent.trim();
-                        // 如果只包含数字和少量文字，认为是页码
                         if (/^[\\d\\s]+$/.test(text) && text.length < 10) {
                             return false;
                         }
@@ -192,9 +136,7 @@ async def detect_with_playwright_async(html_file):
                     return true;
                 });
 
-                // 返回元素的索引，用于后续获取 bounding box
-                return absoluteDivs.map((el, idx) => {
-                    // 生成唯一标识
+                return absoluteDivs.map((el) => {
                     const classes = el.className || '';
                     const classList = classes.trim().split(/\\s+/).slice(0, 3).join('.');
                     return {
@@ -206,13 +148,12 @@ async def detect_with_playwright_async(html_file):
             }
         """)
 
-        # 获取每个元素的 bounding box 和滚动信息
+        cards = []
         for elem_info in absolute_elements:
             index = elem_info["index"]
             element_id = elem_info["elementId"]
             class_name = elem_info["className"]
 
-            # 获取该索引位置的元素
             element = await page.query_selector(f".slide-container > div:nth-child({index + 1})")
             if not element:
                 continue
@@ -221,7 +162,6 @@ async def detect_with_playwright_async(html_file):
             if not box:
                 continue
 
-            # 计算相对于 .slide-container 的位置（而不是相对于viewport）
             relative_box = {
                 "x": box["x"] - container_box["x"],
                 "y": box["y"] - container_box["y"],
@@ -229,7 +169,6 @@ async def detect_with_playwright_async(html_file):
                 "height": box["height"]
             }
 
-            # 检测元素内部内容是否溢出容器
             scroll_info = await element.evaluate("""
                 el => {
                     return {
@@ -247,7 +186,7 @@ async def detect_with_playwright_async(html_file):
 
             cards.append({
                 "element": element,
-                "box": relative_box,  # 使用相对于容器的位置
+                "box": relative_box,
                 "element_id": element_id,
                 "tag_name": "div",
                 "scroll_info": scroll_info,
@@ -260,7 +199,6 @@ async def detect_with_playwright_async(html_file):
                 card1 = cards[i]
                 card2 = cards[j]
 
-                # 检查是否重叠
                 if boxes_overlap(card1["box"], card2["box"]):
                     overlap_area = calculate_overlap_area(card1["box"], card2["box"])
                     element_id1 = card1.get("element_id", f"卡片{i+1}")
@@ -294,8 +232,8 @@ async def detect_with_playwright_async(html_file):
                         },
                     })
 
-        # 检测内容溢出幻灯片底部
-        slide_height = 540
+        # 检测内容溢出幻灯片底部：使用容器实际高度而非硬编码 540
+        slide_height = container_box["height"]
         for card in cards:
             card_bottom = card["box"]["y"] + card["box"]["height"]
 
@@ -324,7 +262,6 @@ async def detect_with_playwright_async(html_file):
             scroll_info = card.get("scroll_info", {})
             element_id = card.get("element_id", "未命名元素")
 
-            # 检测垂直内容溢出
             if scroll_info.get("hasVerticalOverflow", False):
                 vertical_overflow = scroll_info.get("verticalOverflow", 0)
                 issues.append({
@@ -343,7 +280,6 @@ async def detect_with_playwright_async(html_file):
                     },
                 })
 
-            # 检测水平内容溢出
             if scroll_info.get("hasHorizontalOverflow", False):
                 horizontal_overflow = scroll_info.get("horizontalOverflow", 0)
                 issues.append({
@@ -362,13 +298,50 @@ async def detect_with_playwright_async(html_file):
                     },
                 })
 
-        await browser.close()
+        await page.close()
         return issues
+    except Exception as e:
+        # 单文件失败不应中断批量检测
+        print(f"  ⚠️  检测失败 {Path(html_file).name}: {e}")
+        return []
+    finally:
+        if own_browser:
+            await browser.close()
+            await pw.stop()
+
+
+# 浏览器池：批量检测时复用同一实例
+_browser_pool_state = {"pw": None, "browser": None, "refcount": 0}
+
+
+class _BrowserPoolContext:
+    """异步上下文管理器：首次进入时启动 browser，最后一次退出时关闭"""
+    async def __aenter__(self):
+        if _browser_pool_state["browser"] is None:
+            from playwright.async_api import async_playwright
+            _browser_pool_state["pw"] = await async_playwright().start()
+            _browser_pool_state["browser"] = await _browser_pool_state["pw"].chromium.launch(headless=True)
+        _browser_pool_state["refcount"] += 1
+        return _browser_pool_state["browser"], _browser_pool_state
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _browser_pool_state["refcount"] -= 1
+        if _browser_pool_state["refcount"] <= 0 and _browser_pool_state["browser"] is not None:
+            await _browser_pool_state["browser"].close()
+            await _browser_pool_state["pw"].stop()
+            _browser_pool_state["browser"] = None
+            _browser_pool_state["pw"] = None
+            _browser_pool_state["refcount"] = 0
+        return False
+
+
+def _get_browser_pool():
+    """获取浏览器池上下文管理器"""
+    return _BrowserPoolContext()
 
 
 def boxes_overlap(box1, box2):
     """检查两个矩形是否重叠"""
-    # box1 和 box 都是 {x, y, width, height} 格式
     x1_left = box1["x"]
     x1_right = box1["x"] + box1["width"]
     y1_top = box1["y"]
@@ -379,7 +352,6 @@ def boxes_overlap(box1, box2):
     y2_top = box2["y"]
     y2_bottom = box2["y"] + box2["height"]
 
-    # 检查是否相交（有重叠）
     overlap_x = x1_right > x2_left and x2_right > x1_left
     overlap_y = y1_bottom > y2_top and y2_bottom > y1_top
 
@@ -388,28 +360,15 @@ def boxes_overlap(box1, box2):
 
 def calculate_overlap_area(box1, box2):
     """计算两个矩形的重叠面积"""
-    # 计算重叠矩形的坐标
     x_overlap_left = max(box1["x"], box2["x"])
     x_overlap_right = min(box1["x"] + box1["width"], box2["x"] + box2["width"])
     y_overlap_top = max(box1["y"], box2["y"])
     y_overlap_bottom = min(box1["y"] + box1["height"], box2["y"] + box2["height"])
 
-    # 计算重叠面积
     overlap_width = max(0, x_overlap_right - x_overlap_left)
     overlap_height = max(0, y_overlap_bottom - y_overlap_top)
 
     return overlap_width * overlap_height
-
-
-def get_css_selector(el):
-    """获取元素的CSS选择器"""
-    if el.get("id"):
-        return f"#{el.get('id')}"
-    elif el.get("class"):
-        classes = el.get("class", "").split(" ")
-        return f"{el.tag_name.lower()}.{classes[0]}"
-    else:
-        return el.tag_name.lower()
 
 
 def collect_html_files(paths):
@@ -423,7 +382,6 @@ def collect_html_files(paths):
             if p.suffix.lower() == '.html':
                 html_files.append(p)
         elif p.is_dir():
-            # 收集目录下所有 HTML 文件
             html_files.extend(sorted(p.glob("*.html")))
 
     return html_files
@@ -475,7 +433,7 @@ def print_single_file_result(html_file, issues):
         print(f"  {issue_type} {i}. {issue['description']}")
         details = issue.get("details", {})
 
-        # CSS语法错误的特殊处理
+        # CSS语法错误的特殊处理（新 CSSValidator 返回 {line, column, type, message, suggestion, context}）
         if issue["category"] == "css_syntax_error":
             print(f"      行号: {details.get('line', '?')}")
             print(f"      上下文: {details.get('context', '')}")
@@ -494,7 +452,7 @@ def print_single_file_result(html_file, issues):
 
         if issue["category"] == "content_overflow":
             print(f"      卡片尺寸: 顶部={details['card_top']:.0f}px, 高度={details['card_height']:.0f}px")
-            print(f"      底部边界: {details['card_bottom']:.0f}px > 幻灯片 (540px)")
+            print(f"      底部边界: {details['card_bottom']:.0f}px > 幻灯片 ({details['slide_height']:.0f}px)")
             print(f"      溢出量: {details['overflow']:.0f}px")
         elif issue["category"] == "card_overlap":
             card1 = details["card1"]
@@ -517,6 +475,38 @@ def print_single_file_result(html_file, issues):
     # 返回状态
     has_high = any(issue["severity"] == "high" for issue in issues)
     return "error" if has_high else "warning"
+
+
+async def _validate_all_files_async(html_files, css_validator):
+    """并发检测所有文件：复用 browser 池 + asyncio.gather"""
+    async with _get_browser_pool() as (browser, _):
+        async def validate_one(html_file):
+            layout_issues = await detect_with_playwright_async(str(html_file), browser)
+            css_issues = css_validator.validate_html_file(str(html_file))
+            # 兼容新 CSSValidator 返回结构 → 转换为统一的 issue 格式
+            normalized_css_issues = []
+            for e in css_issues:
+                normalized_css_issues.append({
+                    "type": "E",
+                    "category": "css_syntax_error",
+                    "severity": "high",
+                    "description": e["message"],
+                    "details": {
+                        "line": e.get("line", 0),
+                        "context": e.get("context", ""),
+                        "suggestion": e.get("suggestion", ""),
+                    },
+                })
+            return str(html_file), layout_issues + normalized_css_issues
+
+        # 限制并发数避免内存爆炸（每个 page 约占 100MB）
+        sem = asyncio.Semaphore(4)
+
+        async def validate_with_sem(html_file):
+            async with sem:
+                return await validate_one(html_file)
+
+        return await asyncio.gather(*(validate_with_sem(f) for f in html_files))
 
 
 def main():
@@ -542,7 +532,7 @@ def main():
   python validate_with_playwright.py /path/to/slides/ -o /path/to/report.json
 
 检测内容:
-  - 内容溢出幻灯片底部 (16:9 比例, 高度 540px)
+  - 内容溢出幻灯片底部 (16:9 比例)
   - 卡片之间的重叠
   - 卡片内部内容垂直溢出 (内容超出卡片高度)
   - 卡片内部内容水平溢出 (内容超出卡片宽度)
@@ -554,7 +544,7 @@ def main():
   - 退出码: 0=正常, 1=警告, 2=错误
 
 环境要求:
-  - Python 3.7+
+  - Python 3.13+
   - Playwright Chromium 浏览器 (首次运行会自动安装)
 """
     )
@@ -578,10 +568,17 @@ def main():
         print("❌ 未找到任何 HTML 文件")
         sys.exit(1)
 
-    print(f"🔍 开始检测 {len(html_files)} 个文件...")
+    print(f"🔍 开始检测 {len(html_files)} 个文件（并发复用 browser）...")
     print()
 
-    # 批量检测结果
+    # 创建CSS验证器
+    css_validator = CSSValidator()
+
+    # 批量并发检测
+    results = asyncio.run(_validate_all_files_async(html_files, css_validator))
+    file_to_issues = {f: iss for f, iss in results}
+
+    # 输出每个文件的结果
     all_results = []
     summary = {
         "total_files": len(html_files),
@@ -598,18 +595,8 @@ def main():
         }
     }
 
-    # 创建CSS验证器
-    css_validator = CSSValidator()
-
     for html_file in html_files:
-        # 第一步: Layout检测 (Playwright)
-        layout_issues = check_scroll_with_playwright(str(html_file))
-
-        # 第二步: CSS语法检测
-        css_issues = css_validator.validate_html_file(str(html_file))
-
-        # 合并问题列表
-        all_issues = layout_issues + css_issues
+        all_issues = file_to_issues.get(str(html_file), [])
 
         status = print_single_file_result(html_file, all_issues)
 

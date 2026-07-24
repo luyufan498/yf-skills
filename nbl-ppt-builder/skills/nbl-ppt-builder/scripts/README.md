@@ -7,7 +7,9 @@
 ### 可用脚本
 
 - `merge_ppt_pages.py` - 合并多个 HTML 页面为完整演示文稿
-- `validate_with_playwright.py` - 使用 Playwright 验证 PPT 页面内容是否溢出
+- `validate_with_playwright.py` - 使用 Playwright 验证 PPT 页面布局（溢出/重叠/滚动条）+ CSS 语法
+- `validate_css.py` - 独立的 CSS 语法验证器（仅检测 CSS 错误，不启动浏览器）
+- `css_validator.py` - 公共 CSS 验证模块（被上面两个脚本共用）
 
 ---
 
@@ -22,7 +24,7 @@
 使用 `uv` 管理依赖：
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
+cd .claude/skills/nbl-ppt-builder/scripts
 uv sync
 uv run playwright install chromium
 ```
@@ -32,17 +34,15 @@ uv run playwright install chromium
 #### 验证单个页面
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
+cd .claude/skills/nbl-ppt-builder/scripts
 uv run python validate_with_playwright.py /path/to/page.html
 ```
 
-#### 验证所有页面（批量）
+#### 验证所有页面（批量，自动并发复用 browser）
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
-for file in /path/to/ppt/pages/*.html; do
-    uv run python validate_with_playwright.py "$file"
-done
+cd .claude/skills/nbl-ppt-builder/scripts
+uv run python validate_with_playwright.py /path/to/ppt/pages/
 ```
 
 ### 检测逻辑
@@ -86,7 +86,7 @@ done
 #### 基本用法
 
 ```bash
-cd .claude/skills/nbl-ppt--builder/scripts
+cd .claude/skills/nbl-ppt-builder/scripts
 python merge_ppt_pages.py -d /path/to/ppt/pages/
 ```
 

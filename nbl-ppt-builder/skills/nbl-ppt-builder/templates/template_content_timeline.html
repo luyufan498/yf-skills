@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>正文页 - 时间线布局</title>
+<script src="https://statics.moonshot.cn/kimi-ppt/html-gen/static/tailwindcss@4_0805.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  }
+  .slide-container {
+    width: 960px;
+    height: 540px;
+    position: relative;
+    overflow: hidden;
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(11, 59, 211, 0.1);
+  }
+  .milestone-node {
+    width: 140px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 90px;
+  }
+  .milestone-time {
+    font-size: 10pt;
+    font-weight: 700;
+    height: 24px;
+    line-height: 24px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .milestone-dot {
+    width: 1rem;
+    height: 1rem;
+    border-radius: 9999px;
+    border: 3px solid white;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    margin-top: 8px;
+    margin-bottom: 0.75rem;
+  }
+  .milestone-title {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #1a1a2e;
+    text-align: center;
+    line-height: 1.375;
+  }
+  .milestone-desc {
+    font-size: 8pt;
+    color: #666;
+    text-align: center;
+    line-height: 1.375;
+    margin-top: 0.25rem;
+  }
+</style>
+</head>
+<body class="bg-gray-100 p-8">
+
+<!-- 正文页 slide - 时间线布局（5 个里程碑） -->
+<div class="slide-container mx-auto">
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-20 -right-20 w-[300px] h-[300px] rounded-full opacity-5 bg-[#0B3BD3]"></div>
+  </div>
+
+  <!-- 顶部灰色分隔线 -->
+  <div class="absolute top-[60px] left-[9px] right-[9px] h-[1.5px] bg-[#797979] opacity-30"></div>
+
+  <!-- LOGO（右上角） -->
+  <div class="absolute right-[9px] top-[6px]">
+    <img src="images/logo.png" width="83" height="49" alt="LOGO">
+  </div>
+
+  <!-- 顶部突出标题栏 -->
+  <div class="absolute left-[17px] top-[16px]">
+    <h1 class="text-[18pt] font-bold text-[#0B3BD3]">{{顶部突出标题}}</h1>
+  </div>
+
+  <!-- 页面标题区 -->
+  <div class="absolute left-[17px] top-[75px]">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-8 bg-[#0B3BD3] rounded-full"></div>
+      <h2 class="text-[13.5pt] font-bold text-[#202665]">{{页面标题}}</h2>
+    </div>
+  </div>
+
+  <!-- 时间线内容区：增减节点时复制或删除一组 milestone-node 块 -->
+  <div class="absolute left-[17px] top-[130px] right-[17px] bottom-[55px] bg-white rounded-2xl p-6 card-shadow">
+    <div class="relative h-full">
+      <!-- 时间线横线：端点对齐首尾圆点中心 -->
+      <div class="absolute left-[70px] right-[70px] top-[130px] h-[3px] rounded-full bg-[#0B3BD3]"></div>
+
+      <!-- 里程碑节点容器 -->
+      <div class="flex justify-between relative">
+        <!-- 节点 1 -->
+        <div class="milestone-node">
+          <p class="milestone-time text-[#0B3BD3]">{{时间1}}</p>
+          <div class="milestone-dot bg-[#0B3BD3]"></div>
+          <p class="milestone-title">{{节点1标题}}</p>
+          <p class="milestone-desc">{{节点1描述}}</p>
+        </div>
+
+        <!-- 节点 2 -->
+        <div class="milestone-node">
+          <p class="milestone-time text-[#1D4FED]">{{时间2}}</p>
+          <div class="milestone-dot bg-[#1D4FED]"></div>
+          <p class="milestone-title">{{节点2标题}}</p>
+          <p class="milestone-desc">{{节点2描述}}</p>
+        </div>
+
+        <!-- 节点 3 -->
+        <div class="milestone-node">
+          <p class="milestone-time text-[#0B3BD3]">{{时间3}}</p>
+          <div class="milestone-dot bg-[#0B3BD3]"></div>
+          <p class="milestone-title">{{节点3标题}}</p>
+          <p class="milestone-desc">{{节点3描述}}</p>
+        </div>
+
+        <!-- 节点 4 -->
+        <div class="milestone-node">
+          <p class="milestone-time text-[#1D4FED]">{{时间4}}</p>
+          <div class="milestone-dot bg-[#1D4FED]"></div>
+          <p class="milestone-title">{{节点4标题}}</p>
+          <p class="milestone-desc">{{节点4描述}}</p>
+        </div>
+
+        <!-- 节点 5 -->
+        <div class="milestone-node">
+          <p class="milestone-time text-[#0B3BD3]">{{时间5}}</p>
+          <div class="milestone-dot bg-[#0B3BD3]"></div>
+          <p class="milestone-title">{{节点5标题}}</p>
+          <p class="milestone-desc">{{节点5描述}}</p>
+        </div>
+      </div>
+
+      <!-- 底部说明（可选） -->
+      <div class="absolute bottom-0 left-0 right-0 text-center">
+        <p class="text-[8pt] text-[#999]">{{时间线说明}}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 页码 -->
+  <div class="absolute right-[15px] bottom-[15px]">
+    <span class="text-[9pt] text-[#898989]">{{页码}}</span>
+  </div>
+</div>
+
+</body>
+</html>

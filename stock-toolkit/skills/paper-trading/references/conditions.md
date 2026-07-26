@@ -53,7 +53,7 @@ ptrade conditions "股票名称" --action set --type trailing_stop --price 65.0 
 # 设定止盈条件（soft，7天有效）
 ptrade conditions "股票名称" --action set --type take_profit_1 --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
 
-# 设定成本保护（hard，自动跟随持仓成本，建仓后3天内3%缓冲，之后1.5%）
+# 设定成本保护（hard，自动跟随持仓成本。ATR 驱动：保护价=成本−2.0×ATR(14)，由 ptrade atr-sync 每日同步）
 ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "成本保护清仓" --category hard
 ```
 
@@ -146,7 +146,7 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 | 类型 | 用途 | 建议类别 |
 |------|------|---------|
 | `trailing_stop` | 移动止损/技术破位 | hard |
-| `cost_protection` | 成本保护（建仓3天内亏3%清仓，之后亏1.5%清仓） | hard |
+| `cost_protection` | 成本保护（ATR 驱动：成本−2.0×ATR(14)，加成本×80%底线） | hard |
 | `take_profit_1` | 第一止盈位 | soft |
 | `take_profit_2` | 第二止盈位 | soft |
 | `add_position` | 加仓条件 | soft |
@@ -240,7 +240,7 @@ A: 事件条件和标准条件一样支持 `expiry_days`。过期后会显示在
 
 ### Q: 除权后条件需要重置吗？
 
-A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）会自动跟随持仓成本同步（保护价 = 成本价 × (1 - 缓冲系数)），无需手动调整。缓冲系数在建仓后3天内为3%，之后为1.5%。
+A: 除权前设定的绝对价格条件（止盈、止损）需要基于除权后价格重新设定。成本保护（`cost_protection`）和移动止损（`trailing_stop`）会自动跟随持仓成本同步：ATR 驱动下，保护价 = 成本 − 2.0×ATR(14)。**除权时 CLI 会按除权因子自动缩放 `peak_price`、`trailing_stop.price`、`cost_protection.price`**（机械缩放，非趋势走弱），无需手动调整。缓冲在无 ATR 时退回固定值（建仓3天内3%，之后1.5%）。
 
 ### Q: `add_position` 事件类型可以用于空仓建仓吗？
 
@@ -254,23 +254,48 @@ A: 可以。`add_position` 事件类型有两种语义：
 
 A: 没有。每个 `add_position` 事件条件独立存储和触发，CLI 不维护批次之间的依赖。多个事件是 OR 关系——任一价位触及即触发对应建仓。agent 在生成报告时需要在步骤 7 审查所有同类型事件的触发状态，并在步骤 8 根据投资决策决定是否移除未触发的事件（如区间捕捉完成后移除其他未触发的买点条件）。
 
-### Q: 分批建仓期间成本保护价为什么低于"成本×0.97"？
+### Q: 分批建仓期间成本保护价怎么算？
 
 A: 分批建仓期间，CLI 会自动调整成本保护价，避免"计划内浮亏"被误判为"判断错误"强制清仓。
 
-**调整逻辑**：`sync_cost_protection`（每次 `buy` 后自动调用）会检查是否存在未触发的 `add_position` 事件：
+**调整逻辑**（ATR 驱动，`sync_cost_protection` 在 `buy`/`atr-sync` 后自动调用）：
 
 | 阶段 | 保护价计算 | 语义 |
 |------|----------|------|
-| 建仓期间（有未触发的 `add_position`） | `min(成本保护价, 最低买点 × 0.98)` | 容忍计划内浮亏，但跌破买点下沿 2% 仍止损 |
-| 建仓完成3天内（无未触发的 `add_position`） | `加权成本 × 0.97` | 建仓缓冲期，3%缓冲 |
-| 建仓完成3天后 | `加权成本 × 0.985` | 正常成本保护，亏损 1.5% 清仓 |
+| 建仓期间（有未触发的 `add_position`） | `min(成本−2.0×ATR, 最低买点 × 0.98)` | ATR 成本侧 + 买点下沿底线取小值；买点底线与波动率正交，不 ATR 化 |
+| 建仓缓冲期/正常持仓（有 ATR） | `成本 − 2.0×ATR`，加 `成本×80%` 底线 | ATR 成本保护，波动大保护位低 |
+| 无 ATR（退回固定缓冲） | 建仓3天内 `成本×0.97`，3天后 `成本×0.985` | buy 钩子零网络依赖时退回 |
 
-> 其中"成本保护价"在建仓后3天内为 `成本 × 0.97`，3天后为 `成本 × 0.985`。
+> **买点下沿底线保留**：`最低买点 × 0.98` 是建仓计划保护（分析报告预设的买点区间，与波动率正交），ATR 不替代它。取 `min(ATR成本侧, 买点底线)` = 更紧的保护。
 
-**示例**：买点区间 ¥80-82，¥82 首批建仓后加权成本 ¥82，建仓3天内的成本保护价为 ¥82×0.97=¥79.54。但存在未触发的 ¥80/81 买点事件，保护价取 `min(79.54, 80×0.98=78.40) = ¥78.40`。这样股价跌到 ¥80 时会按计划触发第二批建仓，而不是触发成本保护清仓。建仓完成后（所有买点事件触发或移除），下次 `buy` 操作触发 `sync_cost_protection` 时会自动切换回正常模式（3天内¥成本×0.97，3天后¥成本×0.985）。
+**示例**：买点区间 ¥80-82，加权成本 ¥82，ATR(14)=¥1.5。ATR 成本侧 = 82−2×1.5=¥79；最低买点 ¥80 的底线 = 80×0.98=¥78.40。取 `min(79, 78.40) = ¥78.40`。建仓完成后（所有买点事件触发或移除），下次 `sync_cost_protection` 切换回纯 ATR 成本保护（¥79）。
 
-> **agent 无需手动操作**：此调整完全由 CLI 自动完成。agent 在步骤 7 审查时如看到成本保护价低于"成本×0.97"，应理解为建仓期间的正常行为，并在报告"利润保护追踪"章节说明。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
+> **agent 无需手动操作**：此调整由 CLI 自动完成。`ptrade atr-sync` 每日同步 ATR 止损位。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
+
+### Q: `ptrade atr-sync` 命令是做什么的？
+
+A: ATR 动态止损同步——算 ATR(14) + 更新持仓最高价(peak) + 同步 `trailing_stop`（peak−2.5×ATR，只升不降）与 `cost_protection`（成本−2.0×ATR，加80%底线）。替代旧的固定 3%/1.5% 缓冲和手动按浮盈档位 update 移动止损。
+
+```bash
+# 同步所有持仓账户（cron 每日调用）
+ptrade atr-sync
+
+# 同步单只股票
+ptrade atr-sync 中科曙光
+
+# 只计算不写入（查看预期值）
+ptrade atr-sync --dry-run
+
+# 重新建仓后重置 peak（不继承上一轮 peak）
+ptrade atr-sync 中科曙光 --reset-peak
+
+# 自定义 ATR 参数
+ptrade atr-sync --period 14 --k 2.5 --count 120
+```
+
+**参数**：`--period`(ATR周期,默认14)、`--k`(ATR倍数,默认trailing用2.5/cost用2.0)、`--count`(K线根数,默认120)、`--dry-run`、`--init-peak`(首次peak初始化:current默认/historical)、`--reset-peak`。
+
+**首次 peak 用当前价初始化**（默认 `--init-peak=current`）：避免历史 peak 远高于当前价时，`peak−2.5×ATR` 把止损一次性抬到接近当前价导致次日清仓。`historical` 选项用建仓以来最高价（激进，立即收紧）。
 
 ---
 

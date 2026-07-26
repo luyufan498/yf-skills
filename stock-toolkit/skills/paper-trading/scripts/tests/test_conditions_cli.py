@@ -436,3 +436,227 @@ def test_conditions_markdown_all_templates():
             "--template", "expired-table",
         ])
         assert result.exit_code == 0
+
+
+# ============ ATR 动态止损测试 ============
+
+def _mock_account(stock_code="sh600000"):
+    """模拟账户对象（带 stock_code）"""
+    from unittest import mock
+    account = mock.MagicMock()
+    account.stock_code = stock_code
+    return account
+
+
+def _fixed_klines(n=20, tr=2.0, base=100.0):
+    """构造 n 根K线，每根 TR=tr（前收=base, H=base+tr, L=base, C=base）"""
+    klines = []
+    for i in range(n):
+        klines.append({"date": f"2026-01-{i+1:02d}", "open": base, "high": base + tr,
+                       "low": base, "close": base, "volume": 1000})
+    return klines
+
+
+def _setup_atr_sync_mocks(tr=2.0, base=100.0, current_price=100.0, rt_high=None):
+    """返回 mock.patch 的 context managers 组合，用于 atr-sync 测试。
+    持仓 1000 股 @ base，ATR=tr，当前价 current_price。"""
+    patches = [
+        mock.patch("paper_trading.storage.JsonStorage.load_account",
+                   return_value=_mock_account()),
+        mock.patch("paper_trading.trading.PaperTrader.get_remaining_position",
+                   return_value=(1000, 1000 * base)),
+        mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data",
+                   return_value=_fixed_klines(20, tr, base)),
+        mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price",
+                   return_value=_mock_rt(current_price, rt_high)),
+        mock.patch("paper_trading.storage.JsonStorage.list_accounts",
+                   return_value=["测试股"]),
+        mock.patch("paper_trading.storage.JsonStorage.save_account"),
+    ]
+    return patches
+
+
+def _mock_rt(current_price, high):
+    from unittest import mock
+    rt = mock.MagicMock()
+    rt.current_price = current_price
+    rt.high = high
+    return rt
+
+
+def test_atr_sync_single_stock():
+    """atr-sync 单只股票：trailing_stop 按 peak−2.5×ATR 设定，peak 写入"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        # 先 set trailing_stop 和 cost_protection
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "cost_protection", "--price", "98.50",
+                            "--action-str", "清仓", "--category", "hard"])
+
+        # atr-sync：ATR=2, peak首次=当前价100, trailing=100−2.5×2=95, cost=100−2×2=96
+        for p in _setup_atr_sync_mocks(tr=2.0, base=100.0, current_price=100.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 0, result.output
+        assert "移动止损" in result.output
+        assert "95.00" in result.output  # peak100 − 2.5×2 = 95
+
+        # 验证 peak_price 写入
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        assert ts["peak_price"] == 100.0
+
+
+def test_atr_sync_only_ascending():
+    """只升不降：ATR 变大（peak 不变），止损不降"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "cost_protection", "--price", "98.50",
+                            "--action-str", "清仓", "--category", "hard"])
+
+        # 第一次：ATR=2, peak=100, trailing=95
+        for p in _setup_atr_sync_mocks(tr=2.0, current_price=100.0):
+            p.start()
+        try:
+            runner.invoke(app, ["atr-sync", "测试股"])
+        finally:
+            mock.patch.stopall()
+
+        # 第二次：ATR 变大到 5（peak 仍 100），raw_stop=100−12.5=87.5 < 95，应保持 95
+        for p in _setup_atr_sync_mocks(tr=5.0, current_price=100.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 0
+        # 止损应保持 95（只升不降），不降到 87.5
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        assert ts["price"] == 95.0
+
+
+def test_atr_sync_dry_run():
+    """--dry-run 不写入"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        for p in _setup_atr_sync_mocks(tr=2.0, current_price=100.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["atr-sync", "测试股", "--dry-run"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 0
+        assert "dry-run" in result.output or "未写入" in result.output
+        # 验证未写入：peak_price 仍为 None
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        assert ts["peak_price"] is None
+
+
+def test_atr_sync_insufficient_klines():
+    """K线不足 period+1 根，跳过不报错"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        # 只返回 5 根K线（不足 15）
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 100000.0)), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=_fixed_klines(5)), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=None):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0
+        assert "跳过" in result.output
+
+
+def test_atr_sync_no_position():
+    """空仓账户跳过"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(0, 0.0)), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=_fixed_klines(20)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0
+        assert "空仓" in result.output
+
+
+def test_atr_sync_init_peak_current():
+    """首次 peak 用当前价初始化（防突变），非历史最高"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        # K线含历史高点 120，但当前价 100 → peak 应=100（current），非 120
+        klines = _fixed_klines(20, tr=2.0, base=100.0)
+        klines[10]["high"] = 120.0  # 历史高点
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 100000.0)), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=klines), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=_mock_rt(100.0, 100.0)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        assert ts["peak_price"] == 100.0  # 当前价，非历史 120
+
+
+def test_validate_cost_protection_atr_branch():
+    """手动 update cost_protection 传 ATR，ATR 分支 Level 1 放行"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "cost_protection", "--price", "98.50",
+                            "--action-str", "清仓", "--category", "hard"])
+        pos = {"positions": {"total_quantity": 1000, "total_cost": 100000.0, "current_price": 100.0}}
+        # 成本100, ATR=2, 期望=100−2×2=96
+        with mock.patch("paper_trading.cli.PortfolioManager.get_account_summary", return_value=pos), \
+             mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=_fixed_klines(20, tr=2.0)):
+            result = runner.invoke(app, ["conditions", "测试股", "--action", "update",
+                                         "--type", "cost_protection", "--price", "96.00"])
+        assert result.exit_code == 0
+        assert "修改成功" in result.output
+
+
+def test_sync_cost_protection_80pct_floor():
+    """ATR 异常大时，cost_protection 不低于成本×80%"""
+    from paper_trading.conditions_manager import ConditionsManager
+    from paper_trading.conditions import ConditionType
+    import tempfile, json as _json
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        # 建仓 + set cost_protection
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "cost_protection", "--price", "98.50",
+                            "--action-str", "清仓", "--category", "hard"])
+        # sync：成本100, ATR=30(异常大) → 100−2×30=40 < 80(成本80%) → 取 80
+        from paper_trading.storage import JsonStorage
+        from paper_trading.trading import PaperTrader
+        trader = PaperTrader()
+        cond_mgr = ConditionsManager(trader.storage)
+        cond_mgr.sync_cost_protection("测试股", avg_cost=100.0, atr=30.0, k_cost=2.0)
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        cp = data["conditions"]["cost_protection"]
+        assert cp["price"] == 80.0  # 成本×80% 底线

@@ -174,7 +174,9 @@ class ConditionsManager:
                          has_position: bool = True,
                          active_triggers: List[str] = None,
                          override_reason: str = "",
-                         user_reason: str = "") -> tuple:
+                         user_reason: str = "",
+                         atr: float = None,
+                         k_cost: float = 2.0) -> tuple:
         """
         更新条件（带规则校验）
 
@@ -227,6 +229,8 @@ class ConditionsManager:
                 avg_cost=avg_cost or 0,
                 active_triggers=active_triggers or [],
                 override_reason=override_reason or user_reason,
+                atr=atr,
+                k_cost=k_cost,
             )
         else:
             # 软条件
@@ -484,18 +488,24 @@ class ConditionsManager:
         except Exception:
             return False
 
-    def sync_cost_protection(self, stock_name: str, avg_cost: float) -> Optional[ConditionsRecord]:
+    def sync_cost_protection(self, stock_name: str, avg_cost: float,
+                             klines: List[dict] = None, atr: float = None,
+                             k_cost: float = 2.0) -> Optional[ConditionsRecord]:
         """
-        同步成本保护（buy/sell 后自动调用）
+        同步成本保护（buy/sell 后自动调用，或 atr-sync 命令调用）
         如果 auto_link_cost=True，自动更新成本保护价格。
 
+        ATR 驱动（回测验证优于固定缓冲）：
+        - 正常持仓：保护价 = 成本 − k_cost×ATR（不套只升不降，成本变了应重算）
+        - 加成本×80% 底线，防 ATR 异常放大导致保护位跌穿成本 20%
+        无 atr/klines 时退回旧固定缓冲（保证 buy 钩子零网络依赖）。
+
         三种场景：
-        1. 建仓后短期（最近一次买入在 BUILD_BUFFER_DAYS 天内）：保护价 = 成本价 × (1 - 3%)
-           建仓初期股价尚未脱离成本区，1.5% 缓冲不足以吸收正常日内波动。
-        2. 分批建仓期间（存在未触发的 add_position 事件）：
-           保护价 = min(成本价 × (1-BUFFER), 最低买点 × 0.98)
-           建仓期间容忍计划内浮亏，建仓完成后自动切换回正常成本保护。
-        3. 正常持仓（无未触发 add_position 事件且已过缓冲期）：保护价 = 成本价 × (1 - 1.5%)
+        1. 分批建仓期间（存在未触发的 add_position 事件）：
+           保护价 = min(ATR成本侧, 最低买点×0.98)——买点下沿底线是建仓计划保护，与波动率正交，不 ATR 化。
+        2. 建仓缓冲期（最近一次买入在 BUILD_BUFFER_DAYS 天内，无 pending build）：
+           保护价 = 成本 − k_cost×ATR（无 ATR 则退回成本×(1−3%)）。
+        3. 正常持仓：保护价 = 成本 − k_cost×ATR（无 ATR 则退回成本×(1−1.5%)）。
         """
         record = self.load_conditions(stock_name)
         if not record:
@@ -508,6 +518,22 @@ class ConditionsManager:
         if not condition.auto_link_cost:
             return record
 
+        # 计算 ATR（若提供 klines 未提供 atr）
+        from paper_trading.atr import compute_atr, ATR_K_COST
+        atr_val = atr
+        if atr_val is None and klines:
+            atr_val = compute_atr(klines)
+        kk = k_cost if k_cost is not None else ATR_K_COST
+
+        # ATR 成本侧保护价（不套只升不降；成本变了应重算）
+        atr_floor = None
+        if atr_val is not None:
+            atr_floor = round(avg_cost - kk * atr_val, 2)
+            # 80% 底线：防 ATR 异常放大导致保护位跌穿成本 20%
+            cost_floor_80 = round(avg_cost * 0.80, 2)
+            if atr_floor < cost_floor_80:
+                atr_floor = cost_floor_80
+
         # 检查是否存在未触发的 add_position 事件（分批建仓期间）
         pending_build_events = [
             e for e in record.events
@@ -517,28 +543,39 @@ class ConditionsManager:
         # 检查是否在建仓缓冲期内
         in_build_buffer = self._is_within_build_buffer_period(stock_name)
 
+        # 旧固定缓冲（无 ATR 时退回）
         if in_build_buffer:
-            buffer = self.BUILD_BUFFER
-            buffer_label = f"{self.BUILD_BUFFER*100:.1f}%(建仓缓冲{self.BUILD_BUFFER_DAYS}天)"
+            fixed_buffer = self.BUILD_BUFFER
+            fixed_label = f"{self.BUILD_BUFFER*100:.1f}%(建仓缓冲{self.BUILD_BUFFER_DAYS}天)"
         else:
-            buffer = self.COST_PROTECTION_BUFFER
-            buffer_label = f"{self.COST_PROTECTION_BUFFER*100:.1f}%"
-
-        cost_based_price = round(avg_cost * (1 - buffer), 2)
+            fixed_buffer = self.COST_PROTECTION_BUFFER
+            fixed_label = f"{self.COST_PROTECTION_BUFFER*100:.1f}%"
+        fixed_price = round(avg_cost * (1 - fixed_buffer), 2)
 
         if pending_build_events:
-            # 分批建仓期间：取 min(成本×(1-buffer), 最低买点×0.98)
+            # 场景A：分批建仓期间 —— 保留买点下沿底线（与波动率正交），成本侧用 ATR
             min_buy_price = min(e.price for e in pending_build_events)
             build_floor = round(min_buy_price * (1 - self.BUILD_FLOOR_BUFFER), 2)
-            target_price = min(cost_based_price, build_floor)
-            reason = (
-                f"分批建仓期间保护（成本¥{avg_cost:.2f}→{cost_based_price:.2f}，"
-                f"最低买点¥{min_buy_price:.2f}→底线¥{build_floor:.2f}，取小值¥{target_price:.2f}）"
-            )
+            cost_side = atr_floor if atr_floor is not None else fixed_price
+            target_price = min(cost_side, build_floor)
+            if atr_floor is not None:
+                reason = (
+                    f"分批建仓期间保护（ATR成本侧¥{atr_floor:.2f}=成本¥{avg_cost:.2f}−{kk}×ATR，"
+                    f"买点底线¥{build_floor:.2f}=最低买点¥{min_buy_price:.2f}×0.98，取小值¥{target_price:.2f}）"
+                )
+            else:
+                reason = (
+                    f"分批建仓期间保护（成本¥{avg_cost:.2f}→{fixed_price:.2f}，"
+                    f"最低买点¥{min_buy_price:.2f}→底线¥{build_floor:.2f}，取小值¥{target_price:.2f}）"
+                )
+        elif atr_floor is not None:
+            # 场景B/C：有 ATR —— 纯 ATR 成本保护（建仓缓冲期与正常持仓统一用 ATR）
+            target_price = atr_floor
+            reason = f"ATR成本保护（成本¥{avg_cost:.2f} − {kk}×ATR¥{atr_val:.2f} = ¥{target_price:.2f}）"
         else:
-            # 正常持仓或建仓缓冲期：成本 × (1 - buffer)
-            target_price = cost_based_price
-            reason = f"自动同步持仓成本（缓冲{buffer_label}，成本¥{avg_cost:.2f}）"
+            # 退回旧固定缓冲（无 ATR）
+            target_price = fixed_price
+            reason = f"自动同步持仓成本（缓冲{fixed_label}，成本¥{avg_cost:.2f}）"
 
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:
@@ -553,6 +590,85 @@ class ConditionsManager:
             reason=reason,
             level=ConditionLevel.LEVEL_1,
         ))
+
+        self.save_conditions(record)
+        return record
+
+    def sync_trailing_stop(self, stock_name: str, avg_cost: float,
+                           klines: List[dict] = None, atr: float = None,
+                           realtime_high: float = None,
+                           k: float = None,
+                           init_peak: str = "current",
+                           reset_peak: bool = False,
+                           current_price: float = None) -> Optional[ConditionsRecord]:
+        """
+        同步移动止损（ATR 驱动，只升不降）。由 `ptrade atr-sync` 命令调用。
+
+        新止损 = max(旧止损, peak − k×ATR)，其中 peak = merge_peak(旧peak, klines, realtime_high)。
+        - trailing_stop 硬只升不降（套 max）：ATR 变大时止损不降，只有 peak 上移才推高止损。
+        - 与 cost_protection 语义不同（后者跟随成本重算，不套 max）。
+
+        init_peak:
+          - "current"（默认）: 首次(peak_price 为 None)用当前价初始化，避免历史 peak 导致止损突变清仓。
+          - "historical": 用建仓以来区间最高价初始化（激进，立即收紧）。
+        reset_peak: 重新建仓后重置 peak 为当前价（不继承上一轮 peak）。
+        """
+        record = self.load_conditions(stock_name)
+        if not record:
+            return None
+
+        condition = record.get(ConditionType.TRAILING_STOP)
+        if not condition:
+            return None
+
+        from paper_trading.atr import compute_atr, merge_peak, ATR_K_TRAIL
+
+        # 计算 ATR
+        atr_val = atr if atr is not None else (compute_atr(klines) if klines else None)
+        if atr_val is None:
+            return record  # K线不足，跳过（不动止损）
+
+        kk = k if k is not None else ATR_K_TRAIL
+
+        # peak 初始化 / 重置 / 合并
+        if reset_peak or (init_peak == "current" and condition.peak_price is None):
+            # 首次或重置：用当前价（保守，防突变）
+            seed = current_price
+            if seed is None and klines:
+                seed = klines[-1].get("close")
+            if seed is None:
+                return record
+            new_peak = seed
+            peak_note = "当前价" if not reset_peak else "重置为当前价"
+        else:
+            # 合并：max(旧peak, 区间最高high, realtime_high)
+            new_peak = merge_peak(condition.peak_price, klines or [], realtime_high)
+            if new_peak is None:
+                return record
+            peak_note = f"max(旧peak¥{condition.peak_price}, 区间high)"
+
+        # ATR 移动止损：peak − k×ATR，只升不降
+        raw_stop = round(new_peak - kk * atr_val, 2)
+        target = max(condition.price, raw_stop)  # 硬只升不降
+
+        peak_changed = (condition.peak_price is None) or (new_peak > condition.peak_price)
+        stop_changed = abs(condition.price - target) >= 0.01
+
+        if not peak_changed and not stop_changed:
+            return record
+
+        if peak_changed:
+            condition.peak_price = new_peak
+        if stop_changed:
+            old_price = condition.price
+            condition.price = target
+            condition.history.append(ConditionChange(
+                old_price=old_price,
+                new_price=target,
+                reason=f"ATR移动止损自动同步（peak¥{new_peak:.2f} − {kk}×ATR¥{atr_val:.2f} = ¥{raw_stop:.2f}，只升不降取¥{target:.2f}）",
+                level=ConditionLevel.LEVEL_1,
+            ))
+        condition.modified_at = datetime.now().isoformat()
 
         self.save_conditions(record)
         return record

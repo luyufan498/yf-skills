@@ -104,6 +104,7 @@ class Condition(BaseModel):
     status: ConditionStatus = Field(default=ConditionStatus.ACTIVE, description="状态")
     history: List[ConditionChange] = Field(default_factory=list, description="变更历史")
     auto_link_cost: bool = Field(default=False, description="是否自动跟随持仓成本")
+    peak_price: Optional[float] = Field(None, description="ATR移动止损所锚定的持仓最高价（只升不降，仅 trailing_stop 使用）")
 
     def to_table_row(self, current_date: str = None) -> dict:
         """转换为表格行数据"""
@@ -459,18 +460,42 @@ class ConditionRules:
         new_price: float,
         avg_cost: float,
         active_triggers: List[str] = None,
-        override_reason: str = ""
+        override_reason: str = "",
+        atr: Optional[float] = None,
+        k_cost: float = 2.0
     ) -> ValidationResult:
-        """统一验证：成本保护修改"""
+        """统一验证：成本保护修改
 
-        # 成本保护 = 成本价 × (1 - 1.5%)，吸收日内波动
-        expected_price = round(avg_cost * (1 - ConditionRules.COST_PROTECTION_BUFFER), 2)
+        支持两种语义：
+        - 固定缓冲（旧）：成本×(1−1.5%)，向后兼容
+        - ATR 驱动（新）：成本−k_cost×ATR，回测验证更优
+        """
 
-        # 如果新价格等于期望保护价（带缓冲），自动通过
-        if abs(new_price - expected_price) < 0.01:
+        # 分支1：固定缓冲（旧逻辑，向后兼容）
+        expected_fixed = round(avg_cost * (1 - ConditionRules.COST_PROTECTION_BUFFER), 2)
+        if abs(new_price - expected_fixed) < 0.01:
             return ConditionRules.auto_sync_cost_protection(avg_cost)
 
-        # 如果不等于期望保护价，需要解锁
+        # 分支2：ATR 驱动（新增）
+        if atr is not None:
+            expected_atr = round(avg_cost - k_cost * atr, 2)
+            if abs(new_price - expected_atr) < 0.01:
+                return ValidationResult(
+                    allowed=True,
+                    level=ConditionLevel.LEVEL_1,
+                    message=f"ATR成本保护（成本¥{avg_cost:.2f} − {k_cost}×ATR¥{atr:.2f} = ¥{expected_atr:.2f}）",
+                    requires_log=True,
+                )
+            # ATR 模式下偏离建议值：允许但需理由（Level 2），不直接 BLOCK
+            return ValidationResult(
+                allowed=True,
+                level=ConditionLevel.LEVEL_2,
+                message=f"ATR成本保护手动设定（建议¥{expected_atr:.2f}，实际¥{new_price:.2f}），需说明理由",
+                requires_log=True,
+                requires_warning=True,
+            )
+
+        # 分支3：无 ATR 且不等于固定缓冲值 → 旧 BLOCKED 逻辑
         if active_triggers:
             return ConditionRules.can_override_with_review(
                 old_price, new_price, active_triggers, override_reason
@@ -479,9 +504,9 @@ class ConditionRules:
         return ValidationResult(
             allowed=False,
             level=ConditionLevel.BLOCKED,
-            message=f"❌ 成本保护必须等于 成本价×(1-1.5%) = ¥{expected_price:.2f}（成本¥{avg_cost:.2f}）。"
-                   f"请求: ¥{new_price:.2f}，偏差 ¥{abs(new_price - expected_price):.2f}。"
-                   f"如需修改，请使用 --override-trigger 解锁。",
+            message=f"❌ 成本保护必须等于 成本价×(1-1.5%) = ¥{expected_fixed:.2f}（成本¥{avg_cost:.2f}）。"
+                   f"请求: ¥{new_price:.2f}，偏差 ¥{abs(new_price - expected_fixed):.2f}。"
+                   f"如需修改，请使用 --override-trigger 解锁，或通过 `ptrade atr-sync` 自动按 ATR 设定。",
             requires_log=True,
             requires_warning=True,
         )

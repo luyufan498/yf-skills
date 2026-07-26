@@ -1148,6 +1148,8 @@ def conditions_command(
     override_reason: Optional[str] = typer.Option(None, "--override-reason", help="解锁理由（Level 3，不少于20字）"),
     # --trigger / --expire
     trigger_price: Optional[float] = typer.Option(None, "--trigger-price", help="触发时价格"),
+    # --update ATR（手动按 ATR 设定成本保护时传入，或省略由命令自动算）
+    atr_value: Optional[float] = typer.Option(None, "--atr", help="ATR 值（用于按 ATR 设定 cost_protection；省略则自动取K线计算）"),
     # event condition params
     event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect(利润保护)/loss_protect(亏损保护)/tech_break(技术破位)/target_profit(目标价止盈, 别名 take_profit)/add_position(加仓)/fundamental(基本面)/market_risk(市场风险)"),
     event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
@@ -1279,6 +1281,18 @@ def conditions_command(
         avg_cost = _get_avg_cost() or price
         has_pos = _has_position()
 
+        # ATR：若手动更新 cost_protection 且未传 --atr，自动取K线计算
+        atr_for_update = atr_value
+        if atr_for_update is None and ct == ConditionType.COST_PROTECTION and has_pos:
+            try:
+                account = trader.storage.load_account(stock_name)
+                if account and account.stock_code:
+                    klines = KLineDataFetcher().fetch_kline_data(account.stock_code, "day", 30)
+                    from paper_trading.atr import compute_atr
+                    atr_for_update = compute_atr(klines)
+            except Exception:
+                atr_for_update = None
+
         # Parse comma-separated trigger string
         active_triggers_list = []
         if override_trigger:
@@ -1294,6 +1308,7 @@ def conditions_command(
             active_triggers=active_triggers_list,
             override_reason=override_reason or "",
             user_reason=reason or "",
+            atr=atr_for_update,
         )
 
         if result.allowed:
@@ -1479,6 +1494,141 @@ def conditions_command(
     typer.echo(f"❌ 不支持的操作: {action}", err=True)
     raise typer.Exit(1)
 
+
+@app.command("atr-sync")
+def atr_sync_command(
+    stock_name: Optional[str] = typer.Argument(None, help="股票名称；省略则遍历所有持仓账户"),
+    k: Optional[float] = typer.Option(None, "--k", help="ATR 倍数（默认：trailing用2.5，cost用2.0）"),
+    period: int = typer.Option(14, "--period", help="ATR 周期（默认14）"),
+    kline_count: int = typer.Option(120, "--count", "-n", help="取K线根数（默认120）"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只计算不写入"),
+    init_peak: str = typer.Option("current", "--init-peak", help="首次peak初始化: current(默认,保守)/historical(激进)"),
+    reset_peak: bool = typer.Option(False, "--reset-peak", help="重置peak为当前价（重新建仓后用）"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 pretty/json"),
+):
+    """ATR 动态止损同步：算 ATR + 更新 peak + 同步 trailing_stop 与 cost_protection。
+
+    替代固定 3%/1.5% 缓冲。回测验证（两个独立样本）：ATR 止损样本外夏普 +0.53~0.55。
+    cron 每日调用，或手动 `ptrade atr-sync 中科曙光`。
+    """
+    from paper_trading.atr import compute_atr, ATR_K_TRAIL, ATR_K_COST
+    from paper_trading.conditions_manager import ConditionsManager
+    from paper_trading.conditions import ConditionType
+
+    trader = PaperTrader()
+    cond_mgr = ConditionsManager(trader.storage)
+
+    # 确定目标股票列表
+    if stock_name:
+        targets = [_normalize_stock_name(stock_name)]
+    else:
+        targets = trader.storage.list_accounts()
+
+    results = []
+    for name in targets:
+        try:
+            account = trader.storage.load_account(name)
+            if not account:
+                results.append({"stock": name, "status": "skip", "reason": "账户不存在"})
+                continue
+            if not account.stock_code:
+                results.append({"stock": name, "status": "skip", "reason": "股票代码为空"})
+                continue
+
+            total_qty, total_cost = trader.get_remaining_position(account)
+            if total_qty <= 0:
+                results.append({"stock": name, "status": "skip", "reason": "空仓"})
+                continue
+
+            avg_cost = total_cost / total_qty
+
+            # 取K线 + 实时价
+            klines = KLineDataFetcher().fetch_kline_data(account.stock_code, "day", kline_count)
+            atr = compute_atr(klines, period)
+            if atr is None:
+                results.append({"stock": name, "status": "skip",
+                                "reason": f"K线不足{period+1}根"})
+                continue
+
+            rt = None
+            rt_high = None
+            current_price = None
+            try:
+                rt = StockPriceFetcher().get_realtime_price(account.stock_code)
+                if rt:
+                    rt_high = getattr(rt, "high", None)
+                    current_price = getattr(rt, "current_price", None)
+            except Exception:
+                pass
+
+            k_trail = k if k is not None else ATR_K_TRAIL
+            k_cost = k if k is not None else ATR_K_COST
+
+            # 计算预期值（用于输出和 dry_run）
+            record = cond_mgr.load_conditions(name)
+            ts_cond = record.get(ConditionType.TRAILING_STOP) if record else None
+            cp_cond = record.get(ConditionType.COST_PROTECTION) if record else None
+            old_trail = ts_cond.price if ts_cond else None
+            old_cp = cp_cond.price if cp_cond else None
+            old_peak = ts_cond.peak_price if ts_cond else None
+
+            # peak 预期
+            from paper_trading.atr import merge_peak
+            if reset_peak or (init_peak == "current" and old_peak is None):
+                seed = current_price or (klines[-1].get("close") if klines else None)
+                new_peak = seed
+            else:
+                new_peak = merge_peak(old_peak, klines or [], rt_high)
+
+            expected_trail = round(new_peak - k_trail * atr, 2) if new_peak else None
+            expected_trail_final = max(old_trail, expected_trail) if (old_trail and expected_trail) else expected_trail
+            expected_cp = round(avg_cost - k_cost * atr, 2)
+            cost_floor_80 = round(avg_cost * 0.80, 2)
+            if expected_cp < cost_floor_80:
+                expected_cp = cost_floor_80
+
+            entry = {
+                "stock": name, "code": account.stock_code, "status": "ok",
+                "atr": round(atr, 4), "avg_cost": round(avg_cost, 2),
+                "peak_old": old_peak, "peak_new": new_peak,
+                "trailing_stop_old": old_trail, "trailing_stop_new": expected_trail_final,
+                "cost_protection_old": old_cp, "cost_protection_new": expected_cp,
+            }
+            results.append(entry)
+
+            if not dry_run:
+                cond_mgr.sync_trailing_stop(name, avg_cost, klines, atr, rt_high,
+                                            k=k_trail, init_peak=init_peak,
+                                            reset_peak=reset_peak, current_price=current_price)
+                cond_mgr.sync_cost_protection(name, avg_cost, klines, atr, k_cost=k_cost)
+        except Exception as e:
+            results.append({"stock": name, "status": "error", "reason": str(e)})
+
+    # 输出
+    if format == "json":
+        import json
+        typer.echo(json.dumps({"results": results}, ensure_ascii=False, indent=2, default=str))
+    else:
+        typer.echo(f"📊 ATR 同步（period={period}, k_trail={k if k is not None else ATR_K_TRAIL}, k_cost={k if k is not None else ATR_K_COST}{'，dry-run' if dry_run else ''}）")
+        ok = 0
+        skip = 0
+        for r in results:
+            name = r["stock"]
+            if r["status"] == "ok":
+                ok += 1
+                typer.echo(f"  • {name} ({r.get('code','')}): ATR=¥{r['atr']:.2f} peak ¥{r['peak_old']}→¥{r['peak_new']}")
+                if r.get("trailing_stop_old") is not None:
+                    arrow = "→"
+                    flag = "✅" if r["trailing_stop_new"] >= r["trailing_stop_old"] else "⚠️降"
+                    typer.echo(f"      移动止损: ¥{r['trailing_stop_old']:.2f} {arrow} ¥{r['trailing_stop_new']:.2f} (peak−{k if k is not None else ATR_K_TRAIL}×ATR，只升不降) {flag}")
+                if r.get("cost_protection_old") is not None:
+                    typer.echo(f"      成本保护: ¥{r['cost_protection_old']:.2f} → ¥{r['cost_protection_new']:.2f} (成本¥{r['avg_cost']:.2f}−{k if k is not None else ATR_K_COST}×ATR)")
+            elif r["status"] == "skip":
+                skip += 1
+                typer.echo(f"  • {name}: 跳过（{r['reason']}）⚠️")
+            else:
+                typer.echo(f"  • {name}: 报错（{r['reason']}）❌")
+        typer.echo(f"汇总: {ok} 只同步, {skip} 只跳过" + ("（dry-run 未写入）" if dry_run else ""))
 
 
 if __name__ == "__main__":

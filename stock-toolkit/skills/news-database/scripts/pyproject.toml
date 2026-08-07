@@ -1,0 +1,24 @@
+[project]
+name = "news-database"
+version = "0.1.0"
+description = "News database CLI for stock analysis - 独立新闻库（agent 整理后的消息源）"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "typer>=0.7.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+newsdb = "news_database.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["news_database*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -66,6 +66,32 @@ def test_refresh_request_roundtrip(tmp_path, monkeypatch):
     assert "赛力斯" not in lst2.stdout
 
 
+def test_industry_aliases_add_list(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["industry-aliases", "add", "光模块", "--alias", "光模块行业"])
+    assert r.exit_code == 0
+    lst = runner.invoke(app, ["industry-aliases", "list", "光模块"])
+    assert "光模块行业" in lst.stdout
+
+
+def test_industry_hierarchy_set_parent(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["industry-hierarchy", "set-parent", "AI算力", "--parent", "计算机设备"])
+    assert r.exit_code == 0
+
+
+def test_industry_relate(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["industry-relate", "计算机设备/AI算力", "--to", "精密温控节能设备/数据中心液冷", "--strength", "60"])
+    assert r.exit_code == 0
+
+
 def test_event_missing_exits_1(tmp_path, monkeypatch):
     db = tmp_path / "news.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))

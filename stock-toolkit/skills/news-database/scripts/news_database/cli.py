@@ -210,6 +210,74 @@ def search(keywords: str = typer.Argument(...), limit: int = typer.Option(10, "-
     conn.close()
 
 
+# ---------- 行业管理 ----------
+
+@app.command("industry-aliases")
+def industry_aliases(
+    action: str = typer.Argument(...),
+    name: str = typer.Argument(None),
+    alias: str = typer.Option(None, "--alias"),
+):
+    """行业别名管理：add <行业名> --alias <别名> / list [<行业名>]"""
+    conn = _open()
+    if action == "add":
+        if not name or not alias:
+            typer.echo("用法: industry-aliases add <行业名> --alias <别名>")
+            raise typer.Exit(code=2)
+        iid = storage.upsert_industry(conn, name)
+        storage.add_industry_alias(conn, iid, alias)
+        typer.echo(f"✓ 已为行业 '{name}' (#{iid}) 登记别名 '{alias}'")
+    elif action == "list":
+        if name:
+            iid = storage.upsert_industry(conn, name)
+            aliases = storage.list_industry_aliases(conn, iid)
+            if aliases:
+                typer.echo(f"行业 '{name}' (#{iid}) 别名: {', '.join(aliases)}")
+            else:
+                typer.echo(f"行业 '{name}' (#{iid}) 无别名")
+        else:
+            for r in conn.execute("SELECT * FROM industries ORDER BY name"):
+                aliases = storage.list_industry_aliases(conn, r["id"])
+                typer.echo(f"#{r['id']} {r['name']}" + (f" (别名: {', '.join(aliases)})" if aliases else ""))
+    else:
+        typer.echo(f"未知动作 '{action}'，支持 add / list")
+        raise typer.Exit(code=2)
+    conn.close()
+
+
+@app.command("industry-hierarchy")
+def industry_hierarchy(
+    action: str = typer.Argument(...),
+    name: str = typer.Argument(None),
+    parent: str = typer.Option(None, "--parent"),
+):
+    """行业层级：set-parent <子行业> --parent <父行业>"""
+    conn = _open()
+    if action == "set-parent":
+        if not name or not parent:
+            typer.echo("用法: industry-hierarchy set-parent <子行业> --parent <父行业>")
+            raise typer.Exit(code=2)
+        child_id, parent_id = storage.set_industry_parent(conn, name, parent)
+        typer.echo(f"✓ 已设 '{name}' (#{child_id}) 为 '{parent}' (#{parent_id}) 的子行业")
+    else:
+        typer.echo(f"未知动作 '{action}'，支持 set-parent")
+        raise typer.Exit(code=2)
+    conn.close()
+
+
+@app.command("industry-relate")
+def industry_relate(
+    name_a: str = typer.Argument(...),
+    to: str = typer.Option(..., "--to"),
+    strength: int = typer.Option(60, "--strength"),
+):
+    """登记行业间关联（relations 表，rel_type='related'）。"""
+    conn = _open()
+    ia, ib = storage.relate_industries(conn, name_a, to, strength=strength)
+    conn.close()
+    typer.echo(f"✓ 已登记行业关联: '{name_a}' (#{ia}) ↔ '{to}' (#{ib}) (strength {strength})")
+
+
 # ---------- 协作端 ----------
 
 @app.command("request-refresh")

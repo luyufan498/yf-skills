@@ -113,3 +113,57 @@ def get_event_with_messages(conn, event_id):
         SELECT * FROM messages WHERE event_id=? ORDER BY importance DESC, fetched_at DESC
     """, (event_id,)).fetchall()
     return ev, msgs
+
+
+# ---------- 事件↔实体 关联 ----------
+
+def link_event_stock(conn, event_id, stock_code, relevance=50):
+    """关联事件↔股票（多对多，UPSERT）。"""
+    conn.execute("""
+        INSERT INTO event_stock (event_id, stock_code, relevance) VALUES (?, ?, ?)
+        ON CONFLICT(event_id, stock_code) DO UPDATE SET relevance=excluded.relevance
+    """, (event_id, stock_code, int(relevance)))
+    conn.commit()
+
+
+def link_event_industry(conn, event_id, industry_id, relevance=50):
+    conn.execute("""
+        INSERT INTO event_industry (event_id, industry_id, relevance) VALUES (?, ?, ?)
+        ON CONFLICT(event_id, industry_id) DO UPDATE SET relevance=excluded.relevance
+    """, (event_id, industry_id, int(relevance)))
+    conn.commit()
+
+
+def event_stocks(conn, event_id):
+    """返回事件关联的股票列表（relevance 倒序）。"""
+    return conn.execute("""
+        SELECT * FROM event_stock WHERE event_id=? ORDER BY relevance DESC
+    """, (event_id,)).fetchall()
+
+
+def event_industries(conn, event_id):
+    return conn.execute(
+        "SELECT * FROM event_industry WHERE event_id=? ORDER BY relevance DESC", (event_id,)).fetchall()
+
+
+# ---------- 实体间关系 ----------
+
+def add_relation(conn, from_type, from_id, to_type, to_id, rel_type, strength=50):
+    """记录实体间关系（UPSERT）。"""
+    conn.execute("""
+        INSERT INTO relations (from_type, from_id, to_type, to_id, rel_type, strength)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(from_type, from_id, to_type, to_id, rel_type) DO UPDATE SET strength=excluded.strength
+    """, (from_type, from_id, to_type, to_id, rel_type, int(strength)))
+    conn.commit()
+
+
+def related_stocks(conn, stock_code, rel_type=None):
+    """返回与某股票有关系的股票代码列表（strength 倒序）。"""
+    sql = "SELECT to_id FROM relations WHERE from_type='stock' AND from_id=? AND to_type='stock'"
+    params = [stock_code]
+    if rel_type:
+        sql += " AND rel_type=?"
+        params.append(rel_type)
+    sql += " ORDER BY strength DESC"
+    return [r["to_id"] for r in conn.execute(sql, params).fetchall()]

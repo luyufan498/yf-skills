@@ -92,6 +92,36 @@ def test_industry_relate(tmp_path, monkeypatch):
     assert r.exit_code == 0
 
 
+def test_save_multi_industry(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, [
+        "save", "--new-event", "--title", "液冷与AI算力共振",
+        "--entity-type", "industry", "--summary", "双行业事件",
+        "--industry", "精密温控节能设备/数据中心液冷,计算机设备/AI算力",
+    ])
+    assert r.exit_code == 0, r.stdout
+    # 两个行业都能查到
+    q1 = runner.invoke(app, ["query-industry", "精密温控节能设备/数据中心液冷"])
+    q2 = runner.invoke(app, ["query-industry", "计算机设备/AI算力"])
+    assert "液冷与AI算力共振" in q1.stdout
+    assert "液冷与AI算力共振" in q2.stdout
+
+
+def test_query_industry_not_found_suggests(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["industry-aliases", "add", "光模块", "--alias", "光模块行业"])
+    r = runner.invoke(app, ["query-industry", "光模块行业"])
+    assert r.exit_code == 0
+    # 未命中真实行业时给出候选提示
+    r2 = runner.invoke(app, ["query-industry", "不存在的行业"])
+    assert r2.exit_code == 0
+    assert "未找到" in r2.stdout
+
+
 def test_event_missing_exits_1(tmp_path, monkeypatch):
     db = tmp_path / "news.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))

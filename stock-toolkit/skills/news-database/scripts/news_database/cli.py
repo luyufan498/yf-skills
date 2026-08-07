@@ -82,7 +82,7 @@ def save(
     event_id: int = typer.Option(None, "--event", help="归属已有事件"),
     new_event: bool = typer.Option(False, "--new-event", help="新建事件"),
     stock: str = typer.Option(None, "--stock", help="逗号分隔的股票代码"),
-    industry: str = typer.Option(None, "--industry", help="行业名"),
+    industry: str = typer.Option(None, "--industry", help="逗号分隔的行业名"),
     relevance: int = typer.Option(50, "--relevance"),
 ):
     """结构化写入一条 agent 整理后的消息。要么 --event <id> 归属，要么 --new-event 新建。"""
@@ -105,7 +105,8 @@ def save(
         for code in [s.strip() for s in stock.split(",") if s.strip()]:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
     if industry:
-        storage.link_event_industry(conn, eid, industry, relevance=relevance)
+        for ind in [x.strip() for x in industry.split(",") if x.strip()]:
+            storage.link_event_industry(conn, eid, ind, relevance=relevance)
     conn.close()
     typer.echo(f"✓ 已保存消息 #{mid} → 事件 #{eid}（{'新建' if new_event else '归属已有'}）")
 
@@ -170,9 +171,22 @@ def query_stock(code: str = typer.Argument(...), days: int = typer.Option(None, 
 
 @app.command("query-industry")
 def query_industry(name: str = typer.Argument(...), days: int = typer.Option(None, "--days")):
-    """该行业相关事件。"""
+    """该行业相关事件（支持别名 + 父带子；未命中时给出候选提示）。"""
     conn = _open()
-    evs = query.query_industry(conn, name, days=days)
+    ids = query.resolve_industry_ids(conn, name)
+    if ids is None:
+        cands = query.suggest_industries(conn, name)
+        if cands:
+            typer.echo(f"未找到行业 '{name}'，你可能想查：")
+            for c in cands:
+                aliases = storage.list_industry_aliases(conn, c["id"])
+                alias_str = f" (别名: {', '.join(aliases[:5])})" if aliases else ""
+                typer.echo(f"  #{c['id']} {c['name']}{alias_str}")
+        else:
+            typer.echo(f"未找到行业 '{name}'，请检查拼写或用 'newsdb industry-aliases list' 查看现有行业")
+        conn.close()
+        return
+    evs = query.query_industry_by_ids(conn, ids, days=days)
     _print_events(conn, evs)
     conn.close()
 

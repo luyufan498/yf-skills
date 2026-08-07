@@ -58,3 +58,36 @@ def test_related_stocks(db_path):
     related = storage.related_stocks(conn, "601127.SH")
     assert related == ["000977.SZ"]
     conn.close()
+
+
+def test_related_stocks_bidirectional(db_path):
+    conn = _conn(db_path)
+    storage.upsert_stock(conn, "601127.SH", "赛力斯")
+    storage.upsert_stock(conn, "000977.SZ", "浪潮信息")
+    # 只记录 赛力斯→浪潮信息，但浪潮信息也应能看到赛力斯
+    storage.add_relation(conn, "stock", "601127.SH", "stock", "000977.SZ",
+                         rel_type="peer_competitor", strength=70)
+    assert storage.related_stocks(conn, "000977.SZ") == ["601127.SH"]
+    assert storage.related_stocks(conn, "601127.SH") == ["000977.SZ"]
+    conn.close()
+
+
+def test_related_stocks_rel_type_filter(db_path):
+    conn = _conn(db_path)
+    storage.upsert_stock(conn, "601127.SH", "赛力斯")
+    storage.upsert_stock(conn, "000977.SZ", "浪潮信息")
+    storage.upsert_stock(conn, "300308.SZ", "中际旭创")
+    storage.add_relation(conn, "stock", "601127.SH", "stock", "000977.SZ",
+                         rel_type="peer_competitor", strength=70)
+    storage.add_relation(conn, "stock", "601127.SH", "stock", "300308.SZ",
+                         rel_type="related", strength=50)
+    assert storage.related_stocks(conn, "601127.SH", rel_type="peer_competitor") == ["000977.SZ"]
+    conn.close()
+
+
+def test_link_event_stock_missing_event_raises(db_path):
+    conn = _conn(db_path)
+    import pytest
+    with pytest.raises(ValueError):
+        storage.link_event_stock(conn, 99999, "601127.SH")
+    conn.close()

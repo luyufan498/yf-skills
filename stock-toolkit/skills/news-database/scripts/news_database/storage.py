@@ -119,6 +119,8 @@ def get_event_with_messages(conn, event_id):
 
 def link_event_stock(conn, event_id, stock_code, relevance=50):
     """关联事件↔股票（多对多，UPSERT）。"""
+    if not conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone():
+        raise ValueError(f"事件 {event_id} 不存在")
     conn.execute("""
         INSERT INTO event_stock (event_id, stock_code, relevance) VALUES (?, ?, ?)
         ON CONFLICT(event_id, stock_code) DO UPDATE SET relevance=excluded.relevance
@@ -127,6 +129,9 @@ def link_event_stock(conn, event_id, stock_code, relevance=50):
 
 
 def link_event_industry(conn, event_id, industry_id, relevance=50):
+    """关联事件↔行业（多对多，UPSERT）。"""
+    if not conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone():
+        raise ValueError(f"事件 {event_id} 不存在")
     conn.execute("""
         INSERT INTO event_industry (event_id, industry_id, relevance) VALUES (?, ?, ?)
         ON CONFLICT(event_id, industry_id) DO UPDATE SET relevance=excluded.relevance
@@ -142,6 +147,7 @@ def event_stocks(conn, event_id):
 
 
 def event_industries(conn, event_id):
+    """返回事件关联的行业列表（relevance 倒序）。"""
     return conn.execute(
         "SELECT * FROM event_industry WHERE event_id=? ORDER BY relevance DESC", (event_id,)).fetchall()
 
@@ -159,11 +165,21 @@ def add_relation(conn, from_type, from_id, to_type, to_id, rel_type, strength=50
 
 
 def related_stocks(conn, stock_code, rel_type=None):
-    """返回与某股票有关系的股票代码列表（strength 倒序）。"""
-    sql = "SELECT to_id FROM relations WHERE from_type='stock' AND from_id=? AND to_type='stock'"
-    params = [stock_code]
+    """返回与某股票有关系的股票代码列表（双向，strength 倒序）。
+
+    同时考虑 from→to 和 to→from 两个方向（关系是互惠的），按 strength 倒序。
+    """
+    # 关系互惠：from→to 与 to→from 都算相关；UNION ALL 后按 code 去重取最大 strength
+    rel_clause = " AND rel_type=?" if rel_type else ""
+    sql = f"""
+        SELECT to_id AS code, strength FROM relations
+        WHERE from_type='stock' AND from_id=? AND to_type='stock'{rel_clause}
+        UNION ALL
+        SELECT from_id AS code, strength FROM relations
+        WHERE to_type='stock' AND to_id=? AND from_type='stock'{rel_clause}
+    """
+    params = [stock_code, stock_code]
     if rel_type:
-        sql += " AND rel_type=?"
-        params.append(rel_type)
-    sql += " ORDER BY strength DESC"
-    return [r["to_id"] for r in conn.execute(sql, params).fetchall()]
+        params = [stock_code, rel_type, stock_code, rel_type]
+    sql = f"SELECT code, MAX(strength) AS strength FROM ({sql}) GROUP BY code ORDER BY strength DESC"
+    return [r["code"] for r in conn.execute(sql, params).fetchall()]

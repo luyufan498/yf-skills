@@ -183,3 +183,28 @@ def related_stocks(conn, stock_code, rel_type=None):
         params = [stock_code, rel_type, stock_code, rel_type]
     sql = f"SELECT code, MAX(strength) AS strength FROM ({sql}) GROUP BY code ORDER BY strength DESC"
     return [r["code"] for r in conn.execute(sql, params).fetchall()]
+
+
+# ---------- 刷新请求队列 ----------
+
+def create_refresh_request(conn, stock_code, signal, reason=None, priority=3):
+    """分析 agent 检测到异动时写入刷新请求。返回 id。"""
+    cur = conn.execute("""
+        INSERT INTO refresh_requests (stock_code, signal_text, reason, priority, created_at, status)
+        VALUES (?, ?, ?, ?, datetime('now','localtime'), 'pending')
+    """, (stock_code, signal, reason, int(priority)))
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_refresh_requests(conn, status="pending"):
+    """列出某状态的请求，按优先级倒序、创建时间正序。"""
+    return conn.execute("""
+        SELECT * FROM refresh_requests WHERE status=? ORDER BY priority DESC, created_at ASC
+    """, (status,)).fetchall()
+
+
+def ack_refresh_request(conn, request_id):
+    """新闻 agent 处理完后标记完成。"""
+    conn.execute("UPDATE refresh_requests SET status='done' WHERE id=?", (request_id,))
+    conn.commit()

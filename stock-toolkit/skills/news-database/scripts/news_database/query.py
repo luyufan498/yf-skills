@@ -92,7 +92,7 @@ def related_industries(conn, industry_id):
 
 def query_market(conn, days=None):
     """宏观/政策/大盘 全局层事件。"""
-    sql = "SELECT e.* FROM events e WHERE e.entity_type IN ('macro','policy','market')"
+    sql = "SELECT e.* FROM events e WHERE e.entity_type IN ('policy','market')"
     params = []
     sql, params = _with_days(sql, params, days)
     sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"

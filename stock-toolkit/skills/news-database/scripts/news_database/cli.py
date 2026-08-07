@@ -89,6 +89,10 @@ def save(
     if bool(event_id) == bool(new_event):
         typer.echo("错误：必须且只能指定 --event <id> 或 --new-event")
         raise typer.Exit(code=2)
+    VALID_ENTITY_TYPES = {"stock", "industry", "policy", "market"}
+    if entity_type not in VALID_ENTITY_TYPES:
+        typer.echo(f"错误：--entity-type 必须是 {'/'.join(sorted(VALID_ENTITY_TYPES))} 之一")
+        raise typer.Exit(code=2)
     conn = _open()
     if new_event:
         eid = storage.create_event(conn, title, entity_type=entity_type,
@@ -258,6 +262,9 @@ def industry_aliases(
     elif action == "list":
         if name:
             row = conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT industry_id AS id FROM industry_aliases WHERE alias_name=?", (name,)).fetchone()
             if not row:
                 typer.echo(f"未找到行业 '{name}'（用 'newsdb industry-aliases list' 查看全部）")
             else:

@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS industries (
 CREATE TABLE IF NOT EXISTS events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     title             TEXT NOT NULL,
-    entity_type       TEXT NOT NULL,              -- macro/policy/market/industry/stock
-    entity_id         INTEGER,                    -- industries.id（industry 类时）；stock 类经 event_stock 关联
+    entity_type       TEXT NOT NULL,              -- stock/industry/policy/market
+    entity_id         INTEGER,                    -- 预留：行业事件曾计划存 industries.id，现经 event_industry 表关联，此列保留不用
     time_sensitivity  TEXT NOT NULL DEFAULT 'medium',   -- high/medium/low
     importance        INTEGER NOT NULL DEFAULT 3,       -- 1-5
     status            TEXT NOT NULL DEFAULT 'open',     -- open/resolved/irrelevant

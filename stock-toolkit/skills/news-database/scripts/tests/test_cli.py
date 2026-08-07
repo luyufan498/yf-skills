@@ -76,6 +76,18 @@ def test_industry_aliases_add_list(tmp_path, monkeypatch):
     assert "光模块行业" in lst.stdout
 
 
+def test_industry_aliases_list_resolves_alias(tmp_path, monkeypatch):
+    """list <别名> 应解析到规范行业，而不是报未找到。"""
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["industry-aliases", "add", "光模块", "--alias", "光模块行业"])
+    lst = runner.invoke(app, ["industry-aliases", "list", "光模块行业"])
+    assert lst.exit_code == 0
+    assert "光模块" in lst.stdout
+    assert "未找到" not in lst.stdout
+
+
 def test_industry_hierarchy_set_parent(tmp_path, monkeypatch):
     db = tmp_path / "news.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))
@@ -177,6 +189,26 @@ def test_save_requires_exactly_one_event_flag(tmp_path, monkeypatch):
     # --event 指向不存在的事件
     r2 = runner.invoke(app, ["save", "--title", "X", "--event", "999"])
     assert r2.exit_code == 3
+
+
+def test_save_invalid_entity_type(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    # 非法 entity-type（含 'macro'）应报错 exit 2，不写库
+    for bad in ("badtype", "macro"):
+        r = runner.invoke(app, [
+            "save", "--new-event", "--title", "X",
+            "--entity-type", bad, "--summary", "s",
+        ])
+        assert r.exit_code == 2, f"entity-type={bad} 应拒绝"
+        assert "--entity-type 必须是" in r.stdout
+    # 合法 entity-type 正常
+    r = runner.invoke(app, [
+        "save", "--new-event", "--title", "X",
+        "--entity-type", "policy", "--summary", "s",
+    ])
+    assert r.exit_code == 0, r.stdout
 
 
 def test_update_event_missing_exits_1(tmp_path, monkeypatch):

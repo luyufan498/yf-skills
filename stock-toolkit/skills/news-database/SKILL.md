@@ -32,6 +32,10 @@ uv tool install --editable .
 | `newsdb industry-hierarchy set-parent <子行业> --parent <父行业>` | 设行业层级 |
 | `newsdb industry-relate <行业A> --to <行业B> --strength 60` | 登记行业关联 |
 | `newsdb industry-sync` | 回填现有库（别名/关联/层级） |
+| `newsdb scan-status set/get <scope_type> <scope_id>` | 记录/查看扫描时间 |
+| `newsdb scan-list` | 列出应扫描的 scope（采集 agent 用） |
+
+> 注：`scan-status` / `scan-list` 与 news-collector skill 共享，采集 agent 按时效性调度扫描时使用。
 
 ## 查询端命令（分析 agent）
 | 命令 | 作用 |

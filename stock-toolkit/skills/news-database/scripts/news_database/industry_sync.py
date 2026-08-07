@@ -53,6 +53,7 @@ def apply_sync_config(conn, config=None, dry_run=False):
         "relations_added": len(relations),
         "parents_set": len(hierarchy),
         "industry_links": sum(len(ids) for ids in event_links.values()),
+        "skipped_links": 0,
     }
     if dry_run:
         return summary
@@ -67,6 +68,9 @@ def apply_sync_config(conn, config=None, dry_run=False):
     for canonical, event_ids in event_links.items():
         storage.upsert_industry(conn, canonical)
         for eid in event_ids:
-            # link_event_industry 会校验事件存在（缺 event_id 抛 ValueError）
+            # 事件可能尚未入库（全新/空库）：缺失则跳过，不抛 ValueError 崩溃
+            if not conn.execute("SELECT id FROM events WHERE id=?", (eid,)).fetchone():
+                summary["skipped_links"] = summary.get("skipped_links", 0) + 1
+                continue
             storage.link_event_industry(conn, eid, canonical, relevance=60)
     return summary

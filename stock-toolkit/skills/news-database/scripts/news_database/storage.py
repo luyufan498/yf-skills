@@ -22,11 +22,31 @@ def get_stock(conn, code):
 
 
 def upsert_industry(conn, name, parent_id=None):
-    """新增或返回已有行业 id（原子 upsert，避免并发竞态）。"""
+    """新增或返回已有行业 id（先精确查 name，再查别名归一化，避免分裂）。"""
+    row = conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute(
+        "SELECT industry_id AS id FROM industry_aliases WHERE alias_name=?", (name,)).fetchone()
+    if row:
+        return row["id"]
     conn.execute("INSERT INTO industries (name, parent_id) VALUES (?, ?) "
                  "ON CONFLICT(name) DO NOTHING", (name, parent_id))
     conn.commit()
     return conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()["id"]
+
+
+def add_industry_alias(conn, industry_id, alias):
+    """登记行业别名（幂等）。"""
+    conn.execute("INSERT INTO industry_aliases (industry_id, alias_name) VALUES (?, ?) "
+                 "ON CONFLICT(industry_id, alias_name) DO NOTHING", (industry_id, alias))
+    conn.commit()
+
+
+def list_industry_aliases(conn, industry_id):
+    """列出某行业所有别名。"""
+    return [r["alias_name"] for r in conn.execute(
+        "SELECT alias_name FROM industry_aliases WHERE industry_id=?", (industry_id,)).fetchall()]
 
 
 def get_industry_by_name(conn, name):

@@ -65,6 +65,38 @@ def test_get_industry_by_name(db_path):
     conn.close()
 
 
+# ---------- 行业别名 ----------
+
+def test_add_and_list_industry_alias(db_path):
+    conn = _conn(db_path)
+    iid = storage.upsert_industry(conn, "光模块")
+    storage.add_industry_alias(conn, iid, "光模块行业")
+    storage.add_industry_alias(conn, iid, "AI光通信")
+    aliases = storage.list_industry_aliases(conn, iid)
+    assert "光模块行业" in aliases and "AI光通信" in aliases
+    conn.close()
+
+
+def test_upsert_industry_resolves_alias(db_path):
+    conn = _conn(db_path)
+    iid = storage.upsert_industry(conn, "光模块")
+    storage.add_industry_alias(conn, iid, "光模块行业")
+    # 用别名 upsert：应命中已有行业，不新建
+    iid2 = storage.upsert_industry(conn, "光模块行业")
+    assert iid2 == iid
+    assert conn.execute("SELECT COUNT(*) c FROM industries").fetchone()["c"] == 1
+    conn.close()
+
+
+def test_upsert_industry_unknown_creates(db_path):
+    conn = _conn(db_path)
+    iid = storage.upsert_industry(conn, "全新行业")
+    assert iid > 0
+    # 同名再次 upsert 返回同一 id
+    assert storage.upsert_industry(conn, "全新行业") == iid
+    conn.close()
+
+
 # ---------- 事件 + 消息 ----------
 
 def test_create_event_and_add_message(db_path):

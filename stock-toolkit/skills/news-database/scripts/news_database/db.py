@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS event_industry (
 );
 CREATE INDEX IF NOT EXISTS idx_event_industry_id ON event_industry(industry_id, event_id);
 
+CREATE TABLE IF NOT EXISTS industry_aliases (
+    industry_id INTEGER NOT NULL,       -- 指向 industries.id
+    alias_name  TEXT NOT NULL,
+    PRIMARY KEY (industry_id, alias_name)
+);
+CREATE INDEX IF NOT EXISTS idx_industry_aliases_name ON industry_aliases(alias_name);
+
 CREATE TABLE IF NOT EXISTS relations (
     from_type TEXT NOT NULL,
     from_id   TEXT NOT NULL,

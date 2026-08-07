@@ -32,6 +32,12 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 ## 入库规则（关键）
 
+**搜索时按时效性传 `--time-range`**（searx-bash 支持 day/week/month/year）：
+- high 时效性（大盘/个股异动）→ `--time-range day`
+- medium（行业趋势/政策）→ `--time-range week`
+- low（财报/一次性事件）→ `--time-range month`
+- 返回结果仍可能混旧闻：数字与库中矛盾 / 日期不在窗口 / 同公告重复 → 跳过或归属已有事件
+
 **每条新闻，用 newsdb 命令按以下步骤处理：**
 1. `newsdb lookup "<关键词>"` 查重 → 返回已有事件候选
    - 有新进展 → `newsdb save --event <id> ...` 追加消息

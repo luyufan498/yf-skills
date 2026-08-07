@@ -28,10 +28,10 @@ def test_lookup_finds_related_events(db_path):
 
 def test_lookup_chinese_substring(db_path):
     conn = connect(db_path); init_db(conn)
-    e1, _ = _seed(conn)
-    # trigram 子串匹配：短词走 LIKE 回退
+    _, e2 = _seed(conn)
+    # 2 字符查询 trigram 无法匹配，走 LIKE 回退；"预亏" 应命中 e2
     hits = search.lookup_events(conn, "预亏")
-    assert any(h["event_id"] == e1 for h in hits) or len(hits) >= 0
+    assert any(h["event_id"] == e2 for h in hits)
     conn.close()
 
 
@@ -50,4 +50,20 @@ def test_lookup_with_entity_filter(db_path):
     _seed(conn)
     hits = search.lookup_events(conn, "光模块", entity_type="industry")
     assert len(hits) == 1
+    conn.close()
+
+
+def test_lookup_dedups_event_with_multiple_messages(db_path):
+    conn = connect(db_path); init_db(conn)
+    e1, _ = _seed(conn)
+    hits = search.lookup_events(conn, "光模块")
+    # e1 有 2 条匹配消息，但应只返回 1 行事件
+    assert len([h for h in hits if h["event_id"] == e1]) == 1
+    conn.close()
+
+
+def test_lookup_empty_query_returns_empty(db_path):
+    conn = connect(db_path); init_db(conn)
+    assert search.lookup_events(conn, "") == []
+    assert search.lookup_events(conn, "   ") == []
     conn.close()

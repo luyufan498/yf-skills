@@ -6,11 +6,13 @@ FTS5 trigram tokenizer 把正文切成连续 3 字符词元。为了让「部分
 
 lookup 是事件级入口：新闻 agent 入库前调用，判断 归属(merge)/新建(create)/跳过(skip)。
 query 永远返回事件列表（每条代表一个事件，取该事件下最新/最重要的命中消息）。
+entity_type 过滤内联在 SQL 中、先于 LIMIT，避免 top-N 截断把目标事件挤出候选。
 """
 
 import sqlite3
 
 # 事件级候选查询：FTS 命中消息后按事件去重（每个事件取最重/最新一条代表消息）。
+# entity_type 过滤在 WHERE 中先于 LIMIT；窗口 ORDER BY 带 m.id DESC 保证确定序。
 _LOOKUP_SQL = """
 SELECT event_id, event_title, event_status, event_importance,
        matched_title, matched_summary, occurred_at
@@ -24,19 +26,20 @@ FROM (
            m.occurred_at AS occurred_at,
            ROW_NUMBER() OVER (
                PARTITION BY m.event_id
-               ORDER BY m.importance DESC, m.fetched_at DESC
+               ORDER BY m.importance DESC, m.fetched_at DESC, m.id DESC
            ) AS rn
     FROM messages_fts f
     JOIN messages m ON m.id = f.rowid
     JOIN events e   ON e.id = m.event_id
     WHERE messages_fts MATCH ?
+      AND (? IS NULL OR e.entity_type = ?)
 )
 WHERE rn = 1
-ORDER BY event_importance DESC, occurred_at DESC
+ORDER BY event_importance DESC, occurred_at DESC, event_id DESC
 LIMIT ?
 """
 
-# trigram 不可用/短查询时的 LIKE 回退（同样按事件去重）。
+# trigram 不可用/短查询时的 LIKE 回退（同样按事件去重、entity_type 先于 LIMIT）。
 _LOOKUP_LIKE_SQL = """
 SELECT event_id, event_title, event_status, event_importance,
        matched_title, matched_summary, occurred_at
@@ -50,14 +53,15 @@ FROM (
            m.occurred_at AS occurred_at,
            ROW_NUMBER() OVER (
                PARTITION BY m.event_id
-               ORDER BY m.importance DESC, m.fetched_at DESC
+               ORDER BY m.importance DESC, m.fetched_at DESC, m.id DESC
            ) AS rn
     FROM messages m
     JOIN events e ON e.id = m.event_id
     WHERE (m.title LIKE ? OR m.summary LIKE ? OR m.keywords LIKE ?)
+      AND (? IS NULL OR e.entity_type = ?)
 )
 WHERE rn = 1
-ORDER BY event_importance DESC, occurred_at DESC
+ORDER BY event_importance DESC, occurred_at DESC, event_id DESC
 LIMIT ?
 """
 
@@ -68,7 +72,7 @@ FROM messages_fts f
 JOIN messages m ON m.id = f.rowid
 JOIN events e   ON e.id = m.event_id
 WHERE messages_fts MATCH ?
-ORDER BY m.importance DESC, m.fetched_at DESC
+ORDER BY m.importance DESC, m.fetched_at DESC, m.id DESC
 LIMIT ?
 """
 
@@ -77,7 +81,7 @@ SELECT m.*, e.title AS event_title
 FROM messages m
 JOIN events e ON e.id = m.event_id
 WHERE (m.title LIKE ? OR m.summary LIKE ? OR m.keywords LIKE ?)
-ORDER BY m.importance DESC, m.fetched_at DESC
+ORDER BY m.importance DESC, m.fetched_at DESC, m.id DESC
 LIMIT ?
 """
 
@@ -114,25 +118,20 @@ def lookup_events(conn, query, entity_type=None, limit=10):
     """语义去重查询：返回与 query 相关的事件候选（事件级，已按重要度倒序）。
 
     供新闻 agent 入库前判断：新进展→归属 / 全新→新建 / 无新信息→跳过。
-    短查询（<3 字符）或 trigram 不可用时自动回退 LIKE。
+    entity_type 过滤内联在 SQL 中先于 LIMIT，避免候选被截断漏报。
+    短查询（<3 字符）或 FTS 无结果时自动回退 LIKE。
     """
     query = (query or "").strip()
     if not query:
         return []
     match = _match_expr(query)
-    rows = _run(conn, _LOOKUP_SQL, (match, int(limit))) if match else []
-    if not rows:
-        rows = _run(conn, _LOOKUP_LIKE_SQL,
-                    (f"%{query}%", f"%{query}%", f"%{query}%", int(limit)))
-    if entity_type:
-        ids = {r["event_id"] for r in rows}
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            valid = {r["id"] for r in conn.execute(
-                f"SELECT id FROM events WHERE entity_type=? AND id IN ({placeholders})",
-                (entity_type, *ids))}
-            rows = [r for r in rows if r["event_id"] in valid]
-    return rows[:limit]
+    if match is not None:
+        rows = _run(conn, _LOOKUP_SQL, (match, entity_type, entity_type, int(limit)))
+        if rows:
+            return rows
+    # 短查询或 FTS 无结果 → LIKE 回退
+    return _run(conn, _LOOKUP_LIKE_SQL,
+                (f"%{query}%", f"%{query}%", f"%{query}%", entity_type, entity_type, int(limit)))
 
 
 def search_messages(conn, query, limit=10):

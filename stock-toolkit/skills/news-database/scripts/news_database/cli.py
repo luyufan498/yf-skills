@@ -292,6 +292,18 @@ def industry_relate(
     typer.echo(f"✓ 已登记行业关联: '{name_a}' (#{ia}) ↔ '{to}' (#{ib}) (strength {strength})")
 
 
+@app.command("industry-sync")
+def industry_sync(dry_run: bool = typer.Option(False, "--dry-run")):
+    """回填现有库：登记别名 + 建行业关联 + 设层级（幂等，可用 --dry-run 预览不写库）。"""
+    from news_database import industry_sync as sync_mod
+    conn = _open()
+    summary = sync_mod.apply_sync_config(conn, dry_run=dry_run)
+    conn.close()
+    action = "回填完成" if not dry_run else "dry-run 预览（未写库）"
+    typer.echo(f"✓ {action}: 别名 {summary['aliases_added']} 个, 关联 {summary['relations_added']} 对, "
+               f"层级 {summary['parents_set']} 个")
+
+
 # ---------- 协作端 ----------
 
 @app.command("request-refresh")

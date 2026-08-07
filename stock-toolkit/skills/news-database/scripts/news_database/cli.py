@@ -39,6 +39,7 @@ def lookup(keywords: str = typer.Argument(...),
     conn = _open()
     hits = search_mod.lookup_events(conn, keywords, entity_type=entity_type, limit=limit)
     if not hits:
+        conn.close()
         typer.echo("（无匹配事件，可新建）")
         return
     typer.echo(f"找到 {len(hits)} 个相关事件：")
@@ -46,6 +47,8 @@ def lookup(keywords: str = typer.Argument(...),
         typer.echo(f"  [#{h['event_id']}] {h['event_title']} "
                    f"(重要度{h['event_importance']}, {h['event_status']})")
         typer.echo(f"      最近: {h['matched_title']}")
+        if h['matched_summary']:
+            typer.echo(f"      摘要: {h['matched_summary']}")
     conn.close()
 
 
@@ -114,8 +117,11 @@ def update_event(event_id: int = typer.Argument(...),
                  importance: int = typer.Option(None, "--importance")):
     """刷新事件最新摘要。"""
     conn = _open()
-    storage.update_event_summary(conn, event_id, latest_summary, importance=importance)
+    n = storage.update_event_summary(conn, event_id, latest_summary, importance=importance)
     conn.close()
+    if n == 0:
+        typer.echo(f"事件 #{event_id} 不存在")
+        raise typer.Exit(code=1)
     typer.echo(f"✓ 事件 #{event_id} 摘要已更新")
 
 
@@ -123,8 +129,11 @@ def update_event(event_id: int = typer.Argument(...),
 def resolve_event(event_id: int = typer.Argument(...)):
     """标记事件结束。"""
     conn = _open()
-    storage.resolve_event(conn, event_id)
+    n = storage.resolve_event(conn, event_id)
     conn.close()
+    if n == 0:
+        typer.echo(f"事件 #{event_id} 不存在")
+        raise typer.Exit(code=1)
     typer.echo(f"✓ 事件 #{event_id} 已标记 resolved")
 
 
@@ -194,6 +203,7 @@ def search(keywords: str = typer.Argument(...), limit: int = typer.Option(10, "-
     conn = _open()
     msgs = search_mod.search_messages(conn, keywords, limit=limit)
     if not msgs:
+        conn.close()
         typer.echo("（无结果）")
         return
     for m in msgs:
@@ -221,6 +231,7 @@ def list_refresh_requests(status: str = typer.Option("pending", "--status")):
     conn = _open()
     reqs = storage.list_refresh_requests(conn, status=status)
     if not reqs:
+        conn.close()
         typer.echo(f"（{status} 请求为空）")
         return
     for r in reqs:
@@ -233,8 +244,11 @@ def list_refresh_requests(status: str = typer.Option("pending", "--status")):
 def ack_refresh(request_id: int = typer.Argument(...)):
     """新闻 agent 处理完请求后标记完成。"""
     conn = _open()
-    storage.ack_refresh_request(conn, request_id)
+    n = storage.ack_refresh_request(conn, request_id)
     conn.close()
+    if n == 0:
+        typer.echo(f"刷新请求 #{request_id} 不存在")
+        raise typer.Exit(code=1)
     typer.echo(f"✓ 刷新请求 #{request_id} 已完成")
 
 
@@ -249,6 +263,7 @@ def _print_events(conn, evs):
         typer.echo(f"#{ev['id']} {ev['title']}  [{ev['status']}] 重要度{ev['importance']} "
                    f"消息{ev['msg_count']}条 ({ev['updated_at']})")
         for m in msgs[:3]:
-            typer.echo(f"    · {m['title']}")
+            url = m['url'] or ''
+            typer.echo(f"    · [msg#{m['id']}] {m['title']} {url}")
         if len(msgs) > 3:
             typer.echo(f"    · … 共{len(msgs)}条")

@@ -64,3 +64,39 @@ def test_refresh_request_roundtrip(tmp_path, monkeypatch):
     assert ack.exit_code == 0
     lst2 = runner.invoke(app, ["refresh-requests", "--status", "pending"])
     assert "赛力斯" not in lst2.stdout
+
+
+def test_event_missing_exits_1(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["event", "999"])
+    assert r.exit_code == 1
+
+
+def test_save_requires_exactly_one_event_flag(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    # 既没 --event 也没 --new-event
+    r = runner.invoke(app, ["save", "--title", "X"])
+    assert r.exit_code == 2
+    # --event 指向不存在的事件
+    r2 = runner.invoke(app, ["save", "--title", "X", "--event", "999"])
+    assert r2.exit_code == 3
+
+
+def test_update_event_missing_exits_1(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["update-event", "999", "--latest-summary", "boo"])
+    assert r.exit_code == 1
+
+
+def test_ack_refresh_missing_exits_1(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["ack-refresh", "999"])
+    assert r.exit_code == 1

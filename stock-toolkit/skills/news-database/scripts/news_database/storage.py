@@ -81,27 +81,29 @@ def add_message(conn, event_id, title, summary=None, url=None, source=None,
 
 
 def update_event_summary(conn, event_id, latest_summary, importance=None):
-    """刷新事件最新摘要（不覆盖历史消息）。"""
+    """刷新事件最新摘要（不覆盖历史消息）。返回受影响行数。"""
     if importance is not None:
-        conn.execute("""
+        cur = conn.execute("""
             UPDATE events SET latest_summary = ?, importance = ?, updated_at = datetime('now','localtime')
             WHERE id = ?
         """, (latest_summary, int(importance), event_id))
     else:
-        conn.execute("""
+        cur = conn.execute("""
             UPDATE events SET latest_summary = ?, updated_at = datetime('now','localtime')
             WHERE id = ?
         """, (latest_summary, event_id))
     conn.commit()
+    return cur.rowcount
 
 
 def resolve_event(conn, event_id):
-    """标记事件结束。"""
-    conn.execute("""
+    """标记事件结束。返回受影响行数。"""
+    cur = conn.execute("""
         UPDATE events SET status='resolved', resolved_at=datetime('now','localtime')
         WHERE id = ?
     """, (event_id,))
     conn.commit()
+    return cur.rowcount
 
 
 def get_event_with_messages(conn, event_id):
@@ -205,6 +207,7 @@ def list_refresh_requests(conn, status="pending"):
 
 
 def ack_refresh_request(conn, request_id):
-    """新闻 agent 处理完后标记完成。"""
-    conn.execute("UPDATE refresh_requests SET status='done' WHERE id=?", (request_id,))
+    """新闻 agent 处理完后标记完成。返回受影响行数。"""
+    cur = conn.execute("UPDATE refresh_requests SET status='done' WHERE id=?", (request_id,))
     conn.commit()
+    return cur.rowcount

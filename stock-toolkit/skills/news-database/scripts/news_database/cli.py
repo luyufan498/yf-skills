@@ -105,8 +105,7 @@ def save(
         for code in [s.strip() for s in stock.split(",") if s.strip()]:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
     if industry:
-        iid = storage.upsert_industry(conn, industry)
-        storage.link_event_industry(conn, eid, iid, relevance=relevance)
+        storage.link_event_industry(conn, eid, industry, relevance=relevance)
     conn.close()
     typer.echo(f"✓ 已保存消息 #{mid} → 事件 #{eid}（{'新建' if new_event else '归属已有'}）")
 

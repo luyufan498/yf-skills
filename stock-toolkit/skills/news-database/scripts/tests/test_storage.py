@@ -176,3 +176,43 @@ def test_add_message_none_summary_preserves_latest(db_path):
     e = conn.execute("SELECT latest_summary FROM events WHERE id=?", (eid,)).fetchone()
     assert e["latest_summary"] == "摘要1"          # None 不覆盖旧摘要
     conn.close()
+
+
+# ---------- 行业层级 + 关联 ----------
+
+def test_link_event_industry_by_name(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "光模块涨价", entity_type="industry")
+    # 按名称关联，内部归一化；同一事件关联两个行业
+    storage.link_event_industry(conn, eid, "光模块")
+    storage.link_event_industry(conn, eid, "通信设备")
+    inds = storage.event_industries(conn, eid)
+    assert len(inds) == 2
+    conn.close()
+
+
+def test_link_event_industry_missing_event_raises(db_path):
+    conn = _conn(db_path)
+    import pytest
+    with pytest.raises(ValueError):
+        storage.link_event_industry(conn, 99999, "光模块")
+    conn.close()
+
+
+def test_set_industry_parent(db_path):
+    conn = _conn(db_path)
+    child = storage.upsert_industry(conn, "AI算力")
+    parent = storage.upsert_industry(conn, "计算机设备")
+    storage.set_industry_parent(conn, "AI算力", "计算机设备")
+    assert conn.execute("SELECT parent_id FROM industries WHERE id=?", (child,)).fetchone()["parent_id"] == parent
+    conn.close()
+
+
+def test_relate_industries(db_path):
+    conn = _conn(db_path)
+    storage.relate_industries(conn, "计算机设备/AI算力", "精密温控节能设备/数据中心液冷", strength=60)
+    rows = conn.execute("SELECT * FROM relations").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["rel_type"] == "related"
+    assert rows[0]["strength"] == 60
+    conn.close()

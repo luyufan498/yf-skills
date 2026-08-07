@@ -37,7 +37,9 @@ def upsert_industry(conn, name, parent_id=None):
 
 
 def add_industry_alias(conn, industry_id, alias):
-    """登记行业别名（幂等）。"""
+    """登记行业别名（幂等）。校验行业存在。"""
+    if not conn.execute("SELECT id FROM industries WHERE id=?", (industry_id,)).fetchone():
+        raise ValueError(f"行业 {industry_id} 不存在")
     conn.execute("INSERT INTO industry_aliases (industry_id, alias_name) VALUES (?, ?) "
                  "ON CONFLICT(industry_id, alias_name) DO NOTHING", (industry_id, alias))
     conn.commit()
@@ -150,14 +152,15 @@ def link_event_stock(conn, event_id, stock_code, relevance=50):
     conn.commit()
 
 
-def link_event_industry(conn, event_id, industry_id, relevance=50):
-    """关联事件↔行业（多对多，UPSERT）。"""
+def link_event_industry(conn, event_id, industry_name, relevance=50):
+    """关联事件↔行业（多对多，归一化行业名后 UPSERT）。可多次调用关联多行业。"""
     if not conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone():
         raise ValueError(f"事件 {event_id} 不存在")
+    iid = upsert_industry(conn, industry_name)
     conn.execute("""
         INSERT INTO event_industry (event_id, industry_id, relevance) VALUES (?, ?, ?)
         ON CONFLICT(event_id, industry_id) DO UPDATE SET relevance=excluded.relevance
-    """, (event_id, industry_id, int(relevance)))
+    """, (event_id, iid, int(relevance)))
     conn.commit()
 
 
@@ -205,6 +208,25 @@ def related_stocks(conn, stock_code, rel_type=None):
         params = [stock_code, rel_type, stock_code, rel_type]
     sql = f"SELECT code, MAX(strength) AS strength FROM ({sql}) GROUP BY code ORDER BY strength DESC"
     return [r["code"] for r in conn.execute(sql, params).fetchall()]
+
+
+# ---------- 行业层级 + 关联 ----------
+
+def set_industry_parent(conn, child_name, parent_name):
+    """设置子-父行业层级。返回 (child_id, parent_id)。"""
+    child_id = upsert_industry(conn, child_name)
+    parent_id = upsert_industry(conn, parent_name)
+    conn.execute("UPDATE industries SET parent_id=? WHERE id=?", (parent_id, child_id))
+    conn.commit()
+    return child_id, parent_id
+
+
+def relate_industries(conn, name_a, name_b, strength=60):
+    """登记行业间关联（relations 表，rel_type='related'）。返回 (id_a, id_b)。"""
+    ia = upsert_industry(conn, name_a)
+    ib = upsert_industry(conn, name_b)
+    add_relation(conn, "industry", str(ia), "industry", str(ib), "related", strength)
+    return ia, ib
 
 
 # ---------- 刷新请求队列 ----------

@@ -27,10 +27,9 @@ def test_link_event_stock(db_path):
 def test_link_event_industry(db_path):
     conn = _conn(db_path)
     eid = storage.create_event(conn, "光模块涨价", entity_type="industry")
-    iid = storage.upsert_industry(conn, "光模块")
-    storage.link_event_industry(conn, eid, iid, relevance=80)
+    storage.link_event_industry(conn, eid, "光模块", relevance=80)
     inds = storage.event_industries(conn, eid)
-    assert len(inds) == 1 and inds[0]["industry_id"] == iid
+    assert len(inds) == 1 and inds[0]["industry_id"] == storage.upsert_industry(conn, "光模块")
     conn.close()
 
 

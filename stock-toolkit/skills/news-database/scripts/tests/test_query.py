@@ -18,8 +18,7 @@ def _seed(conn):
     storage.add_message(conn, e1, title="发布预亏公告", importance=5)
     # 行业事件
     e2 = storage.create_event(conn, "光模块景气上行", entity_type="industry", importance=4)
-    iid = storage.upsert_industry(conn, "光模块")
-    storage.link_event_industry(conn, e2, iid, relevance=80)
+    storage.link_event_industry(conn, e2, "光模块", relevance=80)
     storage.add_message(conn, e2, title="龙头涨价", importance=4)
     # 市场事件
     e3 = storage.create_event(conn, "上证放量上攻", entity_type="market", importance=3)

@@ -61,3 +61,61 @@ def test_get_industry_by_name(db_path):
     row = storage.get_industry_by_name(conn, "光模块")
     assert row is not None and row["name"] == "光模块"
     conn.close()
+
+
+# ---------- 事件 + 消息 ----------
+
+def test_create_event_and_add_message(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "光模块景气上行", entity_type="industry",
+                               time_sensitivity="medium", importance=4)
+    assert eid > 0
+    mid = storage.add_message(conn, eid, title="光模块涨价",
+                              summary="龙头涨价10%", keywords="光模块,涨价", importance=4)
+    assert mid > 0
+    e = conn.execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone()
+    assert e["msg_count"] == 1
+    assert e["latest_summary"] == "龙头涨价10%"
+    m = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
+    assert m["event_id"] == eid
+    assert m["title"] == "光模块涨价"
+    conn.close()
+
+
+def test_add_message_updates_event_and_indexes_fts(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "事件A", entity_type="stock")
+    # trigram 分词要求查询 ≥3 字符，故给两条消息共同的 4 字关键词做检索
+    storage.add_message(conn, eid, title="进展1", importance=3, keywords="事件进展")
+    storage.add_message(conn, eid, title="进展2", importance=5, keywords="事件进展")
+    e = conn.execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone()
+    assert e["msg_count"] == 2
+    assert e["importance"] == 5                      # 取最大
+    # FTS 已索引（两条消息都能被检索到）
+    hits = conn.execute("SELECT COUNT(*) c FROM messages_fts WHERE keywords MATCH '事件进展'").fetchone()
+    assert hits["c"] == 2
+    conn.close()
+
+
+def test_update_event_summary_and_resolve(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "事件B", entity_type="policy")
+    storage.update_event_summary(conn, eid, "最新：补贴落地")
+    assert conn.execute("SELECT latest_summary FROM events WHERE id=?", (eid,)).fetchone()["latest_summary"] == "最新：补贴落地"
+    storage.resolve_event(conn, eid)
+    e = conn.execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone()
+    assert e["status"] == "resolved"
+    assert e["resolved_at"] is not None
+    conn.close()
+
+
+def test_get_event_with_messages(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "事件C", entity_type="market")
+    storage.add_message(conn, eid, title="消息1", importance=2)
+    storage.add_message(conn, eid, title="消息2", importance=4)
+    ev, msgs = storage.get_event_with_messages(conn, eid)
+    assert ev["title"] == "事件C"
+    assert len(msgs) == 2
+    assert msgs[0]["importance"] == 4                 # 按重要度倒序
+    conn.close()

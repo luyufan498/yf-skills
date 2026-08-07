@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS event_stock (
     relevance  INTEGER NOT NULL DEFAULT 50,
     PRIMARY KEY (event_id, stock_code)
 );
+CREATE INDEX IF NOT EXISTS idx_event_stock_code ON event_stock(stock_code, event_id);
 
 CREATE TABLE IF NOT EXISTS event_industry (
     event_id    INTEGER NOT NULL,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS event_industry (
     relevance   INTEGER NOT NULL DEFAULT 50,
     PRIMARY KEY (event_id, industry_id)
 );
+CREATE INDEX IF NOT EXISTS idx_event_industry_id ON event_industry(industry_id, event_id);
 
 CREATE TABLE IF NOT EXISTS relations (
     from_type TEXT NOT NULL,
@@ -84,6 +86,7 @@ CREATE TABLE IF NOT EXISTS refresh_requests (
     status      TEXT NOT NULL DEFAULT 'pending'    -- pending/processing/done
 );
 
+-- 注意：messages_fts 是独立表，写入 messages 时必须同步插入（rowid = messages.id），否则搜索静默漂移
 -- FTS5 全文索引（trigram 支持中文子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     title, summary, keywords, event_id UNINDEXED,

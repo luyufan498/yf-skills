@@ -44,6 +44,17 @@ def test_query_stock_with_days(db_path):
     conn.close()
 
 
+def test_query_stock_with_days_excludes_old(db_path):
+    conn = _conn(db_path)
+    e1, _, _ = _seed(conn)
+    # 把事件回拨 30 天，days=7 时应被排除
+    conn.execute("UPDATE events SET updated_at = datetime('now','localtime','-30 days') WHERE id=?", (e1,))
+    conn.commit()
+    evs = query.query_stock(conn, "601127.SH", days=7)
+    assert len(evs) == 0
+    conn.close()
+
+
 def test_query_industry(db_path):
     conn = _conn(db_path)
     _, e2, _ = _seed(conn)

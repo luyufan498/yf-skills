@@ -9,7 +9,7 @@ def _with_days(sql, params, days):
 
 
 def query_stock(conn, stock_code, days=None):
-    """某股票关联的事件（relevance/importance 排序）。"""
+    """某股票关联的事件（按重要度/更新时间倒序）。"""
     sql = """
         SELECT DISTINCT e.* FROM events e
         JOIN event_stock es ON es.event_id = e.id
@@ -17,7 +17,7 @@ def query_stock(conn, stock_code, days=None):
     """
     params = [stock_code]
     sql, params = _with_days(sql, params, days)
-    sql += " ORDER BY e.importance DESC, e.updated_at DESC"
+    sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()
 
 
@@ -31,7 +31,7 @@ def query_industry(conn, industry_name, days=None):
     """
     params = [industry_name]
     sql, params = _with_days(sql, params, days)
-    sql += " ORDER BY e.importance DESC, e.updated_at DESC"
+    sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()
 
 
@@ -40,7 +40,7 @@ def query_market(conn, days=None):
     sql = "SELECT e.* FROM events e WHERE e.entity_type IN ('macro','policy','market')"
     params = []
     sql, params = _with_days(sql, params, days)
-    sql += " ORDER BY e.importance DESC, e.updated_at DESC"
+    sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()
 
 
@@ -49,5 +49,5 @@ def query_important(conn, min_importance=4, days=None):
     sql = "SELECT e.* FROM events e WHERE e.importance >= ?"
     params = [int(min_importance)]
     sql, params = _with_days(sql, params, days)
-    sql += " ORDER BY e.importance DESC, e.updated_at DESC"
+    sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()

@@ -38,6 +38,53 @@
 
 ---
 
+## 🔍 查库优先（先用 newsdb，再搜索补漏）
+
+**核心改变**：不再一上来就多轮搜索。先查 newsdb 新闻库（stock-toolkit:news-database skill），库中有覆盖则直接使用，缺漏才搜索。
+
+### 查库命令
+
+```bash
+export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
+
+newsdb query-stock <代码> --days 14       # 该股相关事件（含消息时间线）
+newsdb query-industry <行业> --days 14    # 该行业事件
+newsdb query-market --days 14             # 宏观/政策/大盘事件
+newsdb important --days 14                # 高重要度消息
+newsdb search "<关键词>"                  # 需要时全文检索
+```
+
+### 判断是否需搜索补漏（24小时兜底）
+
+- **库中该股过去 24 小时内已有新增消息/事件**（query-stock 的事件 updated_at 在 24h 内）→ **不再搜索**，直接用库。
+- **库中该股过去 24 小时无任何新增**（所有事件 updated_at 早于 24h 前）→ **触发一次轻量搜索兜底**（≤3轮）。
+  > 兜底理由：分析通常在早上 8-9 点运行，此时采集 agent 刚启动/尚未喂当天数据，库中多为前几日历史事件。判断标准是"24小时内有无新增"，而非"有无今日事件"。
+- 库中有关键信息缺失（如重大异动无解释）→ 轻量搜索补漏（≤3轮）。
+
+### 搜索补漏规则
+
+- 用 searxng（优先）或 brave（备用），见下方"搜索工具"。
+- **每轮搜索按时效性传 `--time-range`**：high（个股异动/大盘）→ day；medium（行业/政策）→ week；low（财报）→ month。brave 用 `freshness=pd/pw/pm`。
+- 最多 3 轮（原来 9 轮），只补库中缺失的关键信息。
+
+### 异动推送（发现库中无解释的异动时）
+
+若发现价格/量能异常但库中无解释，推给新闻 agent 补搜：
+```bash
+newsdb request-refresh <代码> --signal "<异动描述>" --reason <类型> --priority 4
+```
+新闻 agent 下一轮扫描优先处理（读 refresh-requests → 搜索 → 入库 → ack-refresh）。
+
+### 广发数据注册（值得关注的入库）
+
+步骤4 抓到的龙虎榜/资金流（广发 API，不占搜索额度），**值得关注的注册进 newsdb**：
+```bash
+newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity-type stock --sensitivity high --importance 4 --summary "..." --stock <代码>
+```
+判断"值得关注"：异动、异常资金流（大额净买/净卖）、机构席位异常。
+
+---
+
 ## 🔄 自适应搜索链条逻辑
 
 ### 初始搜索方向（覆盖五大维度）
@@ -172,6 +219,8 @@
 
 ### 执行步骤
 
+**重要**：执行步骤已改为"查库优先"（见上方"查库优先"章节）。以下步骤是**搜索补漏**的详细方法，仅在库中缺漏时按需执行，不再是默认 9 轮。
+
 **步骤一：初始化搜索环境**
 - 选择搜索工具：优先使用 searxng-search-skill（本地部署，免费），遇到验证码或访问限制时切换到 mcp-web-search（MCP 插件）
 - 参考 searxng-search-skill 的文档完成环境配置和工具初始化
@@ -206,9 +255,9 @@
 
 ## ⏱️ 超时与耗时
 
-- **超时设置**: `runTimeoutSeconds=600` (10 分钟) - 自适应链条可能需要 6-9 轮搜索（含市场新闻），每轮需分析判断
-- **预计耗时**: 4-9 分钟（自适应链条长度、信息密度、市场新闻获取）
-- **时间不足会导致**: 搜索链条中断，信息不完整
+- **超时设置**: `runTimeoutSeconds=600` (10 分钟) - 查库优先模式下通常 1-3 分钟（查库 + 整理）；仅在需要补漏搜索时延长
+- **预计耗时**: 库覆盖时 1-2 分钟；缺漏搜索补漏时 3-6 分钟
+- **时间不足会导致**: 搜索补漏不完整，但查库结果已足够支撑分析
 
 ---
 
@@ -221,6 +270,9 @@
 - [ ] 重大事件有时间、背景、影响
 - [ ] 搜索链条有记录可追溯
 - [ ] 信息缺失有明确标注
+- [ ] 已先查 newsdb（query-stock/query-industry/query-market/important）
+- [ ] 库覆盖则不再搜索；库缺漏才补搜（≤3轮）
+- [ ] 发现异动但库无解释时，已 request-refresh 推给新闻 agent
 
 ---
 

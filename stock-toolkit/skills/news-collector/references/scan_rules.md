@@ -12,7 +12,7 @@
 
 ## 搜索时间范围（重要）
 
-用 searx-bash 搜索时**必须**按时效性传 `--time-range`，避免历史旧闻混入：
+**searxng（优先，免费）**：用 searx-bash 搜索时**必须**按时效性传 `--time-range`，避免历史旧闻混入：
 
 ```bash
 # high 时效性（大盘/个股异动）：只看今天
@@ -24,6 +24,16 @@ searx-bash "数据中心液冷 政策" --time-range week
 # low（财报/一次性事件）：看本月
 searx-bash "中科曙光 中报" --time-range month
 ```
+
+**brave-search（备用，searxng 遇验证码/限流/无结果时切换）**：已配 API key（月 1000 次），freshness 按时效性映射：
+```bash
+# high → pd（过去24小时）
+curl -s "https://api.search.brave.com/res/v1/news/search" \
+  -H "Accept: application/json" -H "X-Subscription-Token: ${BRAVE_SEARCH_API_KEY}" \
+  -G --data-urlencode "q=赛力斯" --data-urlencode "freshness=pd" --data-urlencode "count=20"
+# medium → pw（本周）/ low → pm（本月）
+```
+也可用 skill 方式：`Skill brave-search-skills:news-search -q "<查询>"`。注意控制用量（月 1000 次），searxng 可用时优先用它。
 
 **甄别原则**：即使加了 time-range，返回结果仍可能混入旧闻（搜索引擎索引延迟）。判断标准：
 - 结果内容里的数字/事实与库中现有事件**矛盾**（如销量、业绩数字对不上）→ 很可能旧闻，跳过

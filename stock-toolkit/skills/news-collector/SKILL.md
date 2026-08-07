@@ -32,11 +32,20 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 ## 入库规则（关键）
 
-**搜索时按时效性传 `--time-range`**（searx-bash 支持 day/week/month/year）：
-- high 时效性（大盘/个股异动）→ `--time-range day`
-- medium（行业趋势/政策）→ `--time-range week`
-- low（财报/一次性事件）→ `--time-range month`
-- 返回结果仍可能混旧闻：数字与库中矛盾 / 日期不在窗口 / 同公告重复 → 跳过或归属已有事件
+**搜索工具链（searxng 优先，brave 备用）：**
+
+1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`
+   - 按时效性传 `--time-range`：high（大盘/个股异动）→ `day`；medium（行业/政策）→ `week`；low（财报）→ `month`
+2. **brave-search（备用，遇验证码/限流/无结果时切换）**：已配 API key（`BRAVE_SEARCH_API_KEY`），月 1000 次调用，用 `brave-search-skills:news-search`
+   - 新闻搜索 curl 示例：
+     ```bash
+     curl -s "https://api.search.brave.com/res/v1/news/search" \
+       -H "Accept: application/json" -H "X-Subscription-Token: ${BRAVE_SEARCH_API_KEY}" \
+       -G --data-urlencode "q=赛力斯" --data-urlencode "freshness=pd" --data-urlencode "count=20"
+     ```
+   - `freshness` 按时效性映射：high → `pd`（过去24h）；medium → `pw`（本周）；low → `pm`（本月）
+   - 也可用 skill 方式调用：`Skill brave-search-skills:news-search -q "<查询>"`
+3. **甄别**：返回结果仍可能混旧闻——数字与库中矛盾 / 日期不在窗口 / 同公告重复 → 跳过或归属已有事件
 
 **每条新闻，用 newsdb 命令按以下步骤处理：**
 1. `newsdb lookup "<关键词>"` 查重 → 返回已有事件候选

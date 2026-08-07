@@ -27,6 +27,11 @@ uv tool install --editable .
 | `newsdb resolve-event <id>` | 标记事件结束 |
 | `newsdb track <code> --name ... [--industry] [--watchlist]` | 添加实体跟踪 |
 | `newsdb ack-refresh <id>` | 处理完异动请求后确认 |
+| `newsdb industry-aliases add <行业名> --alias <别名>` | 登记行业别名 |
+| `newsdb industry-aliases list [<行业名>]` | 查看行业别名 |
+| `newsdb industry-hierarchy set-parent <子行业> --parent <父行业>` | 设行业层级 |
+| `newsdb industry-relate <行业A> --to <行业B> --strength 60` | 登记行业关联 |
+| `newsdb industry-sync` | 回填现有库（别名/关联/层级） |
 
 ## 查询端命令（分析 agent）
 | 命令 | 作用 |
@@ -57,3 +62,5 @@ uv tool install --editable .
 - 重要性 `importance` 范围 1-5；相关度 `relevance`/`strength`/`priority` 建议 0-100，超出不校验，由 agent 自律。
 - FTS trigram 需 ≥3 字符，2 字符中文查询（如"涨价"）自动回退 LIKE。
 - 输出中 `[msg#N]` 是消息 id，可配合 `newsdb event <事件id>` 追溯完整时间线。
+- 行业支持别名归一化：`upsert_industry` 先查别名再新建，入库用任意别名不分裂行业。`save --industry` 支持逗号分隔多行业。
+- `query-industry` 支持别名匹配 + 父带子展开（查父行业含子行业事件）；未命中时给出候选提示。

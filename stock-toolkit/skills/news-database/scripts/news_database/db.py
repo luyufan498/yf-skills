@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS refresh_requests (
     status      TEXT NOT NULL DEFAULT 'pending'    -- pending/processing/done
 );
 
+CREATE TABLE IF NOT EXISTS scan_log (
+    scope_type  TEXT NOT NULL,        -- stock/industry/policy/market
+    scope_id    TEXT NOT NULL,        -- 股票代码/行业id/global
+    last_scan   TEXT NOT NULL,        -- datetime('now','localtime')
+    PRIMARY KEY (scope_type, scope_id)
+);
+
 -- 注意：messages_fts 是独立表，写入 messages 时必须同步插入（rowid = messages.id），否则搜索静默漂移
 -- FTS5 全文索引（trigram 支持中文子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(

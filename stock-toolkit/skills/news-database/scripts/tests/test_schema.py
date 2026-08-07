@@ -65,3 +65,11 @@ def test_industry_aliases_table_and_index(db_path):
     idx = {r[1] for r in conn.execute("PRAGMA index_list(industry_aliases)")}
     assert "idx_industry_aliases_name" in idx
     conn.close()
+
+
+def test_scan_log_table(db_path):
+    conn = connect(db_path)
+    init_db(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_log)")}
+    assert {"scope_type", "scope_id", "last_scan"} <= cols
+    conn.close()

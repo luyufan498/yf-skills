@@ -62,7 +62,35 @@ curl -s "https://api.search.brave.com/res/v1/news/search" \
 **收盘（15:30）**：
 - 当日重要消息汇总、更新事件 latest_summary、标记结束事件 resolved
 
+## 扫描清单来源（重要）
+
+**每次采集前，用 `newsdb scan-list` 拉取所有应扫描的 scope**，从库动态生成：
+
+| scope_type | 来源 | 说明 |
+|-----------|------|------|
+| stock | `stocks` 表 | watchlist 优先，新 track 的自动出现 |
+| industry | `industries` 表 | 新 upsert 的行业自动出现 |
+| market | 固定 `market/global` | 大盘/成交/资金流 |
+| policy | 固定 `policy/global` | 宏观/政策 |
+
+**新加股票/行业 → 自动进扫描清单**（scan-list 从库拉），scan_log 无记录 → "未扫描" → 立即扫。无需手动登记。
+
+## 到期判断
+
+对 scan-list 返回的每个 scope，用 `newsdb scan-status get` 查上次扫描，按时效性判断：
+
+- **high**（market/stock 异动）→ 距上次 > 8 小时到期
+- **medium**（industry/policy）→ 距上次 > 5 天到期
+- **low**（一次性事件）→ 仅在相关事件发生时扫（不强制定期）
+- **未扫描**（新加的 scope）→ 立即扫
+
+## 一次性/临时性事件触发
+
+行业新闻/政策/大趋势这类 medium/low 的临时性更新，**不靠定期轮询**，靠主动触发：
+1. **分析 agent 推送**：分析时发现行业/政策/大趋势重要变化 → `newsdb request-refresh`（reason 标"行业政策"）→ 采集 agent 优先处理。
+2. **每轮快检**：晨间轮额外用 searxng 搜行业+政策关键词（`--time-range day`），发现新动态就入库/更新，不等 5 天。
+
 ## scan-status 用法
 
 每扫完一个 scope，`newsdb scan-status set <scope_type> <scope_id>`。
-下次用 `newsdb scan-status get` + `scan_due` 判断是否到期。
+下次用 `newsdb scan-status get` + 上方到期判断决定是否再扫。

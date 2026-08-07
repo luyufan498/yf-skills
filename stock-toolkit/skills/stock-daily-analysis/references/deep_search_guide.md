@@ -67,12 +67,19 @@ newsdb search "<关键词>"                  # 需要时全文检索
 - **每轮搜索按时效性传 `--time-range`**：high（个股异动/大盘）→ day；medium（行业/政策）→ week；low（财报）→ month。brave 用 `freshness=pd/pw/pm`。
 - 最多 3 轮（原来 9 轮），只补库中缺失的关键信息。
 
-### 异动推送（发现库中无解释的异动时）
+### 异动/重要变化推送（库中无解释时）
 
-若发现价格/量能异常但库中无解释，推给新闻 agent 补搜：
+**个股异动**：发现价格/量能异常但库中无解释，推给新闻 agent 补搜：
 ```bash
-newsdb request-refresh <代码> --signal "<异动描述>" --reason <类型> --priority 4
+newsdb request-refresh <代码> --signal "<异动描述>" --reason 放量急跌/突破 --priority 4
 ```
+
+**行业/政策/大趋势**：分析时发现行业重要变化、重大政策、大趋势转折（库中无对应事件或信息不足），也用 request-refresh 推给采集 agent 重点补搜：
+```bash
+newsdb request-refresh <行业名或代码> --signal "行业出现重大变化：<描述>" --reason 行业政策 --priority 4
+```
+> 行业/政策这类 medium 时效性不靠定期轮询，靠这种主动推送触发采集 agent 优先处理。
+
 新闻 agent 下一轮扫描优先处理（读 refresh-requests → 搜索 → 入库 → ack-refresh）。
 
 ### 广发数据注册（值得关注的入库）

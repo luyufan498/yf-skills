@@ -28,7 +28,14 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 ## 扫描前
 
 1. `newsdb refresh-requests --status pending` 读异动请求——**优先处理这些**，用 signal 做搜索词。
-2. `newsdb scan-status get <scope_type> <scope_id>` 查上次扫描——到期才扫（见 scan_rules.md）。
+2. `newsdb scan-list` 列出**所有应扫描的 scope**（从库拉取：stocks 表 watchlist 优先 + industries 表 + market/global + policy/global）。**新加股票/行业自动出现在清单里。**
+3. 对每个 scope 判断是否到期（见 scan_rules.md）：
+   - `newsdb scan-status get <scope_type> <scope_id>` 查上次扫描
+   - high（market/stock 异动）→ 上次扫描距今 > 8 小时就扫
+   - medium（industry/policy）→ 上次扫描距今 > 5 天就扫
+   - low（一次性事件）→ 仅在相关事件发生时扫
+   - **从未扫描的 scope（scan-status 返回"未扫描"）→ 立即扫**（新加的股票/行业）
+   > 注：每次 scan-status get 查询 + 判断是否到期。实际到期判断由你按上述时间间隔估算（scan_due 逻辑的简化版）。
 
 ## 入库规则（关键）
 

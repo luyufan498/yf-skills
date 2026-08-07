@@ -76,3 +76,41 @@ def test_query_important(db_path):
     evs = query.query_important(conn, min_importance=4)
     assert {e["id"] for e in evs} == {e1, e2}      # e1(5), e2(4)，排除 e3(3)
     conn.close()
+
+
+def test_query_industry_by_alias(db_path):
+    conn = _conn(db_path)
+    _, e2, _ = _seed(conn)
+    storage.add_industry_alias(conn, storage.upsert_industry(conn, "光模块"), "光模块行业")
+    evs = query.query_industry(conn, "光模块行业")
+    assert len(evs) == 1 and evs[0]["id"] == e2
+    conn.close()
+
+
+def test_query_industry_parent_includes_child(db_path):
+    conn = _conn(db_path)
+    _, e2, _ = _seed(conn)
+    # 设 "AI算力" 为 "光模块" 的子行业，事件关联到 "AI算力"
+    storage.set_industry_parent(conn, "AI算力", "光模块")
+    e_new = storage.create_event(conn, "AI算力景气", entity_type="industry")
+    storage.link_event_industry(conn, e_new, "AI算力")
+    # 查父行业应同时返回 光模块事件 + 子行业 AI算力事件
+    evs = query.query_industry(conn, "光模块")
+    assert {ev["id"] for ev in evs} == {e2, e_new}
+    conn.close()
+
+
+def test_resolve_industry_ids_missing_returns_none(db_path):
+    conn = _conn(db_path)
+    _seed(conn)
+    assert query.resolve_industry_ids(conn, "不存在的行业") is None
+    conn.close()
+
+
+def test_suggest_industries(db_path):
+    conn = _conn(db_path)
+    _seed(conn)
+    cands = query.suggest_industries(conn, "模块")
+    assert len(cands) >= 1
+    assert any("光模块" in c["name"] for c in cands)
+    conn.close()

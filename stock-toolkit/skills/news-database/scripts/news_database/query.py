@@ -21,18 +21,57 @@ def query_stock(conn, stock_code, days=None):
     return conn.execute(sql, params).fetchall()
 
 
-def query_industry(conn, industry_name, days=None):
-    """某行业关联的事件（通过 industries.name）。"""
-    sql = """
+def resolve_industry_ids(conn, industry_name):
+    """把查询名解析为行业 id 列表（含父带子展开）。未命中返回 None。
+
+    解析链：精确 name → 别名 → 未命中返回 None。
+    命中后：返回该行业 id + 所有直接子行业 id（父带子）。
+    """
+    row = conn.execute("SELECT id FROM industries WHERE name=?", (industry_name,)).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT industry_id AS id FROM industry_aliases WHERE alias_name=?", (industry_name,)).fetchone()
+    if not row:
+        return None
+    parent_id = row["id"]
+    ids = [parent_id]
+    for r in conn.execute("SELECT id FROM industries WHERE parent_id=?", (parent_id,)):
+        ids.append(r["id"])
+    return ids
+
+
+def query_industry_by_ids(conn, industry_ids, days=None):
+    """按行业 id 列表查事件。"""
+    placeholders = ",".join("?" for _ in industry_ids)
+    sql = f"""
         SELECT DISTINCT e.* FROM events e
         JOIN event_industry ei ON ei.event_id = e.id
-        JOIN industries i      ON i.id = ei.industry_id
-        WHERE i.name = ?
+        WHERE ei.industry_id IN ({placeholders})
     """
-    params = [industry_name]
+    params = list(industry_ids)
     sql, params = _with_days(sql, params, days)
     sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()
+
+
+def query_industry(conn, industry_name, days=None):
+    """某行业关联的事件（支持别名 + 父带子展开）。未命中返回 []。"""
+    ids = resolve_industry_ids(conn, industry_name)
+    if not ids:
+        return []
+    return query_industry_by_ids(conn, ids, days=days)
+
+
+def suggest_industries(conn, query_text, limit=5):
+    """模糊匹配候选行业（名称/别名 LIKE），用于提示匹配。"""
+    like = f"%{query_text}%"
+    return conn.execute("""
+        SELECT DISTINCT i.id, i.name, i.parent_id FROM industries i
+        WHERE i.name LIKE ? OR EXISTS (
+            SELECT 1 FROM industry_aliases a WHERE a.industry_id=i.id AND a.alias_name LIKE ?
+        )
+        ORDER BY i.name LIMIT ?
+    """, (like, like, limit)).fetchall()
 
 
 def query_market(conn, days=None):

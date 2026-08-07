@@ -381,6 +381,24 @@ def scan_status(
     conn.close()
 
 
+@app.command("scan-list")
+def scan_list():
+    """列出采集 agent 应扫描的 scope（从库拉取，新加股票/行业自动出现）。"""
+    from news_database import scan as scan_mod
+    conn = _open()
+    scopes = scan_mod.list_scan_scopes(conn)
+    if not scopes:
+        typer.echo("（无扫描 scope，先用 newsdb track 添加股票/行业）")
+        conn.close()
+        return
+    typer.echo("=== 扫描清单 ===")
+    for s in scopes:
+        flag = "🔔" if s["is_watchlist"] else "  "
+        last = s["last_scan"] or "未扫描"
+        typer.echo(f"  {flag} {s['scope_type']}/{s['scope_id']} 上次扫描: {last}")
+    conn.close()
+
+
 # ---------- helpers ----------
 
 def _print_events(conn, evs):

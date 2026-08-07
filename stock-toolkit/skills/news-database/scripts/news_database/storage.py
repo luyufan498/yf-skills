@@ -2,17 +2,18 @@
 
 # ---------- 实体 ----------
 
-def upsert_stock(conn, code, name, industry=None, is_watchlist=0, priority=0):
+def upsert_stock(conn, code, name, industry=None, market_cap=None, is_watchlist=0, priority=0):
     """新增或更新股票。返回 code。"""
     conn.execute("""
-        INSERT INTO stocks (code, name, industry, is_watchlist, priority, added_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+        INSERT INTO stocks (code, name, industry, market_cap, is_watchlist, priority, added_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))
         ON CONFLICT(code) DO UPDATE SET
             name=excluded.name,
             industry=COALESCE(excluded.industry, stocks.industry),
+            market_cap=COALESCE(excluded.market_cap, stocks.market_cap),
             is_watchlist=excluded.is_watchlist,
             priority=excluded.priority
-    """, (code, name, industry, int(is_watchlist), int(priority)))
+    """, (code, name, industry, market_cap, int(is_watchlist), int(priority)))
     conn.commit()
     return code
 

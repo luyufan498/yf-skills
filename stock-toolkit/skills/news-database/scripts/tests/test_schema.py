@@ -73,3 +73,11 @@ def test_scan_log_table(db_path):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_log)")}
     assert {"scope_type", "scope_id", "last_scan"} <= cols
     conn.close()
+
+
+def test_stocks_market_cap_column(db_path):
+    conn = connect(db_path)
+    init_db(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(stocks)")}
+    assert "market_cap" in cols
+    conn.close()

@@ -42,6 +42,19 @@ def test_upsert_stock_preserves_industry_on_none(db_path):
     conn.close()
 
 
+def test_upsert_stock_with_market_cap(db_path):
+    conn = _conn(db_path)
+    storage.upsert_stock(conn, code="601127.SH", name="赛力斯", industry="新能源汽车",
+                         is_watchlist=1, priority=5, market_cap=994.85)
+    row = conn.execute("SELECT market_cap FROM stocks WHERE code='601127.SH'").fetchone()
+    assert row["market_cap"] == 994.85
+    # 不带 market_cap 更新时应保留原值
+    storage.upsert_stock(conn, code="601127.SH", name="赛力斯")
+    row = conn.execute("SELECT market_cap FROM stocks WHERE code='601127.SH'").fetchone()
+    assert row["market_cap"] == 994.85
+    conn.close()
+
+
 def test_upsert_industry_returns_id(db_path):
     conn = _conn(db_path)
     i1 = storage.upsert_industry(conn, "光模块")

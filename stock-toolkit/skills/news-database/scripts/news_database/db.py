@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS stocks (
     code         TEXT PRIMARY KEY,                -- 600519.SH
     name         TEXT NOT NULL,
     industry     TEXT,                            -- 所属行业名（冗余，便捷查询）
+    market_cap   REAL,                            -- 总市值（亿元）
     is_watchlist INTEGER NOT NULL DEFAULT 0,
     priority     INTEGER NOT NULL DEFAULT 0,
     added_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -121,4 +122,9 @@ def connect(db_path):
 def init_db(conn):
     """执行 schema。幂等，可重复调用。"""
     conn.executescript(SCHEMA_SQL)
+    # 兼容旧库：新增列（已存在则跳过）
+    try:
+        conn.execute("ALTER TABLE stocks ADD COLUMN market_cap REAL")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
     conn.commit()

@@ -141,6 +141,7 @@ def resolve_event(event_id: int = typer.Argument(...)):
 def track(code: str = typer.Argument(...),
           name: str = typer.Option(..., "--name"),
           industry: str = typer.Option(None, "--industry"),
+          market_cap: float = typer.Option(None, "--market-cap", help="总市值（亿元）"),
           watchlist: bool = typer.Option(False, "--watchlist"),
           priority: int = typer.Option(0, "--priority")):
     """添加/更新实体跟踪（watchlist 或探索发现的标的）。
@@ -150,12 +151,12 @@ def track(code: str = typer.Argument(...),
     watchlist 状态，跟踪脚本应在每次 track 时显式带上 --watchlist。
     """
     conn = _open()
-    storage.upsert_stock(conn, code, name, industry=industry,
+    storage.upsert_stock(conn, code, name, industry=industry, market_cap=market_cap,
                          is_watchlist=1 if watchlist else 0, priority=priority)
     if industry:
         storage.upsert_industry(conn, industry)
     conn.close()
-    typer.echo(f"✓ 已跟踪 {name} ({code})")
+    typer.echo(f"✓ 已跟踪 {name} ({code})" + (f" 市值{market_cap}亿" if market_cap else ""))
 
 
 # ---------- 查询端 ----------
@@ -164,6 +165,9 @@ def track(code: str = typer.Argument(...),
 def query_stock(code: str = typer.Argument(...), days: int = typer.Option(None, "--days")):
     """该股相关事件。"""
     conn = _open()
+    stock = storage.get_stock(conn, code)
+    if stock and stock["market_cap"]:
+        typer.echo(f"📊 {stock['name']} ({code}) 市值 {stock['market_cap']} 亿")
     evs = query.query_stock(conn, code, days=days)
     _print_events(conn, evs)
     conn.close()

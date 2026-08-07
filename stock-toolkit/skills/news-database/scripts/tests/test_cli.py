@@ -193,3 +193,14 @@ def test_ack_refresh_missing_exits_1(tmp_path, monkeypatch):
     runner.invoke(app, ["init"])
     r = runner.invoke(app, ["ack-refresh", "999"])
     assert r.exit_code == 1
+
+
+def test_track_with_market_cap(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["track", "601127.SH", "--name", "赛力斯", "--industry", "新能源汽车", "--market-cap", "994.85"])
+    assert r.exit_code == 0
+    q = runner.invoke(app, ["query-stock", "601127.SH"])
+    assert q.exit_code == 0
+    assert "994.85" in q.stdout or "市值" in q.stdout

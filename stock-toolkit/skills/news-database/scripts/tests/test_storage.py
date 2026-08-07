@@ -1,6 +1,5 @@
 """实体跟踪：stock / industry 的 upsert。"""
 
-import sqlite3
 from news_database.db import connect, init_db
 from news_database import storage
 
@@ -24,6 +23,20 @@ def test_upsert_stock_creates_then_updates(db_path):
     rows = conn.execute("SELECT COUNT(*) c FROM stocks WHERE code='601127.SH'").fetchone()
     assert rows["c"] == 1
     assert conn.execute("SELECT priority FROM stocks WHERE code='601127.SH'").fetchone()["priority"] == 2
+    conn.close()
+
+
+def test_upsert_stock_preserves_industry_on_none(db_path):
+    conn = _conn(db_path)
+    storage.upsert_stock(conn, code="601127.SH", name="赛力斯", industry="新能源汽车")
+    # 二次 upsert 不带 industry：应保留原行业
+    storage.upsert_stock(conn, code="601127.SH", name="赛力斯")
+    row = conn.execute("SELECT * FROM stocks WHERE code='601127.SH'").fetchone()
+    assert row["industry"] == "新能源汽车"
+    # 显式指定 industry：应覆盖
+    storage.upsert_stock(conn, code="601127.SH", name="赛力斯", industry="整车")
+    row = conn.execute("SELECT * FROM stocks WHERE code='601127.SH'").fetchone()
+    assert row["industry"] == "整车"
     conn.close()
 
 

@@ -1,7 +1,5 @@
 """写入层：实体、事件、消息、关系、刷新请求。"""
 
-from news_database.db import connect  # noqa: F401  (conn type 一致性；非必需)
-
 # ---------- 实体 ----------
 
 def upsert_stock(conn, code, name, industry=None, is_watchlist=0, priority=0):
@@ -24,13 +22,11 @@ def get_stock(conn, code):
 
 
 def upsert_industry(conn, name, parent_id=None):
-    """新增或返回已有行业 id。"""
-    row = conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()
-    if row:
-        return row["id"]
-    cur = conn.execute("INSERT INTO industries (name, parent_id) VALUES (?, ?)", (name, parent_id))
+    """新增或返回已有行业 id（原子 upsert，避免并发竞态）。"""
+    conn.execute("INSERT INTO industries (name, parent_id) VALUES (?, ?) "
+                 "ON CONFLICT(name) DO NOTHING", (name, parent_id))
     conn.commit()
-    return cur.lastrowid
+    return conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()["id"]
 
 
 def get_industry_by_name(conn, name):

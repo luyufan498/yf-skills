@@ -100,8 +100,11 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
 
 **任务要求**（传递给 subagent 的 prompt 内容）：
 1. subagent 读取 `references/deep_search_guide.md` 了解详细执行方法
-2. **先查 newsdb**（stock-toolkit:news-database skill）：
-   - `newsdb query-stock <代码> --days 14`、`query-industry`、`query-market`、`important`
+2. **先查 newsdb**（stock-toolkit:news-database skill）。查询前设置环境变量（确保查对库，尤其手动跑分析时）：
+   ```bash
+   export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
+   ```
+   然后 `newsdb query-stock <代码> --days 14`、`query-industry`、`query-market`、`important`
 3. **判断是否需要搜索**：
    - 库中该股过去 24 小时已有新增 → 不再搜索，直接用库
    - 库中 24 小时无新增 → 轻量搜索兜底（≤3轮，用 searxng/brave + time-range）

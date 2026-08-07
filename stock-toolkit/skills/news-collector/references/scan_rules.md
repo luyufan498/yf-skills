@@ -50,18 +50,6 @@ curl -s "https://api.search.brave.com/res/v1/news/search" \
 | stock | 个股异动、公告 | high |
 | stock | 季度财报、一次性事件 | low |
 
-## 每轮扫描清单（按时效性）
-
-**晨间（08:00）**：
-- high：隔夜外盘、政策盘前、A股盘前要点、watchlist 个股 + 行业隔夜消息
-- medium：检查是否 5 天没扫的行业/政策主题（scan-status get 判断）
-
-**盘中（11:30）**：
-- high：市场热点、板块轮动、watchlist 个股盘中异动
-
-**收盘（15:30）**：
-- 当日重要消息汇总、更新事件 latest_summary、标记结束事件 resolved
-
 ## 扫描清单来源（重要）
 
 **每次采集前，用 `newsdb scan-list` 拉取所有应扫描的 scope**，从库动态生成：
@@ -83,6 +71,19 @@ curl -s "https://api.search.brave.com/res/v1/news/search" \
 - **medium**（industry/policy）→ 距上次 > 5 天到期
 - **low**（一次性事件）→ 仅在相关事件发生时扫（不强制定期）
 - **未扫描**（新加的 scope）→ 立即扫
+
+## 每轮扫描职责（按时效性重点）
+
+**晨间（08:00）**：
+- high：隔夜外盘、政策盘前、A股盘前要点、watchlist 个股 + 行业隔夜消息
+- medium：检查是否 5 天没扫的行业/政策主题（scan-status get 判断）
+- 额外：行业+政策关键词快检（searxng `--time-range day`），发现新动态就入库
+
+**盘中（11:30）**：
+- high：市场热点、板块轮动、watchlist 个股盘中异动
+
+**收盘（15:30）**：
+- 当日重要消息汇总、更新事件 latest_summary、标记结束事件 resolved
 
 ## 一次性/临时性事件触发
 

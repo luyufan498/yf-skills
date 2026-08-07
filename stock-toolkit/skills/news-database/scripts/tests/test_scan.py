@@ -32,3 +32,24 @@ def test_scan_due_by_sensitivity(db_path):
     scan.set_last_scan(conn, "market", "global")
     assert scan.scan_due(conn, "market", "global", interval_hours=8) is False
     conn.close()
+
+
+def test_scan_status_cli(tmp_path, monkeypatch):
+    """scan-status 命令读/写扫描时间。"""
+    from typer.testing import CliRunner
+    from news_database.cli import app
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner = CliRunner()
+    runner.invoke(app, ["init"])
+    # set
+    r = runner.invoke(app, ["scan-status", "set", "stock", "601127.SH"])
+    assert r.exit_code == 0
+    # get
+    g = runner.invoke(app, ["scan-status", "get", "stock", "601127.SH"])
+    assert g.exit_code == 0
+    assert "601127.SH" in g.stdout
+    # 未扫描的返回空
+    g2 = runner.invoke(app, ["scan-status", "get", "stock", "000000.SZ"])
+    assert g2.exit_code == 0
+    assert "未扫描" in g2.stdout

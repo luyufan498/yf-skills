@@ -356,6 +356,27 @@ def ack_refresh(request_id: int = typer.Argument(...)):
     typer.echo(f"✓ 刷新请求 #{request_id} 已完成")
 
 
+@app.command("scan-status")
+def scan_status(
+    action: str = typer.Argument(...),
+    scope_type: str = typer.Argument(...),
+    scope_id: str = typer.Argument(...),
+):
+    """扫描状态：set <scope_type> <scope_id> 记录本次 / get <scope_type> <scope_id> 查看上次。"""
+    from news_database import scan as scan_mod
+    conn = _open()
+    if action == "set":
+        scan_mod.set_last_scan(conn, scope_type, scope_id)
+        typer.echo(f"✓ 已记录扫描: {scope_type}/{scope_id}")
+    elif action == "get":
+        last = scan_mod.get_last_scan(conn, scope_type, scope_id)
+        typer.echo(f"{scope_type}/{scope_id} 上次扫描: {last or '未扫描'}")
+    else:
+        typer.echo(f"未知动作 '{action}'，支持 set / get")
+        raise typer.Exit(code=2)
+    conn.close()
+
+
 # ---------- helpers ----------
 
 def _print_events(conn, evs):

@@ -58,6 +58,10 @@ def _index_message(conn, mid, title, summary, keywords):
 def add_message(conn, event_id, title, summary=None, url=None, source=None,
                 occurred_at=None, importance=3, keywords=None):
     """向事件追加一条消息，更新事件的 msg_count/importance/latest_summary。返回消息 id。"""
+    # 先校验事件存在，避免孤儿消息
+    ev = conn.execute("SELECT importance FROM events WHERE id=?", (event_id,)).fetchone()
+    if not ev:
+        raise ValueError(f"事件 {event_id} 不存在")
     cur = conn.execute("""
         INSERT INTO messages (event_id, title, summary, url, source, occurred_at,
                               fetched_at, importance, keywords)
@@ -65,9 +69,7 @@ def add_message(conn, event_id, title, summary=None, url=None, source=None,
     """, (event_id, title, summary, url, source, occurred_at, int(importance), keywords))
     mid = cur.lastrowid
     _index_message(conn, mid, title, summary, keywords)
-    # 更新事件
-    e = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
-    new_importance = max(e["importance"], int(importance)) if e["importance"] else int(importance)
+    new_importance = max(ev["importance"] or 0, int(importance))
     conn.execute("""
         UPDATE events SET msg_count = msg_count + 1,
             importance = ?, latest_summary = COALESCE(?, latest_summary),

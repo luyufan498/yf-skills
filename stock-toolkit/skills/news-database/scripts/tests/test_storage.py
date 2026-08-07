@@ -1,5 +1,7 @@
 """实体跟踪：stock / industry 的 upsert。"""
 
+import pytest
+
 from news_database.db import connect, init_db
 from news_database import storage
 
@@ -118,4 +120,27 @@ def test_get_event_with_messages(db_path):
     assert ev["title"] == "事件C"
     assert len(msgs) == 2
     assert msgs[0]["importance"] == 4                 # 按重要度倒序
+    conn.close()
+
+
+def test_add_message_bad_event_raises_no_orphan(db_path):
+    conn = _conn(db_path)
+    with pytest.raises(ValueError):
+        storage.add_message(conn, 99999, title="孤儿消息", importance=3)
+    # 未留下孤儿消息
+    assert conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"] == 0
+    # 后续正常操作不应带上孤儿行
+    eid = storage.create_event(conn, "正常事件", entity_type="market")
+    storage.add_message(conn, eid, title="正常消息")
+    assert conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"] == 1
+    conn.close()
+
+
+def test_add_message_none_summary_preserves_latest(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "事件D", entity_type="market")
+    storage.add_message(conn, eid, title="消息1", summary="摘要1")
+    storage.add_message(conn, eid, title="消息2", summary=None)
+    e = conn.execute("SELECT latest_summary FROM events WHERE id=?", (eid,)).fetchone()
+    assert e["latest_summary"] == "摘要1"          # None 不覆盖旧摘要
     conn.close()

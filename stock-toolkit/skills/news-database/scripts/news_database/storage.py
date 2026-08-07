@@ -198,9 +198,9 @@ def create_refresh_request(conn, stock_code, signal, reason=None, priority=3):
 
 
 def list_refresh_requests(conn, status="pending"):
-    """列出某状态的请求，按优先级倒序、创建时间正序。"""
+    """列出某状态的请求，按优先级倒序、创建时间正序（id 兜底保证确定序）。"""
     return conn.execute("""
-        SELECT * FROM refresh_requests WHERE status=? ORDER BY priority DESC, created_at ASC
+        SELECT * FROM refresh_requests WHERE status=? ORDER BY priority DESC, created_at ASC, id ASC
     """, (status,)).fetchall()
 
 

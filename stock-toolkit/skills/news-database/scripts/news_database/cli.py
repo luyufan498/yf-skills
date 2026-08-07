@@ -181,7 +181,17 @@ def query_industry(name: str = typer.Argument(...), days: int = typer.Option(Non
             for c in cands:
                 aliases = storage.list_industry_aliases(conn, c["id"])
                 alias_str = f" (别名: {', '.join(aliases[:5])})" if aliases else ""
-                typer.echo(f"  #{c['id']} {c['name']}{alias_str}")
+                rels = query.related_industries(conn, c["id"])
+                rel_str = ""
+                if rels:
+                    rel_names = []
+                    for r in rels:
+                        rrow = conn.execute("SELECT name FROM industries WHERE id=?",
+                                            (int(r["other_id"]),)).fetchone()
+                        rel_names.append(f"{rrow['name']} (related, s{r['strength']})"
+                                         if rrow else f"#{r['other_id']}")
+                    rel_str = f"\n      相关: {', '.join(rel_names)}"
+                typer.echo(f"  #{c['id']} {c['name']}{alias_str}{rel_str}")
         else:
             typer.echo(f"未找到行业 '{name}'，请检查拼写或用 'newsdb industry-aliases list' 查看现有行业")
         conn.close()
@@ -243,12 +253,13 @@ def industry_aliases(
         typer.echo(f"✓ 已为行业 '{name}' (#{iid}) 登记别名 '{alias}'")
     elif action == "list":
         if name:
-            iid = storage.upsert_industry(conn, name)
-            aliases = storage.list_industry_aliases(conn, iid)
-            if aliases:
-                typer.echo(f"行业 '{name}' (#{iid}) 别名: {', '.join(aliases)}")
+            row = conn.execute("SELECT id FROM industries WHERE name=?", (name,)).fetchone()
+            if not row:
+                typer.echo(f"未找到行业 '{name}'（用 'newsdb industry-aliases list' 查看全部）")
             else:
-                typer.echo(f"行业 '{name}' (#{iid}) 无别名")
+                iid = row["id"]
+                aliases = storage.list_industry_aliases(conn, iid)
+                typer.echo(f"行业 '{name}' (#{iid}) 别名: {', '.join(aliases) if aliases else '无'}")
         else:
             for r in conn.execute("SELECT * FROM industries ORDER BY name"):
                 aliases = storage.list_industry_aliases(conn, r["id"])
@@ -301,7 +312,7 @@ def industry_sync(dry_run: bool = typer.Option(False, "--dry-run")):
     conn.close()
     action = "回填完成" if not dry_run else "dry-run 预览（未写库）"
     typer.echo(f"✓ {action}: 别名 {summary['aliases_added']} 个, 关联 {summary['relations_added']} 对, "
-               f"层级 {summary['parents_set']} 个")
+               f"层级 {summary['parents_set']} 个, 行业关联 {summary['industry_links']} 个")
 
 
 # ---------- 协作端 ----------

@@ -122,6 +122,43 @@ def test_query_industry_not_found_suggests(tmp_path, monkeypatch):
     assert "未找到" in r2.stdout
 
 
+def test_query_industry_suggestion_shows_relations(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["industry-relate", "计算机设备/AI算力",
+                        "--to", "精密温控节能设备/数据中心液冷", "--strength", "60"])
+    # "算力" 无精确行业/别名（relate 只建全名行业），命中候选提示
+    r = runner.invoke(app, ["query-industry", "算力"])
+    assert r.exit_code == 0
+    assert "相关" in r.stdout and "精密温控节能设备/数据中心液冷" in r.stdout
+    assert "s60" in r.stdout
+
+
+def test_query_industry_exists_but_no_events(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["industry-aliases", "add", "光模块", "--alias", "光模块行业"])
+    # 行业存在但无事件 → 应打印（无事件）而非走候选提示
+    r = runner.invoke(app, ["query-industry", "光模块"])
+    assert r.exit_code == 0
+    assert "（无事件）" in r.stdout
+    assert "未找到" not in r.stdout
+
+
+def test_industry_aliases_list_no_phantom(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    # list 不存在的行业：不应创建幻影行业，也不应报错
+    r = runner.invoke(app, ["industry-aliases", "list", "不存在的行业"])
+    assert r.exit_code == 0
+    assert "未找到行业" in r.stdout
+    lst = runner.invoke(app, ["industry-aliases", "list"])
+    assert "不存在的行业" not in lst.stdout
+
+
 def test_event_missing_exits_1(tmp_path, monkeypatch):
     db = tmp_path / "news.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))

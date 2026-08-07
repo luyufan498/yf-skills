@@ -74,6 +74,22 @@ def suggest_industries(conn, query_text, limit=5):
     """, (like, like, limit)).fetchall()
 
 
+def related_industries(conn, industry_id):
+    """返回某行业的所有关联行业（relations 表，rel_type='related'）。
+
+    关系互惠：from→to 与 to→from 都算相关，按 strength 倒序。
+    relations 的 from_id/to_id 存的是 str(id)，故按 str 匹配。
+    """
+    return conn.execute("""
+        SELECT to_id AS other_id, strength FROM relations
+        WHERE from_type='industry' AND from_id=?
+        UNION
+        SELECT from_id AS other_id, strength FROM relations
+        WHERE to_type='industry' AND to_id=?
+        ORDER BY strength DESC
+    """, (str(industry_id), str(industry_id))).fetchall()
+
+
 def query_market(conn, days=None):
     """宏观/政策/大盘 全局层事件。"""
     sql = "SELECT e.* FROM events e WHERE e.entity_type IN ('macro','policy','market')"

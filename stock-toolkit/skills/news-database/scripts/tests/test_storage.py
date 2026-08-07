@@ -216,3 +216,17 @@ def test_relate_industries(db_path):
     assert rows[0]["rel_type"] == "related"
     assert rows[0]["strength"] == 60
     conn.close()
+
+
+def test_set_industry_parent_rejects_self_and_cycle(db_path):
+    conn = _conn(db_path)
+    # 自环：子=父
+    with pytest.raises(ValueError):
+        storage.set_industry_parent(conn, "AI算力", "AI算力")
+    # 2-环：A→B 后再设 B→A
+    storage.set_industry_parent(conn, "AI算力", "计算机设备")
+    with pytest.raises(ValueError):
+        storage.set_industry_parent(conn, "计算机设备", "AI算力")
+    # 非法操作未留下脏数据
+    assert conn.execute("SELECT parent_id FROM industries WHERE name='计算机设备'").fetchone()["parent_id"] is None
+    conn.close()

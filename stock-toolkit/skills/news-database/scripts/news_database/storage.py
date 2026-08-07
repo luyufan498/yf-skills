@@ -214,8 +214,14 @@ def related_stocks(conn, stock_code, rel_type=None):
 
 def set_industry_parent(conn, child_name, parent_name):
     """设置子-父行业层级。返回 (child_id, parent_id)。"""
+    if child_name == parent_name:
+        raise ValueError("子行业与父行业不能相同")
     child_id = upsert_industry(conn, child_name)
     parent_id = upsert_industry(conn, parent_name)
+    # 防 2-环：父行业不能是子行业的子行业
+    p = conn.execute("SELECT parent_id FROM industries WHERE id=?", (parent_id,)).fetchone()
+    if p and p["parent_id"] == child_id:
+        raise ValueError("会形成循环层级")
     conn.execute("UPDATE industries SET parent_id=? WHERE id=?", (parent_id, child_id))
     conn.commit()
     return child_id, parent_id

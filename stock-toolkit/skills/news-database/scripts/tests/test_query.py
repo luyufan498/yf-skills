@@ -114,3 +114,17 @@ def test_suggest_industries(db_path):
     assert len(cands) >= 1
     assert any("光模块" in c["name"] for c in cands)
     conn.close()
+
+
+def test_related_industries_bidirectional(db_path):
+    conn = _conn(db_path)
+    a = storage.upsert_industry(conn, "计算机设备/AI算力")
+    b = storage.upsert_industry(conn, "精密温控节能设备/数据中心液冷")
+    storage.relate_industries(conn, "计算机设备/AI算力", "精密温控节能设备/数据中心液冷", strength=60)
+    # 双向都能看到（from_id 存的是 str）
+    ra = query.related_industries(conn, a)
+    rb = query.related_industries(conn, b)
+    assert {int(r["other_id"]) for r in ra} == {b}
+    assert {int(r["other_id"]) for r in rb} == {a}
+    assert ra[0]["strength"] == 60
+    conn.close()

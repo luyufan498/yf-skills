@@ -69,9 +69,27 @@ def test_apply_sync_config_dry_run_no_write(db_path):
     }
     summary = industry_sync.apply_sync_config(conn, config, dry_run=True)
     # 预览摘要反映配置规模
-    assert summary == {"aliases_added": 1, "relations_added": 1, "parents_set": 1}
+    assert summary == {"aliases_added": 1, "relations_added": 1, "parents_set": 1, "industry_links": 0}
     # 但不写任何数据
     assert conn.execute("SELECT COUNT(*) c FROM industries").fetchone()["c"] == 0
     assert conn.execute("SELECT COUNT(*) c FROM industry_aliases").fetchone()["c"] == 0
     assert conn.execute("SELECT COUNT(*) c FROM relations").fetchone()["c"] == 0
+    conn.close()
+
+
+def test_apply_sync_config_event_industry_links(db_path):
+    conn = _conn(db_path)
+    from news_database import storage
+    eid = storage.create_event(conn, "液冷行业进入业绩兑现期", entity_type="industry")
+    config = {
+        "aliases": {"精密温控节能设备/数据中心液冷": ["液冷"]},
+        "relations": [], "hierarchy": {},
+        "event_industry_links": {"精密温控节能设备/数据中心液冷": [eid]},
+    }
+    summary = industry_sync.apply_sync_config(conn, config)
+    assert summary["industry_links"] == 1
+    # 用别名查询应能找到事件
+    from news_database import query
+    evs = query.query_industry(conn, "液冷")
+    assert any(ev["id"] == eid for ev in evs)
     conn.close()

@@ -7,9 +7,17 @@ FTS5 trigram tokenizer 把正文切成连续 3 字符词元。为了让「部分
 lookup 是事件级入口：新闻 agent 入库前调用，判断 归属(merge)/新建(create)/跳过(skip)。
 query 永远返回事件列表（每条代表一个事件，取该事件下最新/最重要的命中消息）。
 entity_type 过滤内联在 SQL 中、先于 LIMIT，避免 top-N 截断把目标事件挤出候选。
+
+LIKE 回退按 token 化查询做：把查询按标点/空白切词，逐词匹配消息 title/summary/
+keywords 及事件 title。措辞不同但含同一主题词（如查"预亏 公告"命中"业绩预亏"）时
+也能召回，避免新建重复事件。
 """
 
+import re
 import sqlite3
+
+# LIKE 回退的查询切词：按中英文标点/空白切分，避免把整个长句当单个子串。
+_TOKEN_SPLIT = re.compile(r"[\s,，。;；:：、]+")
 
 # 事件级候选查询：FTS 命中消息后按事件去重（每个事件取最重/最新一条代表消息）。
 # entity_type 过滤在 WHERE 中先于 LIMIT；窗口 ORDER BY 带 m.id DESC 保证确定序。
@@ -39,7 +47,8 @@ ORDER BY event_importance DESC, occurred_at DESC, event_id DESC
 LIMIT ?
 """
 
-# trigram 不可用/短查询时的 LIKE 回退（同样按事件去重、entity_type 先于 LIMIT）。
+# LIKE 回退模板：{where} 由 token 化后的 OR 子句填充（见 _tokenized_like_sql）。
+# 同样按事件去重、entity_type 过滤先于 LIMIT；窗口 ORDER BY 带 m.id DESC 保证确定序。
 _LOOKUP_LIKE_SQL = """
 SELECT event_id, event_title, event_status, event_importance,
        matched_title, matched_summary, occurred_at
@@ -57,7 +66,7 @@ FROM (
            ) AS rn
     FROM messages m
     JOIN events e ON e.id = m.event_id
-    WHERE (m.title LIKE ? OR m.summary LIKE ? OR m.keywords LIKE ?)
+    WHERE ({where})
       AND (? IS NULL OR e.entity_type = ?)
 )
 WHERE rn = 1
@@ -114,12 +123,27 @@ def _run(conn, sql, params):
         return []
 
 
+def _tokens(query):
+    """把查询按标点/空白切词，返回 ≥2 字符的词元（用于 LIKE 回退）。"""
+    return [t for t in _TOKEN_SPLIT.split(query or "") if len(t) >= 2]
+
+
+def _tokenized_like_sql(tokens):
+    """每个 token 生成 title/summary/keywords/事件标题 LIKE，token 间 OR。"""
+    clause = " OR ".join(
+        "(m.title LIKE ? OR m.summary LIKE ? OR m.keywords LIKE ? OR e.title LIKE ?)"
+        for _ in tokens
+    )
+    return _LOOKUP_LIKE_SQL.format(where=clause)
+
+
 def lookup_events(conn, query, entity_type=None, limit=10):
     """语义去重查询：返回与 query 相关的事件候选（事件级，已按重要度倒序）。
 
     供新闻 agent 入库前判断：新进展→归属 / 全新→新建 / 无新信息→跳过。
     entity_type 过滤内联在 SQL 中先于 LIMIT，避免候选被截断漏报。
-    短查询（<3 字符）或 FTS 无结果时自动回退 LIKE。
+    FTS（trigram）无结果或短查询时，回退到按 token 拆分的 LIKE（含事件标题），
+    提高措辞不同但同主题的查询召回（如查"预亏公告"命中"业绩预亏"事件）。
     """
     query = (query or "").strip()
     if not query:
@@ -129,9 +153,13 @@ def lookup_events(conn, query, entity_type=None, limit=10):
         rows = _run(conn, _LOOKUP_SQL, (match, entity_type, entity_type, int(limit)))
         if rows:
             return rows
-    # 短查询或 FTS 无结果 → LIKE 回退
-    return _run(conn, _LOOKUP_LIKE_SQL,
-                (f"%{query}%", f"%{query}%", f"%{query}%", entity_type, entity_type, int(limit)))
+    # 短查询或 FTS 无结果 → token 化 LIKE 回退
+    tokens = _tokens(query)
+    if not tokens:
+        return []
+    params = [f"%{t}%" for t in tokens for _ in range(4)]
+    params += [entity_type, entity_type, int(limit)]
+    return _run(conn, _tokenized_like_sql(tokens), params)
 
 
 def search_messages(conn, query, limit=10):

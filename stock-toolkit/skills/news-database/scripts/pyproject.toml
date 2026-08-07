@@ -3,7 +3,7 @@ name = "news-database"
 version = "0.1.0"
 description = "News database CLI for stock analysis - 独立新闻库（agent 整理后的消息源）"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "typer>=0.7.0",
 ]

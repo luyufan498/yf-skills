@@ -67,3 +67,21 @@ def test_lookup_empty_query_returns_empty(db_path):
     assert search.lookup_events(conn, "") == []
     assert search.lookup_events(conn, "   ") == []
     conn.close()
+
+
+def test_lookup_reworded_query_finds_event(db_path):
+    conn = connect(db_path); init_db(conn)
+    _, e2 = _seed(conn)
+    # 措辞不同但同主题：存的是"业绩预亏"，查"预亏公告"应命中
+    hits = search.lookup_events(conn, "预亏公告")
+    assert any(h["event_id"] == e2 for h in hits)
+    conn.close()
+
+
+def test_lookup_tokenized_like_fallback(db_path):
+    conn = connect(db_path); init_db(conn)
+    _, e2 = _seed(conn)
+    # "预亏 公告" 含空格，无连续 trigram 命中，FTS 为空 → 必须走 token 化 LIKE 回退
+    hits = search.lookup_events(conn, "预亏 公告")
+    assert any(h["event_id"] == e2 for h in hits)
+    conn.close()

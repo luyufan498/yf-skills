@@ -146,4 +146,6 @@ def test_deepdive_requests_table(db_path):
     assert "target_type" in cols
     assert "target_id" in cols
     assert "status" in cols
+    idx = {r[1] for r in conn.execute("PRAGMA index_list(deepdive_requests)")}
+    assert "idx_deepdive_status" in idx
     conn.close()

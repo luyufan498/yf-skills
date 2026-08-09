@@ -274,3 +274,30 @@ def ack_refresh_request(conn, request_id):
     cur = conn.execute("UPDATE refresh_requests SET status='done' WHERE id=?", (request_id,))
     conn.commit()
     return cur.rowcount
+
+
+# ---------- 深挖请求队列 ----------
+
+def create_deepdive_request(conn, target_type, target_id, reason=None, priority=3):
+    """创建深挖请求。返回请求 id。"""
+    cur = conn.execute("""
+        INSERT INTO deepdive_requests (target_type, target_id, reason, priority, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    """, (target_type, target_id, reason, int(priority)))
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_deepdive_requests(conn, status="pending"):
+    """列出深挖请求，按优先级倒序 + 创建时间正序。"""
+    return conn.execute("""
+        SELECT * FROM deepdive_requests WHERE status=?
+        ORDER BY priority DESC, created_at ASC, id ASC
+    """, (status,)).fetchall()
+
+
+def ack_deepdive_request(conn, request_id):
+    """确认处理完。返回受影响行数（0=不存在）。"""
+    cur = conn.execute("UPDATE deepdive_requests SET status='done' WHERE id=?", (request_id,))
+    conn.commit()
+    return cur.rowcount

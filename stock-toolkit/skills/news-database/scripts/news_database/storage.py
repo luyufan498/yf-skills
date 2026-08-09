@@ -78,18 +78,26 @@ def _index_message(conn, mid, title, summary, keywords):
     )
 
 
+# source_type 默认置信度（无显式 confidence 时）
+SOURCE_TYPE_CONFIDENCE = {"official": 5, "media": 4, "community": 2, "rumor": 1}
+
+
 def add_message(conn, event_id, title, summary=None, url=None, source=None,
-                occurred_at=None, importance=3, keywords=None):
+                occurred_at=None, importance=3, keywords=None,
+                source_type="media", confidence=None):
     """向事件追加一条消息，更新事件的 msg_count/importance/latest_summary。返回消息 id。"""
     # 先校验事件存在，避免孤儿消息
     ev = conn.execute("SELECT importance FROM events WHERE id=?", (event_id,)).fetchone()
     if not ev:
         raise ValueError(f"事件 {event_id} 不存在")
+    if confidence is None:
+        confidence = SOURCE_TYPE_CONFIDENCE.get(source_type, 4)
     cur = conn.execute("""
         INSERT INTO messages (event_id, title, summary, url, source, occurred_at,
-                              fetched_at, importance, keywords)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?)
-    """, (event_id, title, summary, url, source, occurred_at, int(importance), keywords))
+                              fetched_at, importance, keywords, source_type, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?)
+    """, (event_id, title, summary, url, source, occurred_at, int(importance),
+          keywords, source_type, int(confidence)))
     mid = cur.lastrowid
     _index_message(conn, mid, title, summary, keywords)
     new_importance = max(ev["importance"] or 0, int(importance))

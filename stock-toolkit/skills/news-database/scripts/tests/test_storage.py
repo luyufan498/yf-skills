@@ -243,3 +243,26 @@ def test_set_industry_parent_rejects_self_and_cycle(db_path):
     # 非法操作未留下脏数据
     assert conn.execute("SELECT parent_id FROM industries WHERE name='计算机设备'").fetchone()["parent_id"] is None
     conn.close()
+
+
+def test_add_message_with_confidence(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试事件", entity_type="stock")
+    storage.add_message(conn, eid, "社区流言", source_type="community", confidence=2)
+    row = conn.execute("SELECT source_type, confidence FROM messages").fetchone()
+    assert row["source_type"] == "community"
+    assert row["confidence"] == 2
+    conn.close()
+
+
+def test_add_message_confidence_defaults_from_type(db_path):
+    """不显式传 confidence 时，按 source_type 默认映射。"""
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试事件", entity_type="stock")
+    storage.add_message(conn, eid, "官方公告", source_type="official")
+    storage.add_message(conn, eid, "小道消息", source_type="rumor")
+    rows = {r["source_type"]: r["confidence"]
+            for r in conn.execute("SELECT source_type, confidence FROM messages")}
+    assert rows["official"] == 5
+    assert rows["rumor"] == 1
+    conn.close()

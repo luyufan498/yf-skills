@@ -318,3 +318,32 @@ def test_cli_ack_deepdive_nonexistent(tmp_path, monkeypatch):
     runner.invoke(app, ["init"])
     r = runner.invoke(app, ["ack-deepdive", "999"])
     assert r.exit_code == 1
+
+
+def test_cli_save_invalid_source_type(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["save", "--new-event", "--title", "t",
+                            "--entity-type", "stock", "--source-type", "typo"])
+    assert r.exit_code == 2
+    assert "必须是" in r.output
+
+
+def test_cli_save_out_of_range_confidence(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["save", "--new-event", "--title", "t",
+                            "--entity-type", "stock", "--confidence", "9"])
+    assert r.exit_code == 2
+    assert "confidence" in r.output
+
+
+def test_cli_request_deepdive_invalid_target(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["request-deepdive", "bogus", "123"])
+    assert r.exit_code == 2
+    assert "target_type" in r.output

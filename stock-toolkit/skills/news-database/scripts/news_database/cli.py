@@ -6,6 +6,7 @@ from news_database import storage, query
 from news_database import search as search_mod  # noqa: N812 (命令 search 与模块重名，别名规避)
 from news_database.config import get_db_path
 from news_database.db import connect, init_db
+from news_database.storage import VALID_SOURCE_TYPES
 
 app = typer.Typer(
     name="newsdb",
@@ -95,7 +96,6 @@ def save(
     if entity_type not in VALID_ENTITY_TYPES:
         typer.echo(f"错误：--entity-type 必须是 {'/'.join(sorted(VALID_ENTITY_TYPES))} 之一")
         raise typer.Exit(code=2)
-    VALID_SOURCE_TYPES = {"official", "media", "community", "rumor"}
     if source_type not in VALID_SOURCE_TYPES:
         typer.echo(f"错误：--source-type 必须是 {'/'.join(sorted(VALID_SOURCE_TYPES))} 之一")
         raise typer.Exit(code=2)

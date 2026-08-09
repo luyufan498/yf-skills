@@ -78,8 +78,10 @@ def _index_message(conn, mid, title, summary, keywords):
     )
 
 
-# source_type 默认置信度（无显式 confidence 时）
+VALID_SOURCE_TYPES = {"official", "media", "community", "rumor"}
+# source_type 默认置信度（无显式 confidence 时）；未知类型按最低信任 rumor 处理
 SOURCE_TYPE_CONFIDENCE = {"official": 5, "media": 4, "community": 2, "rumor": 1}
+SOURCE_TYPE_DEFAULT_CONFIDENCE = 1   # 未知类型 → 最低信任
 
 
 def add_message(conn, event_id, title, summary=None, url=None, source=None,
@@ -90,8 +92,12 @@ def add_message(conn, event_id, title, summary=None, url=None, source=None,
     ev = conn.execute("SELECT importance FROM events WHERE id=?", (event_id,)).fetchone()
     if not ev:
         raise ValueError(f"事件 {event_id} 不存在")
+    if source_type not in VALID_SOURCE_TYPES:
+        raise ValueError(f"未知 source_type: {source_type!r}（合法: {'/'.join(sorted(VALID_SOURCE_TYPES))}）")
     if confidence is None:
-        confidence = SOURCE_TYPE_CONFIDENCE.get(source_type, 4)
+        confidence = SOURCE_TYPE_CONFIDENCE.get(source_type, SOURCE_TYPE_DEFAULT_CONFIDENCE)
+    if not (0 < confidence <= 5):
+        raise ValueError(f"confidence 必须在 1-5，收到 {confidence!r}")
     cur = conn.execute("""
         INSERT INTO messages (event_id, title, summary, url, source, occurred_at,
                               fetched_at, importance, keywords, source_type, confidence)

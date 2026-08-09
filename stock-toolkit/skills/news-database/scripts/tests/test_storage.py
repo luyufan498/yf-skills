@@ -266,3 +266,20 @@ def test_add_message_confidence_defaults_from_type(db_path):
     assert rows["official"] == 5
     assert rows["rumor"] == 1
     conn.close()
+
+
+def test_add_message_unknown_source_type_raises(db_path):
+    """未知 source_type 应报错而非静默入库。"""
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试事件", entity_type="stock")
+    with pytest.raises(ValueError, match="未知 source_type"):
+        storage.add_message(conn, eid, "拼错类型", source_type="typo_xyz")
+    conn.close()
+
+
+def test_add_message_confidence_range_validated(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试事件", entity_type="stock")
+    with pytest.raises(ValueError, match="confidence"):
+        storage.add_message(conn, eid, "越界", confidence=99)
+    conn.close()

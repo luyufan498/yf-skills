@@ -151,14 +151,16 @@ def test_query_stock_filters_low_confidence(db_path):
     conn.close()
 
 
-def test_query_stock_messages_confdence_visible(db_path):
-    """事件返回后，消息带置信度字段。"""
+def test_query_stock_messages_confidence_visible(db_path):
+    """query 返回的事件下，消息带置信度字段。"""
     conn = _conn(db_path)
     eid = _mk_stock_event(conn, "601127.SH", "赛力斯事件")
     storage.add_message(conn, eid, "官方公告", source_type="official")
-    msgs = conn.execute(
-        "SELECT source_type, confidence FROM messages WHERE event_id=?", (eid,)).fetchall()
-    assert {(m["source_type"], m["confidence"]) for m in msgs} == {("official", 5)}
+    evs = query.query_stock(conn, "601127.SH")
+    assert len(evs) == 1
+    _, msgs = storage.get_event_with_messages(conn, evs[0]["id"])
+    assert msgs and msgs[0]["source_type"] == "official"
+    assert msgs[0]["confidence"] == 5
     conn.close()
 
 

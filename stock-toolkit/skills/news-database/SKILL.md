@@ -40,7 +40,7 @@ uv tool install --editable .
 ## 查询端命令（分析 agent）
 | 命令 | 作用 |
 |------|------|
-| `newsdb query-stock <code> [--days N]` | 该股相关事件 |
+| `newsdb query-stock <code> [--days N] [--include-low-confidence]` | 该股相关事件 |
 | `newsdb query-industry <name> [--days N]` | 该行业相关事件 |
 | `newsdb query-market [--days N]` | 宏观/政策/大盘事件 |
 | `newsdb important [--min-importance 4] [--days N]` | 高重要度事件 |

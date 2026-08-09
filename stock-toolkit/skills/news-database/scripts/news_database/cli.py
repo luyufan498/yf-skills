@@ -65,7 +65,7 @@ def event(event_id: int = typer.Argument(...)):
     if ev["latest_summary"]:
         typer.echo(f"  最新: {ev['latest_summary']}")
     for m in msgs:
-        typer.echo(f"  · {m['title']} ({m['occurred_at'] or m['fetched_at']})")
+        typer.echo(f"  · {_confidence_tag(m)} {m['title']} ({m['occurred_at'] or m['fetched_at']})")
     conn.close()
 
 
@@ -195,7 +195,7 @@ def query_industry(name: str = typer.Argument(...),
                    days: int = typer.Option(None, "--days"),
                    include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
                                                                help="含舆情/流言背景")):
-    """该行业相关事件（支持别名 + 父带子；未命中时给出候选提示）。"""
+    """该行业相关事件（支持别名 + 父带子；未命中时给出候选提示）。默认只显示置信度>=3（决策依据）。"""
     conn = _open()
     ids = query.resolve_industry_ids(conn, name)
     if ids is None:
@@ -230,7 +230,7 @@ def query_industry(name: str = typer.Argument(...),
 def query_market(days: int = typer.Option(None, "--days"),
                  include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
                                                              help="含舆情/流言背景")):
-    """市场/A股大盘/政策/宏观 事件。"""
+    """市场/A股大盘/政策/宏观 事件。默认只显示置信度>=3（决策依据）。"""
     conn = _open()
     evs = query.query_market(conn, days=days, include_low_confidence=include_low_confidence)
     _print_events(conn, evs)
@@ -242,7 +242,7 @@ def important(min_importance: int = typer.Option(4, "--min-importance"),
               days: int = typer.Option(None, "--days"),
               include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
                                                           help="含舆情/流言背景")):
-    """高重要度事件。"""
+    """高重要度事件。默认只显示置信度>=3（决策依据）。"""
     conn = _open()
     evs = query.query_important(conn, min_importance=min_importance, days=days,
                                 include_low_confidence=include_low_confidence)
@@ -477,6 +477,19 @@ def ack_deepdive(request_id: int = typer.Argument(...)):
 
 # ---------- helpers ----------
 
+# source_type → 中文置信度标签（查询输出显示消息级置信度）
+SOURCE_TYPE_LABEL = {"official": "官方", "media": "媒体", "community": "舆情", "rumor": "流言"}
+
+
+def _confidence_tag(msg):
+    """消息级置信度标签：按 source_type 映射，confidence<3 追加 ⚠。"""
+    label = SOURCE_TYPE_LABEL.get(msg["source_type"], msg["source_type"])
+    tag = f"[{label}]"
+    if msg["confidence"] < 3:
+        tag += " ⚠"
+    return tag
+
+
 def _print_events(conn, evs):
     if not evs:
         typer.echo("（无事件）")
@@ -487,6 +500,6 @@ def _print_events(conn, evs):
                    f"消息{ev['msg_count']}条 ({ev['updated_at']})")
         for m in msgs[:3]:
             url = m['url'] or ''
-            typer.echo(f"    · [msg#{m['id']}] {m['title']} {url}")
+            typer.echo(f"    · {_confidence_tag(m)} [msg#{m['id']}] {m['title']} {url}")
         if len(msgs) > 3:
             typer.echo(f"    · … 共{len(msgs)}条")

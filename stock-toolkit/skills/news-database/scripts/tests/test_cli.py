@@ -362,9 +362,11 @@ def test_cli_query_stock_include_low_conf(tmp_path, monkeypatch):
     # 默认应显示事件（有官方消息）
     r = runner.invoke(app, ["query-stock", "601127.SH"])
     assert r.exit_code == 0
-    # --include-low-confidence 也应能跑
+    assert "赛力斯事件" in r.output
+    # --include-low-confidence：低置信度消息（论坛流言）也显示
     r2 = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
     assert r2.exit_code == 0
+    assert "论坛流言" in r2.output
 
 
 def test_cli_query_stock_low_conf_filtered(tmp_path, monkeypatch):
@@ -384,3 +386,20 @@ def test_cli_query_stock_low_conf_filtered(tmp_path, monkeypatch):
     r2 = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
     assert r2.exit_code == 0
     assert "流言事件" in r2.output
+
+
+def test_cli_query_stock_shows_confidence_tag(tmp_path, monkeypatch):
+    """消息级置信度标签在查询输出中可见：official→[官方]，rumor→[流言]。"""
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    conn = connect(db)
+    init_db(conn)
+    eid = storage.create_event(conn, "赛力斯事件", entity_type="stock", importance=4)
+    storage.link_event_stock(conn, eid, "601127.SH")
+    storage.add_message(conn, eid, "官方公告", source_type="official")
+    storage.add_message(conn, eid, "论坛流言", source_type="rumor")
+    conn.close()
+    r = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
+    assert r.exit_code == 0
+    assert "[官方]" in r.output      # official 消息带 [官方] 标签
+    assert "[流言]" in r.output      # rumor 消息带 [流言] 标签

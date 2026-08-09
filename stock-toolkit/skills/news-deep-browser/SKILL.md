@@ -29,12 +29,15 @@ unset AGENT_BROWSER_SESSION_NAME   # 否则干扰 eval 命令路由
 agent-browser --session xueqiu-dive --idle-timeout 0 open "<url>"
 # 真实 Chrome CDP 连接(登录态最完整)
 agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
+# 若 9222 连不上，先确认 Chrome 以 --remote-debugging-port=9222 启动(雪球股票页滑块验证，headless 过不了)
 ```
 
 ## 深挖目标来源(两路合并)
 
 1. `newsdb deepdive-requests --status pending`——分析 agent 插队，**优先处理**
 2. 从库拉：`newsdb scan-list` 的 stock scope 中**高关注 + 有 open 事件**的 + 异动股(非机械扫全部 watchlist)
+
+如何判断高关注：看该股是否有 open 事件且 importance 高（`newsdb query-stock <code>` 查事件状态）；异动股看近期涨跌（可用行情数据）。
 
 每轮限量：最多深挖 5 个目标，按 deepdive 请求 > 异动事件 > 高关注股票顺序。
 
@@ -48,6 +51,8 @@ agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
 | 市场焦点 | 雪球今日话题 | `https://xueqiu.com/today` |
 | 中期前瞻 | 知乎 | 搜"预计XX/评价XX"前瞻型问题 |
 | 排除 | 小红书 | IP 风控 + 消费向信息密度低 |
+
+详见 `references/deepdive_rules.md`（含各渠道抓取 CSS 选择器、分页、环境坑等细节）。
 
 ## 置信度写入(关键)
 
@@ -64,7 +69,7 @@ agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
 # 官方公告(高置信)
 newsdb save --event <id> --title "..." --summary "..." --source-type official --confidence 5
 # 论坛流言(低置信)
-newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实" --source-type community --confidence 1
+newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实" --source-type rumor --confidence 1
 ```
 
 **甄别原则**：

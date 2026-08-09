@@ -84,6 +84,8 @@ def save(
     stock: str = typer.Option(None, "--stock", help="逗号分隔的股票代码"),
     industry: str = typer.Option(None, "--industry", help="逗号分隔的行业名"),
     relevance: int = typer.Option(50, "--relevance"),
+    source_type: str = typer.Option("media", "--source-type", help="official/media/community/rumor"),
+    confidence: int = typer.Option(None, "--confidence", help="1-5，默认按 source_type"),
 ):
     """结构化写入一条 agent 整理后的消息。要么 --event <id> 归属，要么 --new-event 新建。"""
     if bool(event_id) == bool(new_event):
@@ -92,6 +94,13 @@ def save(
     VALID_ENTITY_TYPES = {"stock", "industry", "policy", "market"}
     if entity_type not in VALID_ENTITY_TYPES:
         typer.echo(f"错误：--entity-type 必须是 {'/'.join(sorted(VALID_ENTITY_TYPES))} 之一")
+        raise typer.Exit(code=2)
+    VALID_SOURCE_TYPES = {"official", "media", "community", "rumor"}
+    if source_type not in VALID_SOURCE_TYPES:
+        typer.echo(f"错误：--source-type 必须是 {'/'.join(sorted(VALID_SOURCE_TYPES))} 之一")
+        raise typer.Exit(code=2)
+    if confidence is not None and not (1 <= confidence <= 5):
+        typer.echo("错误：--confidence 必须在 1-5")
         raise typer.Exit(code=2)
     conn = _open()
     if new_event:
@@ -104,7 +113,8 @@ def save(
             typer.echo(f"事件 #{eid} 不存在")
             raise typer.Exit(code=3)
     mid = storage.add_message(conn, eid, title, summary=summary, url=url, source=source,
-                              occurred_at=occurred_at, importance=importance, keywords=keywords)
+                              occurred_at=occurred_at, importance=importance, keywords=keywords,
+                              source_type=source_type, confidence=confidence)
     if stock:
         for code in [s.strip() for s in stock.split(",") if s.strip()]:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
@@ -404,6 +414,53 @@ def scan_list():
         last = s["last_scan"] or "未扫描"
         typer.echo(f"  {flag} {s['scope_type']}/{s['scope_id']} 上次扫描: {last}")
     conn.close()
+
+
+# ---------- 深挖请求 ----------
+
+
+@app.command("request-deepdive")
+def request_deepdive(target_type: str = typer.Argument(...),
+                     target_id: str = typer.Argument(...),
+                     reason: str = typer.Option(None, "--reason"),
+                     priority: int = typer.Option(3, "--priority")):
+    """分析 agent 发出深挖请求（论坛/社交补充采集）。"""
+    VALID_TARGET = {"stock", "event", "industry"}
+    if target_type not in VALID_TARGET:
+        typer.echo(f"错误：target_type 必须是 {'/'.join(sorted(VALID_TARGET))} 之一")
+        raise typer.Exit(code=2)
+    conn = _open()
+    rid = storage.create_deepdive_request(conn, target_type, target_id,
+                                          reason=reason, priority=priority)
+    conn.close()
+    typer.echo(f"✓ 已发出深挖请求 #{rid} ({target_type}: {target_id})")
+
+
+@app.command("deepdive-requests")
+def deepdive_requests_list(status: str = typer.Option("pending", "--status")):
+    """列出深挖请求。"""
+    conn = _open()
+    rows = storage.list_deepdive_requests(conn, status=status)
+    if not rows:
+        typer.echo("无待处理的深挖请求")
+        conn.close()
+        return
+    for r in rows:
+        typer.echo(f"#{r['id']} [{r['priority']}] {r['target_type']}: {r['target_id']}"
+                   f" | {r['reason'] or ''} | {r['created_at']}")
+    conn.close()
+
+
+@app.command("ack-deepdive")
+def ack_deepdive(request_id: int = typer.Argument(...)):
+    """确认深挖请求处理完。"""
+    conn = _open()
+    n = storage.ack_deepdive_request(conn, request_id)
+    conn.close()
+    if n == 0:
+        typer.echo(f"深挖请求 #{request_id} 不存在")
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ 深挖请求 #{request_id} 已确认")
 
 
 # ---------- helpers ----------

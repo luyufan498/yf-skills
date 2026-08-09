@@ -1,7 +1,9 @@
 """CLI 端到端（通过 CliRunner + tmp db）。"""
 
 from typer.testing import CliRunner
+from news_database import storage
 from news_database.cli import app
+from news_database.db import connect
 
 runner = CliRunner()
 
@@ -236,3 +238,83 @@ def test_track_with_market_cap(tmp_path, monkeypatch):
     q = runner.invoke(app, ["query-stock", "601127.SH"])
     assert q.exit_code == 0
     assert "994.85" in q.stdout or "市值" in q.stdout
+
+
+def test_cli_save_with_confidence(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["save", "--new-event", "--title", "事件",
+                            "--entity-type", "stock", "--summary", "流言",
+                            "--source-type", "rumor", "--confidence", "1"])
+    assert r.exit_code == 0, r.stdout
+    conn = connect(db)
+    row = conn.execute("SELECT source_type, confidence FROM messages").fetchone()
+    assert row["source_type"] == "rumor"
+    assert row["confidence"] == 1
+    conn.close()
+
+
+def test_cli_save_confidence_defaults(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["save", "--new-event", "--title", "公告",
+                            "--entity-type", "stock", "--summary", "官方",
+                            "--source-type", "official"])
+    assert r.exit_code == 0, r.stdout
+    conn = connect(db)
+    row = conn.execute("SELECT confidence FROM messages").fetchone()
+    assert row["confidence"] == 5
+    conn.close()
+
+
+def test_cli_deepdive_request(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["request-deepdive", "stock", "601127.SH",
+                            "--reason", "重组流言"])
+    assert r.exit_code == 0, r.stdout
+    conn = connect(db)
+    row = conn.execute("SELECT * FROM deepdive_requests").fetchone()
+    assert row["target_type"] == "stock"
+    assert row["target_id"] == "601127.SH"
+    conn.close()
+
+
+def test_cli_deepdive_requests_list(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    conn = connect(db)
+    storage.create_deepdive_request(conn, "stock", "601127.SH")
+    storage.create_deepdive_request(conn, "event", "5", priority=5)
+    conn.close()
+    r = runner.invoke(app, ["deepdive-requests", "--status", "pending"])
+    assert r.exit_code == 0, r.stdout
+    assert "event" in r.stdout
+    assert "601127.SH" in r.stdout
+
+
+def test_cli_ack_deepdive(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    conn = connect(db)
+    rid = storage.create_deepdive_request(conn, "stock", "601127.SH")
+    conn.close()
+    r = runner.invoke(app, ["ack-deepdive", str(rid)])
+    assert r.exit_code == 0, r.stdout
+    conn = connect(db)
+    row = conn.execute("SELECT status FROM deepdive_requests WHERE id=?", (rid,)).fetchone()
+    assert row["status"] == "done"
+    conn.close()
+
+
+def test_cli_ack_deepdive_nonexistent(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["ack-deepdive", "999"])
+    assert r.exit_code == 1

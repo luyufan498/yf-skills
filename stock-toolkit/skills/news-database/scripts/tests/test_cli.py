@@ -389,7 +389,7 @@ def test_cli_query_stock_low_conf_filtered(tmp_path, monkeypatch):
 
 
 def test_cli_query_stock_shows_confidence_tag(tmp_path, monkeypatch):
-    """消息级置信度标签在查询输出中可见：official→[官方]，rumor→[流言]。"""
+    """消息级置信度标签在查询输出中可见：official→[官方·…]，rumor→[流言·…]。"""
     db = tmp_path / "t.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))
     conn = connect(db)
@@ -401,5 +401,34 @@ def test_cli_query_stock_shows_confidence_tag(tmp_path, monkeypatch):
     conn.close()
     r = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
     assert r.exit_code == 0
-    assert "[官方]" in r.output      # official 消息带 [官方] 标签
-    assert "[流言]" in r.output      # rumor 消息带 [流言] 标签
+    assert "[官方·其他]" in r.output      # official 消息带 [官方·…] 标签
+    assert "[流言·其他]" in r.output      # rumor 消息带 [流言·…] 标签
+
+
+def test_cli_save_with_message_type(tmp_path, monkeypatch):
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    r = runner.invoke(app, ["save", "--new-event", "--title", "预亏",
+                            "--entity-type", "stock", "--message-type", "financial_report"])
+    assert r.exit_code == 0, r.output
+    conn = connect(db)
+    row = conn.execute("SELECT message_type FROM messages").fetchone()
+    assert row["message_type"] == "financial_report"
+    conn.close()
+
+
+def test_cli_query_stock_shows_message_type_tag(tmp_path, monkeypatch):
+    """消息内容类型标签在查询输出中可见：financial_report→[·财报业绩]。"""
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    conn = connect(db)
+    init_db(conn)
+    eid = storage.create_event(conn, "赛力斯事件", entity_type="stock", importance=4)
+    storage.link_event_stock(conn, eid, "601127.SH")
+    storage.add_message(conn, eid, "7月销量腰斩", source_type="official",
+                        message_type="financial_report")
+    conn.close()
+    r = runner.invoke(app, ["query-stock", "601127.SH"])
+    assert r.exit_code == 0, r.output
+    assert "财报业绩" in r.output    # [官方·财报业绩] 标签
+    assert "[官方·财报业绩]" in r.output

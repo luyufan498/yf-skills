@@ -83,10 +83,24 @@ VALID_SOURCE_TYPES = {"official", "media", "community", "rumor"}
 SOURCE_TYPE_CONFIDENCE = {"official": 5, "media": 4, "community": 2, "rumor": 1}
 SOURCE_TYPE_DEFAULT_CONFIDENCE = 1   # 未知类型 → 最低信任
 
+# message_type → 中文标签（内容类型，正交于 source_type/confidence）
+MESSAGE_TYPES = {
+    "financial_report": "财报业绩",
+    "announcement": "公告",
+    "news": "新闻资讯",
+    "research": "研报",
+    "community": "社区舆情",
+    "industry_change": "行业变化",
+    "capital_flow": "资金异动",
+    "price_action": "股价走势",
+    "policy": "政策",
+    "other": "其他",
+}
+
 
 def add_message(conn, event_id, title, summary=None, url=None, source=None,
                 occurred_at=None, importance=3, keywords=None,
-                source_type="media", confidence=None):
+                source_type="media", confidence=None, message_type="other"):
     """向事件追加一条消息，更新事件的 msg_count/importance/latest_summary。返回消息 id。"""
     # 先校验事件存在，避免孤儿消息
     ev = conn.execute("SELECT importance FROM events WHERE id=?", (event_id,)).fetchone()
@@ -94,16 +108,18 @@ def add_message(conn, event_id, title, summary=None, url=None, source=None,
         raise ValueError(f"事件 {event_id} 不存在")
     if source_type not in VALID_SOURCE_TYPES:
         raise ValueError(f"未知 source_type: {source_type!r}（合法: {'/'.join(sorted(VALID_SOURCE_TYPES))}）")
+    if message_type not in MESSAGE_TYPES:
+        raise ValueError(f"未知 message_type: {message_type!r}（合法: {'/'.join(MESSAGE_TYPES)}）")
     if confidence is None:
         confidence = SOURCE_TYPE_CONFIDENCE.get(source_type, SOURCE_TYPE_DEFAULT_CONFIDENCE)
     if not (0 < confidence <= 5):
         raise ValueError(f"confidence 必须在 1-5，收到 {confidence!r}")
     cur = conn.execute("""
         INSERT INTO messages (event_id, title, summary, url, source, occurred_at,
-                              fetched_at, importance, keywords, source_type, confidence)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?)
+                              fetched_at, importance, keywords, source_type, confidence, message_type)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?)
     """, (event_id, title, summary, url, source, occurred_at, int(importance),
-          keywords, source_type, int(confidence)))
+          keywords, source_type, int(confidence), message_type))
     mid = cur.lastrowid
     _index_message(conn, mid, title, summary, keywords)
     new_importance = max(ev["importance"] or 0, int(importance))

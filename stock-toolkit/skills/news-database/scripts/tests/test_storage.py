@@ -283,3 +283,20 @@ def test_add_message_confidence_range_validated(db_path):
     with pytest.raises(ValueError, match="confidence"):
         storage.add_message(conn, eid, "越界", confidence=99)
     conn.close()
+
+
+def test_add_message_with_message_type(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试", entity_type="stock")
+    storage.add_message(conn, eid, "预亏公告", message_type="financial_report")
+    row = conn.execute("SELECT message_type FROM messages").fetchone()
+    assert row["message_type"] == "financial_report"
+    conn.close()
+
+
+def test_add_message_invalid_message_type(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试", entity_type="stock")
+    with pytest.raises(ValueError, match="未知 message_type"):
+        storage.add_message(conn, eid, "错误", message_type="typo")
+    conn.close()

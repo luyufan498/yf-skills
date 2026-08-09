@@ -140,6 +140,25 @@ def test_old_db_migrates_confidence_columns(db_path):
     conn.close()
 
 
+def test_messages_have_message_type(db_path):
+    conn = _conn(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)")]
+    assert "message_type" in cols
+    # 空表时无 row，验证列存在即可
+    row = conn.execute("SELECT message_type FROM messages").fetchone()
+    assert row is None
+    conn.close()
+
+
+def test_messages_message_type_default(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试", entity_type="stock")
+    storage.add_message(conn, eid, "测试消息")
+    row = conn.execute("SELECT message_type FROM messages").fetchone()
+    assert row["message_type"] == "other"
+    conn.close()
+
+
 def test_deepdive_requests_table(db_path):
     conn = _conn(db_path)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(deepdive_requests)")]

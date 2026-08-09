@@ -6,7 +6,7 @@ from news_database import storage, query
 from news_database import search as search_mod  # noqa: N812 (命令 search 与模块重名，别名规避)
 from news_database.config import get_db_path
 from news_database.db import connect, init_db
-from news_database.storage import VALID_SOURCE_TYPES
+from news_database.storage import MESSAGE_TYPES, VALID_SOURCE_TYPES
 
 app = typer.Typer(
     name="newsdb",
@@ -87,6 +87,9 @@ def save(
     relevance: int = typer.Option(50, "--relevance"),
     source_type: str = typer.Option("media", "--source-type", help="official/media/community/rumor"),
     confidence: int = typer.Option(None, "--confidence", help="1-5，默认按 source_type"),
+    message_type: str = typer.Option(
+        "other", "--message-type",
+        help="financial_report/announcement/news/research/community/industry_change/capital_flow/price_action/policy/other"),
 ):
     """结构化写入一条 agent 整理后的消息。要么 --event <id> 归属，要么 --new-event 新建。"""
     if bool(event_id) == bool(new_event):
@@ -98,6 +101,9 @@ def save(
         raise typer.Exit(code=2)
     if source_type not in VALID_SOURCE_TYPES:
         typer.echo(f"错误：--source-type 必须是 {'/'.join(sorted(VALID_SOURCE_TYPES))} 之一")
+        raise typer.Exit(code=2)
+    if message_type not in MESSAGE_TYPES:
+        typer.echo(f"错误：--message-type 必须是 {'/'.join(MESSAGE_TYPES)} 之一")
         raise typer.Exit(code=2)
     if confidence is not None and not (1 <= confidence <= 5):
         typer.echo("错误：--confidence 必须在 1-5")
@@ -114,7 +120,8 @@ def save(
             raise typer.Exit(code=3)
     mid = storage.add_message(conn, eid, title, summary=summary, url=url, source=source,
                               occurred_at=occurred_at, importance=importance, keywords=keywords,
-                              source_type=source_type, confidence=confidence)
+                              source_type=source_type, confidence=confidence,
+                              message_type=message_type)
     if stock:
         for code in [s.strip() for s in stock.split(",") if s.strip()]:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
@@ -490,6 +497,11 @@ def _confidence_tag(msg):
     return tag
 
 
+def _message_type_tag(msg):
+    """消息内容类型标签（中文）：按 message_type 映射，未知值兜底显示原文。"""
+    return MESSAGE_TYPES.get(msg["message_type"], msg["message_type"])
+
+
 def _print_events(conn, evs):
     if not evs:
         typer.echo("（无事件）")
@@ -500,6 +512,10 @@ def _print_events(conn, evs):
                    f"消息{ev['msg_count']}条 ({ev['updated_at']})")
         for m in msgs[:3]:
             url = m['url'] or ''
-            typer.echo(f"    · {_confidence_tag(m)} [msg#{m['id']}] {m['title']} {url}")
+            conf = SOURCE_TYPE_LABEL.get(m["source_type"], m["source_type"])
+            tag = f"[{conf}·{_message_type_tag(m)}]"
+            if m["confidence"] < 3:
+                tag += " ⚠"
+            typer.echo(f"    · {tag} [msg#{m['id']}] {m['title']} {url}")
         if len(msgs) > 3:
             typer.echo(f"    · … 共{len(msgs)}条")

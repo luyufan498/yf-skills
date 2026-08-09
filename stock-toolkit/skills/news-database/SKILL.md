@@ -67,4 +67,5 @@ uv tool install --editable .
 - FTS trigram 需 ≥3 字符，2 字符中文查询（如"涨价"）自动回退 LIKE。
 - 输出中 `[msg#N]` 是消息 id，可配合 `newsdb event <事件id>` 追溯完整时间线。
 - 行业支持别名归一化：`upsert_industry` 先查别名再新建，入库用任意别名不分裂行业。`save --industry` 支持逗号分隔多行业。
+- `save --message-type <type>` 标内容类型（10 类：financial_report 财报业绩 / announcement 公告 / news 新闻资讯 / research 研报 / community 社区舆情 / industry_change 行业变化 / capital_flow 资金异动 / price_action 股价走势 / policy 政策 / other 其他），与 `--source-type`（谁说的）正交。采集 agent 入库时都应带。
 - `query-industry` 支持别名匹配 + 父带子展开（查父行业含子行业事件）；未命中时给出候选提示。

@@ -62,6 +62,18 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 2. **多行业关联（重要）**：`--industry "行业A,行业B"` 逗号分隔，关联涉及的所有行业。
 3. **用别名/层级归一化**：行业名用常见的叫法即可（`upsert_industry` 会自动归一化）；遇到"液冷"这种别名会自动映射到规范行业。发现已知行业的新叫法，用 `newsdb industry-aliases add <行业> --alias <新叫法>` 登记。
 4. **importance 分级**：重大利空/利好 5，重要经营变化 4，一般信息 3，行业背景 2，无关 1。
+4.5. **message_type 内容类型**：每条消息标内容类型（说的是什么），与 source_type（谁说的）正交：
+   - financial_report 财报业绩（预亏/预增/中报/营收净利）
+   - announcement 公告（回购/减持/定增/中标/解禁）
+   - news 新闻资讯（行业新闻/公司动态/媒体报道）
+   - research 研报（机构评级/目标价/深度报告）
+   - community 社区舆情（论坛讨论/股吧/雪球评论）
+   - industry_change 行业变化（政策/技术迭代/竞争格局/供需）
+   - capital_flow 资金异动（龙虎榜/主力资金/北向）
+   - price_action 股价走势（涨跌/异动/K线）
+   - policy 政策（监管/产业政策）
+   - other 其他
+   CLI: `newsdb save --message-type <type> ...`
 5. **summary 精炼**：保留关键数字（销量、金额、百分比），一句话说清影响。
 6. **时效性标签**：`--sensitivity high/medium/low`——市场/大盘/个股异动 high，行业趋势/政策 medium，季度财报/一次性事件 low。
 

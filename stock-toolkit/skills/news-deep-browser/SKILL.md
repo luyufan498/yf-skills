@@ -65,11 +65,17 @@ agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
 | community | 论坛/社交单方、未核实 | 2 |
 | rumor | 小道消息、无法核实 | 1 |
 
+**message_type 内容类型**：每条消息再标内容类型（说的是什么），与 source_type 正交。深度浏览尤其要区分 **community（论坛讨论/流言，未证实）** 与 **financial_report/announcement（财报/公告，已证实）**——逛雪球/知乎常同时遇到两者，别混标：
+- 论坛转述的财报/公告 → 内容已核实的标 financial_report/announcement（source_type 相应 official/media）
+- 论坛原创讨论/猜测/流言 → 标 community（source_type 保持 community/rumor）
+- 其余 10 类与 news-collector 一致：financial_report/announcement/news/research/community/industry_change/capital_flow/price_action/policy/other
+CLI: `newsdb save --message-type <type> ...`
+
 ```bash
 # 官方公告(高置信)
-newsdb save --event <id> --title "..." --summary "..." --source-type official --confidence 5
+newsdb save --event <id> --title "..." --summary "..." --source-type official --confidence 5 --message-type announcement
 # 论坛流言(低置信)
-newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实" --source-type rumor --confidence 1
+newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实" --source-type rumor --confidence 1 --message-type community
 ```
 
 **甄别原则**：

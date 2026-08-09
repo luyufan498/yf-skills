@@ -8,12 +8,31 @@ def _with_days(sql, params, days):
     return sql, params
 
 
-def query_stock(conn, stock_code, days=None):
-    """某股票关联的事件（按重要度/更新时间倒序）。"""
-    sql = """
+def _confidence_filter(include_low_confidence):
+    """返回置信度过滤 SQL 子句。
+
+    事件级查询：默认只返回「至少有一条 confidence>=3 消息」的事件。
+    include_low_confidence=True 时不加过滤。
+    """
+    if include_low_confidence:
+        return ""
+    return """ AND EXISTS (
+        SELECT 1 FROM messages m2
+        WHERE m2.event_id = e.id AND m2.confidence >= 3
+    )"""
+
+
+def query_stock(conn, stock_code, days=None, include_low_confidence=False):
+    """某股票关联的事件（按重要度/更新时间倒序）。
+
+    include_low_confidence=False（默认）：只返回含 confidence>=3 消息的事件，
+    即决策依据（官方/媒体/已证实）。True 时也含仅舆情/流言的事件。
+    """
+    conf_clause = _confidence_filter(include_low_confidence)
+    sql = f"""
         SELECT DISTINCT e.* FROM events e
         JOIN event_stock es ON es.event_id = e.id
-        WHERE es.stock_code = ?
+        WHERE es.stock_code = ?{conf_clause}
     """
     params = [stock_code]
     sql, params = _with_days(sql, params, days)
@@ -40,13 +59,14 @@ def resolve_industry_ids(conn, industry_name):
     return ids
 
 
-def query_industry_by_ids(conn, industry_ids, days=None):
+def query_industry_by_ids(conn, industry_ids, days=None, include_low_confidence=False):
     """按行业 id 列表查事件。"""
     placeholders = ",".join("?" for _ in industry_ids)
+    conf_clause = _confidence_filter(include_low_confidence)
     sql = f"""
         SELECT DISTINCT e.* FROM events e
         JOIN event_industry ei ON ei.event_id = e.id
-        WHERE ei.industry_id IN ({placeholders})
+        WHERE ei.industry_id IN ({placeholders}){conf_clause}
     """
     params = list(industry_ids)
     sql, params = _with_days(sql, params, days)
@@ -54,12 +74,12 @@ def query_industry_by_ids(conn, industry_ids, days=None):
     return conn.execute(sql, params).fetchall()
 
 
-def query_industry(conn, industry_name, days=None):
+def query_industry(conn, industry_name, days=None, include_low_confidence=False):
     """某行业关联的事件（支持别名 + 父带子展开）。未命中返回 []。"""
     ids = resolve_industry_ids(conn, industry_name)
     if not ids:
         return []
-    return query_industry_by_ids(conn, ids, days=days)
+    return query_industry_by_ids(conn, ids, days=days, include_low_confidence=include_low_confidence)
 
 
 def suggest_industries(conn, query_text, limit=5):
@@ -90,18 +110,20 @@ def related_industries(conn, industry_id):
     """, (str(industry_id), str(industry_id))).fetchall()
 
 
-def query_market(conn, days=None):
+def query_market(conn, days=None, include_low_confidence=False):
     """宏观/政策/大盘 全局层事件。"""
-    sql = "SELECT e.* FROM events e WHERE e.entity_type IN ('policy','market')"
+    conf_clause = _confidence_filter(include_low_confidence)
+    sql = f"SELECT e.* FROM events e WHERE e.entity_type IN ('policy','market'){conf_clause}"
     params = []
     sql, params = _with_days(sql, params, days)
     sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"
     return conn.execute(sql, params).fetchall()
 
 
-def query_important(conn, min_importance=4, days=None):
+def query_important(conn, min_importance=4, days=None, include_low_confidence=False):
     """高重要度事件（默认 ≥4）。"""
-    sql = "SELECT e.* FROM events e WHERE e.importance >= ?"
+    conf_clause = _confidence_filter(include_low_confidence)
+    sql = f"SELECT e.* FROM events e WHERE e.importance >= ?{conf_clause}"
     params = [int(min_importance)]
     sql, params = _with_days(sql, params, days)
     sql += " ORDER BY e.importance DESC, e.updated_at DESC, e.id DESC"

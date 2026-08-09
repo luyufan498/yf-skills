@@ -94,6 +94,8 @@ def test_query_industry_parent_includes_child(db_path):
     storage.set_industry_parent(conn, "AI算力", "光模块")
     e_new = storage.create_event(conn, "AI算力景气", entity_type="industry")
     storage.link_event_industry(conn, e_new, "AI算力")
+    # 事件需有 confidence>=3 的消息才被默认查询返回（决策依据）
+    storage.add_message(conn, e_new, "AI算力景气公告", source_type="media")
     # 查父行业应同时返回 光模块事件 + 子行业 AI算力事件
     evs = query.query_industry(conn, "光模块")
     assert {ev["id"] for ev in evs} == {e2, e_new}
@@ -127,4 +129,48 @@ def test_related_industries_bidirectional(db_path):
     assert {int(r["other_id"]) for r in ra} == {b}
     assert {int(r["other_id"]) for r in rb} == {a}
     assert ra[0]["strength"] == 60
+    conn.close()
+
+
+def _mk_stock_event(conn, code, title):
+    eid = storage.create_event(conn, title, entity_type="stock", importance=4)
+    storage.link_event_stock(conn, eid, code)
+    return eid
+
+
+def test_query_stock_filters_low_confidence(db_path):
+    conn = _conn(db_path)
+    eid = _mk_stock_event(conn, "601127.SH", "赛力斯事件")
+    storage.add_message(conn, eid, "官方公告", source_type="official")   # conf 5
+    storage.add_message(conn, eid, "论坛流言", source_type="rumor")     # conf 1
+    evs = query.query_stock(conn, "601127.SH")
+    assert len(evs) == 1
+    # include_low_confidence=True 仍返回该事件
+    evs2 = query.query_stock(conn, "601127.SH", include_low_confidence=True)
+    assert len(evs2) == 1
+    conn.close()
+
+
+def test_query_stock_messages_confdence_visible(db_path):
+    """事件返回后，消息带置信度字段。"""
+    conn = _conn(db_path)
+    eid = _mk_stock_event(conn, "601127.SH", "赛力斯事件")
+    storage.add_message(conn, eid, "官方公告", source_type="official")
+    msgs = conn.execute(
+        "SELECT source_type, confidence FROM messages WHERE event_id=?", (eid,)).fetchall()
+    assert {(m["source_type"], m["confidence"]) for m in msgs} == {("official", 5)}
+    conn.close()
+
+
+def test_query_stock_filters_event_with_only_rumor(db_path):
+    """事件下只有流言(conf<3)时，默认查询应过滤掉该事件。"""
+    conn = _conn(db_path)
+    eid = _mk_stock_event(conn, "601127.SH", "流言事件")
+    storage.add_message(conn, eid, "论坛流言", source_type="rumor", confidence=1)
+    # 默认：只含低置信度消息的事件被过滤
+    evs = query.query_stock(conn, "601127.SH")
+    assert len(evs) == 0
+    # include_low_confidence=True：能查到
+    evs2 = query.query_stock(conn, "601127.SH", include_low_confidence=True)
+    assert len(evs2) == 1
     conn.close()

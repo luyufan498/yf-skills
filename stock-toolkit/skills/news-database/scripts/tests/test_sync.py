@@ -82,6 +82,8 @@ def test_apply_sync_config_event_industry_links(db_path):
     conn = _conn(db_path)
     from news_database import storage
     eid = storage.create_event(conn, "液冷行业进入业绩兑现期", entity_type="industry")
+    # 事件需有 confidence>=3 的消息才被默认查询返回（决策依据）
+    storage.add_message(conn, eid, "液冷行业进入业绩兑现期", source_type="media")
     config = {
         "aliases": {"精密温控节能设备/数据中心液冷": ["液冷"]},
         "relations": [], "hierarchy": {},

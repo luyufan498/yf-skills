@@ -109,10 +109,10 @@ def test_messages_confidence_defaults(db_path):
 
 
 def test_old_db_migrates_confidence_columns(db_path):
-    """旧库（无置信度列）init_db 后应自动补列。"""
+    """旧库（无置信度/内容类型列）init_db 后应自动补列，旧行回填默认值。"""
     import sqlite3 as _s
     raw = _s.connect(db_path)
-    # 建一个旧版 messages 表（无 source_type/confidence）
+    # 建一个旧版 messages 表（无 source_type/confidence/message_type）
     raw.executescript("""
         DROP TABLE IF EXISTS messages;
         CREATE TABLE messages (
@@ -134,9 +134,11 @@ def test_old_db_migrates_confidence_columns(db_path):
     cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)")]
     assert "source_type" in cols
     assert "confidence" in cols
-    row = conn.execute("SELECT source_type, confidence FROM messages").fetchone()
+    assert "message_type" in cols
+    row = conn.execute("SELECT source_type, confidence, message_type FROM messages").fetchone()
     assert row["source_type"] == "media"
     assert row["confidence"] == 4
+    assert row["message_type"] == "other"
     conn.close()
 
 

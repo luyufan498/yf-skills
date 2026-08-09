@@ -488,13 +488,19 @@ def ack_deepdive(request_id: int = typer.Argument(...)):
 SOURCE_TYPE_LABEL = {"official": "官方", "media": "媒体", "community": "舆情", "rumor": "流言"}
 
 
+def _source_label(msg):
+    """source_type → 中文置信度标签。"""
+    return SOURCE_TYPE_LABEL.get(msg["source_type"], msg["source_type"])
+
+
+def _confidence_warn(msg):
+    """confidence<3 的消息加 ⚠ 警示。"""
+    return " ⚠" if (msg["confidence"] or 4) < 3 else ""
+
+
 def _confidence_tag(msg):
-    """消息级置信度标签：按 source_type 映射，confidence<3 追加 ⚠。"""
-    label = SOURCE_TYPE_LABEL.get(msg["source_type"], msg["source_type"])
-    tag = f"[{label}]"
-    if msg["confidence"] < 3:
-        tag += " ⚠"
-    return tag
+    """消息级标签：[来源·内容类型]，confidence<3 追加 ⚠。event 与 query-* 共用。"""
+    return f"[{_source_label(msg)}·{_message_type_tag(msg)}]" + _confidence_warn(msg)
 
 
 def _message_type_tag(msg):
@@ -512,10 +518,6 @@ def _print_events(conn, evs):
                    f"消息{ev['msg_count']}条 ({ev['updated_at']})")
         for m in msgs[:3]:
             url = m['url'] or ''
-            conf = SOURCE_TYPE_LABEL.get(m["source_type"], m["source_type"])
-            tag = f"[{conf}·{_message_type_tag(m)}]"
-            if m["confidence"] < 3:
-                tag += " ⚠"
-            typer.echo(f"    · {tag} [msg#{m['id']}] {m['title']} {url}")
+            typer.echo(f"    · {_confidence_tag(m)} [msg#{m['id']}] {m['title']} {url}")
         if len(msgs) > 3:
             typer.echo(f"    · … 共{len(msgs)}条")

@@ -340,6 +340,16 @@ def test_cli_save_out_of_range_confidence(tmp_path, monkeypatch):
     assert "confidence" in r.output
 
 
+def test_cli_save_invalid_message_type(tmp_path, monkeypatch):
+    db = tmp_path / "news.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    runner.invoke(app, ["init"])
+    r = runner.invoke(app, ["save", "--new-event", "--title", "t",
+                            "--entity-type", "stock", "--message-type", "typo"])
+    assert r.exit_code == 2
+    assert "message-type" in r.output
+
+
 def test_cli_request_deepdive_invalid_target(tmp_path, monkeypatch):
     db = tmp_path / "news.db"
     monkeypatch.setenv("STOCK_NEWS_DB", str(db))
@@ -431,4 +441,19 @@ def test_cli_query_stock_shows_message_type_tag(tmp_path, monkeypatch):
     r = runner.invoke(app, ["query-stock", "601127.SH"])
     assert r.exit_code == 0, r.output
     assert "财报业绩" in r.output    # [官方·财报业绩] 标签
+    assert "[官方·财报业绩]" in r.output
+
+
+def test_cli_event_shows_message_type_tag(tmp_path, monkeypatch):
+    """event <id> 消息时间线与 query-* 一致：同样显示 [官方·财报业绩] 双标签。"""
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    conn = connect(db)
+    init_db(conn)
+    eid = storage.create_event(conn, "赛力斯事件", entity_type="stock", importance=4)
+    storage.add_message(conn, eid, "7月销量腰斩", source_type="official",
+                        message_type="financial_report")
+    conn.close()
+    r = runner.invoke(app, ["event", str(eid)])
+    assert r.exit_code == 0, r.output
     assert "[官方·财报业绩]" in r.output

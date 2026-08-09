@@ -47,12 +47,15 @@
 ```bash
 export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
 
-newsdb query-stock <代码> --days 14       # 该股相关事件（含消息时间线）
+newsdb query-stock <代码> --days 14                          # 该股相关事件（含消息时间线，默认只看 confidence>=3）
+newsdb query-stock <代码> --days 14 --include-low-confidence  # 显式看论坛舆情/流言（背景参考）
 newsdb query-industry <行业> --days 14    # 该行业事件
 newsdb query-market --days 14             # 宏观/政策/大盘事件
 newsdb important --days 14                # 高重要度消息
 newsdb search "<关键词>"                  # 需要时全文检索
 ```
+
+**置信度过滤**：查库结果中，`confidence < 3` 的消息（community/rumor 来源）是论坛舆情/流言，仅供情绪面背景参考，**不推动买入/卖出结论**。决策依据只看 `confidence >= 3` 的官方/媒体/已证实消息。若发现低置信度流言被高置信度消息证实，在报告中呈现"传言 vs 已证实"对比。
 
 ### 判断是否需搜索补漏（24小时兜底）
 

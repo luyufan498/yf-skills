@@ -104,7 +104,19 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
    ```bash
    export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
    ```
-   然后 `newsdb query-stock <代码> --days 14`、`query-industry`、`query-market`、`important`
+   **查库（优先，库覆盖则停止搜索）：**
+   ```bash
+   newsdb query-stock <代码> --days 14                          # 决策依据：默认只看 confidence>=3（官方/媒体/已证实）
+   newsdb query-stock <代码> --days 14 --include-low-confidence  # 背景参考：显式看舆情/流言
+   newsdb query-industry <行业> --days 14                        # 行业事件（同样默认高置信）
+   newsdb query-market --days 14                                 # 宏观/政策/大盘
+   newsdb important --days 14                                    # 高重要度事件
+   ```
+
+   **置信度分级（关键）：**
+   - `confidence >= 3`（官方/媒体/已证实）→ **决策依据**
+   - `confidence < 3`（论坛舆情/流言）→ **仅背景参考**，报告标注"⚠ 论坛舆情，未经证实，仅供情绪面参考，不推动买/卖结论"
+   - 流言被证实 → 报告呈现"传言 vs 已证实"对比（高价值信息）
 3. **判断是否需要搜索**：
    - 库中该股过去 24 小时已有新增 → 不再搜索，直接用库
    - 库中 24 小时无新增 → 轻量搜索兜底（≤3轮，用 searxng/brave + time-range）

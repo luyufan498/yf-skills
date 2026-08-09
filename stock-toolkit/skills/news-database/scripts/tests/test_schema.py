@@ -138,3 +138,12 @@ def test_old_db_migrates_confidence_columns(db_path):
     assert row["source_type"] == "media"
     assert row["confidence"] == 4
     conn.close()
+
+
+def test_deepdive_requests_table(db_path):
+    conn = _conn(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(deepdive_requests)")]
+    assert "target_type" in cols
+    assert "target_id" in cols
+    assert "status" in cols
+    conn.close()

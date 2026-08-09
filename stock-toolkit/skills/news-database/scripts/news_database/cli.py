@@ -176,19 +176,25 @@ def track(code: str = typer.Argument(...),
 # ---------- 查询端 ----------
 
 @app.command("query-stock")
-def query_stock(code: str = typer.Argument(...), days: int = typer.Option(None, "--days")):
-    """该股相关事件。"""
+def query_stock(code: str = typer.Argument(...),
+                days: int = typer.Option(None, "--days"),
+                include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
+                                                            help="含舆情/流言背景")):
+    """该股相关事件。默认只显示置信度>=3（决策依据）。"""
     conn = _open()
     stock = storage.get_stock(conn, code)
     if stock and stock["market_cap"]:
         typer.echo(f"📊 {stock['name']} ({code}) 市值 {stock['market_cap']} 亿")
-    evs = query.query_stock(conn, code, days=days)
+    evs = query.query_stock(conn, code, days=days, include_low_confidence=include_low_confidence)
     _print_events(conn, evs)
     conn.close()
 
 
 @app.command("query-industry")
-def query_industry(name: str = typer.Argument(...), days: int = typer.Option(None, "--days")):
+def query_industry(name: str = typer.Argument(...),
+                   days: int = typer.Option(None, "--days"),
+                   include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
+                                                               help="含舆情/流言背景")):
     """该行业相关事件（支持别名 + 父带子；未命中时给出候选提示）。"""
     conn = _open()
     ids = query.resolve_industry_ids(conn, name)
@@ -214,26 +220,32 @@ def query_industry(name: str = typer.Argument(...), days: int = typer.Option(Non
             typer.echo(f"未找到行业 '{name}'，请检查拼写或用 'newsdb industry-aliases list' 查看现有行业")
         conn.close()
         return
-    evs = query.query_industry_by_ids(conn, ids, days=days)
+    evs = query.query_industry_by_ids(conn, ids, days=days,
+                                      include_low_confidence=include_low_confidence)
     _print_events(conn, evs)
     conn.close()
 
 
 @app.command("query-market")
-def query_market(days: int = typer.Option(None, "--days")):
+def query_market(days: int = typer.Option(None, "--days"),
+                 include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
+                                                             help="含舆情/流言背景")):
     """市场/A股大盘/政策/宏观 事件。"""
     conn = _open()
-    evs = query.query_market(conn, days=days)
+    evs = query.query_market(conn, days=days, include_low_confidence=include_low_confidence)
     _print_events(conn, evs)
     conn.close()
 
 
 @app.command()
 def important(min_importance: int = typer.Option(4, "--min-importance"),
-              days: int = typer.Option(None, "--days")):
+              days: int = typer.Option(None, "--days"),
+              include_low_confidence: bool = typer.Option(False, "--include-low-confidence",
+                                                          help="含舆情/流言背景")):
     """高重要度事件。"""
     conn = _open()
-    evs = query.query_important(conn, min_importance=min_importance, days=days)
+    evs = query.query_important(conn, min_importance=min_importance, days=days,
+                                include_low_confidence=include_low_confidence)
     _print_events(conn, evs)
     conn.close()
 

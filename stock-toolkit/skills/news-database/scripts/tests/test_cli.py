@@ -3,7 +3,7 @@
 from typer.testing import CliRunner
 from news_database import storage
 from news_database.cli import app
-from news_database.db import connect
+from news_database.db import connect, init_db
 
 runner = CliRunner()
 
@@ -347,3 +347,40 @@ def test_cli_request_deepdive_invalid_target(tmp_path, monkeypatch):
     r = runner.invoke(app, ["request-deepdive", "bogus", "123"])
     assert r.exit_code == 2
     assert "target_type" in r.output
+
+
+def test_cli_query_stock_include_low_conf(tmp_path, monkeypatch):
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    conn = connect(db)
+    init_db(conn)
+    eid = storage.create_event(conn, "赛力斯事件", entity_type="stock", importance=4)
+    storage.link_event_stock(conn, eid, "601127.SH")
+    storage.add_message(conn, eid, "官方公告", source_type="official")
+    storage.add_message(conn, eid, "论坛流言", source_type="rumor")
+    conn.close()
+    # 默认应显示事件（有官方消息）
+    r = runner.invoke(app, ["query-stock", "601127.SH"])
+    assert r.exit_code == 0
+    # --include-low-confidence 也应能跑
+    r2 = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
+    assert r2.exit_code == 0
+
+
+def test_cli_query_stock_low_conf_filtered(tmp_path, monkeypatch):
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("STOCK_NEWS_DB", str(db))
+    conn = connect(db)
+    init_db(conn)
+    eid = storage.create_event(conn, "流言事件", entity_type="stock", importance=4)
+    storage.link_event_stock(conn, eid, "601127.SH")
+    storage.add_message(conn, eid, "论坛流言", source_type="rumor", confidence=1)
+    conn.close()
+    # 默认：只有低置信度消息的事件不显示
+    r = runner.invoke(app, ["query-stock", "601127.SH"])
+    assert r.exit_code == 0
+    assert "流言事件" not in r.output
+    # --include-low-confidence：显示
+    r2 = runner.invoke(app, ["query-stock", "601127.SH", "--include-low-confidence"])
+    assert r2.exit_code == 0
+    assert "流言事件" in r2.output

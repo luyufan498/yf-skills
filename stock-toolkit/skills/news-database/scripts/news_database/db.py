@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS messages (
     importance  INTEGER NOT NULL DEFAULT 3,
     keywords    TEXT,                              -- 逗号分隔
     embedding   BLOB,                              -- 预留：语义扩展
-    ts_updated  TEXT                               -- 预留：语义扫描游标
+    ts_updated  TEXT,                              -- 预留：语义扫描游标
+    source_type TEXT NOT NULL DEFAULT 'media',     -- official/media/community/rumor
+    confidence  INTEGER NOT NULL DEFAULT 4         -- 1-5，1=流言 5=官方
 );
 CREATE INDEX IF NOT EXISTS idx_messages_event ON messages(event_id);
 
@@ -127,4 +129,12 @@ def init_db(conn):
         conn.execute("ALTER TABLE stocks ADD COLUMN market_cap REAL")
     except sqlite3.OperationalError:
         pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN source_type TEXT NOT NULL DEFAULT 'media'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN confidence INTEGER NOT NULL DEFAULT 4")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()

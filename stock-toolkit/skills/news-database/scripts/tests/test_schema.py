@@ -1,7 +1,14 @@
 """schema 完整性：建库后所有表/列存在。"""
 
 import sqlite3
+from news_database import storage
 from news_database.db import connect, init_db
+
+
+def _conn(db_path):
+    conn = connect(db_path)
+    init_db(conn)
+    return conn
 
 
 def _table_names(conn):
@@ -80,4 +87,54 @@ def test_stocks_market_cap_column(db_path):
     init_db(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(stocks)")}
     assert "market_cap" in cols
+    conn.close()
+
+
+def test_messages_have_confidence_columns(db_path):
+    conn = _conn(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)")]
+    assert "source_type" in cols
+    assert "confidence" in cols
+    conn.close()
+
+
+def test_messages_confidence_defaults(db_path):
+    conn = _conn(db_path)
+    eid = storage.create_event(conn, "测试事件", entity_type="stock")
+    storage.add_message(conn, eid, "测试消息")
+    row = conn.execute("SELECT source_type, confidence FROM messages").fetchone()
+    assert row["source_type"] == "media"
+    assert row["confidence"] == 4
+    conn.close()
+
+
+def test_old_db_migrates_confidence_columns(db_path):
+    """旧库（无置信度列）init_db 后应自动补列。"""
+    import sqlite3 as _s
+    raw = _s.connect(db_path)
+    # 建一个旧版 messages 表（无 source_type/confidence）
+    raw.executescript("""
+        DROP TABLE IF EXISTS messages;
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT,
+            url TEXT, source TEXT, occurred_at TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            importance INTEGER NOT NULL DEFAULT 3, keywords TEXT,
+            embedding BLOB, ts_updated TEXT
+        );
+        INSERT INTO messages (event_id, title) VALUES (1, '旧消息');
+    """)
+    raw.commit()
+    raw.close()
+    # 重新 init_db 应补列
+    conn = _conn(db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)")]
+    assert "source_type" in cols
+    assert "confidence" in cols
+    row = conn.execute("SELECT source_type, confidence FROM messages").fetchone()
+    assert row["source_type"] == "media"
+    assert row["confidence"] == 4
     conn.close()

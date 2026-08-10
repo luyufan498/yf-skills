@@ -45,6 +45,13 @@ def test_cli_allocate_topup_release(ws):
     r = runner.invoke(app, ["master-pool-records"])
     assert r.exit_code == 0
     assert "allocate" in r.output and "topup" in r.output
+    r = runner.invoke(app, ["master-pool-release", "英维克", "--reason", "清仓"])
+    assert r.exit_code == 0
+    assert "释放" in r.output
+    # 冷却期内禁止重新 allocate
+    r = runner.invoke(app, ["master-pool-allocate", "英维克", "--amount", "100000", "--reason", "想追回"])
+    assert r.exit_code == 1
+    assert "冷却" in r.output
 
 
 def test_cli_init_before_show_errors(ws):

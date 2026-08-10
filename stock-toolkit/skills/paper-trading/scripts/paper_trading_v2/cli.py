@@ -2,7 +2,17 @@
 import typer
 from typing import Optional
 
-app = typer.Typer(help="ptrade2 — SQLite 深迁移 + 弹性组合总池")
+app = typer.Typer(help="ptrade2 — SQLite 深迁移 + 弹性组合总池",
+                  add_completion=False, no_args_is_help=True)
+
+
+def _normalize_stock_name(stock_name: str) -> str:
+    """繁体→简体 归一（与 ptrade v1 一致）"""
+    try:
+        from opencc import OpenCC
+        return OpenCC('t2s').convert(stock_name)
+    except Exception:
+        return stock_name
 
 
 # ============ master-pool 命令组 ============
@@ -45,6 +55,7 @@ def master_pool_allocate(
     code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选）"),
 ):
     """开持仓段（从 free 拨 budget）"""
+    stock = _normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -62,6 +73,7 @@ def master_pool_topup(
     reason: str = typer.Option("", "--reason"),
 ):
     """段内注资"""
+    stock = _normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -79,6 +91,7 @@ def master_pool_release(
     source: str = typer.Option("agent", "--source", help="agent/manual"),
 ):
     """关持仓段（空仓回池）"""
+    stock = _normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -122,6 +135,7 @@ def watchlist_add(
     reason: str = typer.Option("", "--reason"),
 ):
     """入池"""
+    stock = _normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
@@ -139,6 +153,7 @@ def watchlist_remove(
     reason: str = typer.Option("", "--reason"),
 ):
     """移出池"""
+    stock = _normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
@@ -159,6 +174,7 @@ def init(
     force: bool = typer.Option(False, "--force", "-f"),
 ):
     """初始化资金池（一般用 master-pool-allocate 替代）"""
+    stock_name = _normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().init_account(stock_name, capital, stock_code=code, force=force)
@@ -176,6 +192,7 @@ def buy(
     note: str = typer.Option("", "--note", "-n"),
 ):
     """买入股票"""
+    stock_name = _normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().buy_stock(stock_name, quantity=qty, amount=amount, note=note)
@@ -193,6 +210,7 @@ def sell(
     note: str = typer.Option("", "--note", "-n"),
 ):
     """卖出股票"""
+    stock_name = _normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().sell_stock(stock_name, quantity=qty, sell_all=all, note=note)
@@ -206,7 +224,6 @@ def sell(
 def list_cmd():
     """列出所有账户"""
     from paper_trading_v2.storage import SqlStorage
-    from paper_trading_v2.config import get_workspace_config
     s = SqlStorage()
     names = s.list_accounts()
     if not names:

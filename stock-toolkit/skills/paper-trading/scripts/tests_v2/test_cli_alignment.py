@@ -129,3 +129,59 @@ def test_delete_requires_force_with_position(ws):
     r = runner.invoke(app, ["delete", "测试股", "--force"])
     assert r.exit_code == 0
     assert SqlStorage().load_account('测试股') is None
+
+
+def test_operations_command(ws):
+    """operations 命令：驱动 SQLite，单股操作历史"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool, AccountHistory, Operation
+    SqlStorage().save_account(Account(stock_name='测试股', stock_code='sz000001',
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    SqlStorage().save_operations('测试股', AccountHistory(stock_name='测试股', operations=[
+        Operation(type='init', capital=500000, timestamp='2026-01-01T09:00:00')]))
+    r = runner.invoke(app, ["operations", "测试股"])
+    assert r.exit_code == 0
+    assert "操作历史" in r.output
+    # 单股操作历史走 ReportGenerator 报告：INIT 渲染为 初始化（与 v1 一致）
+    assert "初始化" in r.output
+
+
+def test_operations_command_not_found(ws):
+    """operations 单股不存在时给出建议并 exit 1"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["operations", "不存在的股"])
+    assert r.exit_code == 1
+    assert "未找到股票" in r.output
+
+
+def test_fetch_price_command_registered(ws):
+    """fetch-price 命令已注册（--help 不触网络）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["fetch-price", "--help"])
+    assert r.exit_code == 0
+    assert "fetch-price" in r.output
+
+
+def test_fetch_kline_command_registered(ws):
+    """fetch-kline 命令已注册（--help 不触网络）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["fetch-kline", "--help"])
+    assert r.exit_code == 0
+    assert "fetch-kline" in r.output
+
+
+def test_market_summary_command_registered(ws):
+    """market-summary 命令已注册（--help 不触网络）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["market-summary", "--help"])
+    assert r.exit_code == 0
+    assert "market-summary" in r.output
+
+
+def test_search_command_registered(ws):
+    """search 命令已注册（--help 不触网络）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["search", "--help"])
+    assert r.exit_code == 0
+    assert "search" in r.output

@@ -567,6 +567,240 @@ def delete(
         raise typer.Exit(1)
 
 
+@app.command()
+def operations(
+    stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则列出所有）"),
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="仅显示最近N天的操作记录"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-n", help="最多显示最近N条操作记录")
+):
+    """查看操作历史"""
+    stock_name = _normalize_stock_name(stock_name)
+    from paper_trading_v2.reporting import ReportGenerator
+    from paper_trading_v2.portfolio import PortfolioManager
+    generator = ReportGenerator()
+
+    if stock_name:
+        # 查询单个股票
+        manager = PortfolioManager()
+        account = manager.trader.get_account(stock_name)
+        if not account:
+            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户记录{suggestions}")
+            raise typer.Exit(1)
+        report = generator.generate_operations_report(stock_name, days=days, limit=limit)
+        typer.echo(report)
+    else:
+        # 列出所有股票
+        manager = PortfolioManager()
+        accounts = manager.list_accounts()
+
+        if not accounts:
+            typer.echo("📭 暂无账户")
+            return
+
+        from datetime import datetime, timedelta
+
+        typer.echo(f"📋 所有操作历史（共 {len(accounts)} 个）")
+        for name in accounts:
+            ops_data = manager.trader.storage.load_operations(name)
+            if ops_data and ops_data.operations:
+                ops = ops_data.operations
+                # 按天数过滤
+                if days is not None and days > 0:
+                    cutoff = datetime.now() - timedelta(days=days)
+                    ops = [
+                        op for op in ops
+                        if datetime.fromisoformat(op.timestamp) >= cutoff
+                    ]
+                if not ops:
+                    continue
+                typer.echo(f"\n  📅 {name}: {len(ops_data.operations)} 笔操作")
+                display_ops = ops[-limit:] if limit else ops[-5:]
+                for op in display_ops:
+                    type_value = op.type.value if hasattr(op.type, 'value') else str(op.type)
+                    # init 操作显示 capital，其他操作显示 amount
+                    if hasattr(op, 'capital') and op.capital is not None:
+                        amount_value = op.capital
+                    else:
+                        amount_value = op.amount if op.amount else 0
+                    typer.echo(f"     • {op.timestamp[:10]} {type_value:4s}: {amount_value:.2f}")
+            else:
+                typer.echo(f"  📅 {name}: 暂无操作")
+
+
+# ============ 行情/搜索命令组（真实网络抓取） ============
+
+@app.command()
+def fetch_price(
+    code: str = typer.Argument(..., help="股票代码"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """获取股票实时价格"""
+    from paper_trading_v2.price_fetcher import StockPriceFetcher
+    try:
+        fetcher = StockPriceFetcher()
+        info = fetcher.get_realtime_price(code)
+
+        if not info:
+            typer.echo(f"❌ 未找到股票代码 '{code}' 的数据")
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps({
+                "code": info.code,
+                "name": info.name,
+                "market": info.market.value if hasattr(info.market, 'value') else str(info.market),
+                "current_price": info.current_price,
+                "pre_close": info.pre_close,
+                "open_price": info.open_price,
+                "high": info.high,
+                "low": info.low,
+                "volume": info.volume,
+                "date": info.date,
+                "time": info.time,
+                "source": info.source
+            }, ensure_ascii=False, indent=2))
+        else:
+            # 格式化价格变化百分比
+            change_percent = 0
+            if info.current_price and info.pre_close:
+                change_percent = ((info.current_price - info.pre_close) / info.pre_close) * 100
+
+            icon = "📈" if change_percent >= 0 else "📉"
+            sign = "+" if change_percent >= 0 else ""
+
+            typer.echo(f"📊 {info.name} ({info.code})\n")
+            typer.echo(f"💰 当前价格: ¥{info.current_price:.2f}" if info.current_price else f"💰 当前价格: N/A")
+            typer.echo(f"   昨收价格: ¥{info.pre_close:.2f}" if info.pre_close else f"   昨收价格: N/A")
+            typer.echo(f"   开盘价格: ¥{info.open_price:.2f}" if info.open_price else f"   开盘价格: N/A")
+            typer.echo(f"   最高价格: ¥{info.high:.2f}" if info.high else f"   最高价格: N/A")
+            typer.echo(f"   最低价格: ¥{info.low:.2f}" if info.low else f"   最低价格: N/A")
+            typer.echo(f"   成交量: {info.volume}" if info.volume else f"   成交量: N/A")
+
+            typer.echo(f"   日期: {info.date}" if info.date else f"   日期: N/A")
+            typer.echo(f"   时间: {info.time}" if info.time else f"   时间: N/A")
+            typer.echo(f"   数据源: {info.source}")
+
+            if change_percent != 0:
+                typer.echo(f"\n{icon} 涨跌幅: {sign}{change_percent:.2f}%")
+
+    except Exception as e:
+        typer.echo(f"❌ 获取价格失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def fetch_kline(
+    code: str = typer.Argument(..., help="股票代码"),
+    kline_type: str = typer.Option("day", "--type", "-t", help="K线类型 (day/week/month/5min/10min/15min/30min/60min)"),
+    count: int = typer.Option(120, "--count", "-n", help="获取最近N条数据"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """获取股票K线数据"""
+    from paper_trading_v2.kline_fetcher import KLineDataFetcher
+    try:
+        fetcher = KLineDataFetcher()
+        klines = fetcher.fetch_kline_data(code, kline_type=kline_type, count=count)
+
+        if not klines:
+            typer.echo(f"❌ 未找到股票代码 '{code}' 的K线数据")
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps({
+                "code": code,
+                "kline_type": kline_type,
+                "data": klines
+            }, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(f"📊 {code} {kline_type}K 数据（最近 {len(klines)} 条）\n")
+
+            for kline in klines[-20:]:  # 显示最近20条
+                time_str = kline.get('date', '')
+                if 'time' in kline and kline['time']:
+                    time_str = f"{time_str} {kline['time']}"
+
+                typer.echo(f"📅 {time_str}:")
+                typer.echo(f"   开: {kline['open']:.2f}, 收: {kline['close']:.2f}, "
+                          f"高: {kline['high']:.2f}, 低: {kline['low']:.2f}")
+                typer.echo(f"   成交量: {kline['volume']}")
+
+            if len(klines) > 20:
+                typer.echo(f"\n... 共 {len(klines)} 条数据")
+
+    except Exception as e:
+        typer.echo(f"❌ 获取K线数据失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def market_summary(
+    code: str = typer.Argument(..., help="股票代码"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json/markdown)")
+):
+    """获取股票多周期市场趋势汇总 (月K/周K/日K/分时)"""
+    from paper_trading_v2.market_summary import MarketSummaryAnalyzer
+    try:
+        analyzer = MarketSummaryAnalyzer()
+        data = analyzer.analyze(code)
+
+        if data.get("error"):
+            typer.echo(f"❌ {data['error']}", err=True)
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        elif format == "markdown":
+            typer.echo(analyzer.format_markdown(data))
+        else:
+            typer.echo(analyzer.format_pretty(data))
+
+    except Exception as e:
+        typer.echo(f"❌ 获取市场汇总失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def search(
+    keyword: str = typer.Argument(..., help="搜索关键词"),
+    limit: int = typer.Option(10, "--limit", "-n", help="返回结果数量"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """搜索股票代码（支持A股、港股、美股热门股票）"""
+    from paper_trading_v2.code_searcher import StockCodeSearcher
+    try:
+        searcher = StockCodeSearcher()
+        # 使用综合搜索，包括新浪财经 API 和内置热门股票库
+        search_results = searcher.search(keyword, limit=limit)
+
+        # 合并 A股搜索和热门股票库的结果
+        results = search_results.get('A_share', []) + search_results.get('hot_funds', [])
+
+        if not results:
+            typer.echo(f"❌ 未找到 '{keyword}' 相关的股票")
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(f"📊 搜索 '{keyword}' 的结果（共 {len(results)} 条）:\n")
+
+            for idx, result in enumerate(results, 1):
+                typer.echo(f"{idx}. {result['name']}")
+                typer.echo(f"   代码: {result['code']}")
+                typer.echo(f"   市场: {result['market']}")
+                typer.echo(f"   来源: {result['source']}")
+                typer.echo()
+
+    except Exception as e:
+        typer.echo(f"❌ 搜索失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
 # ============ 迁移命令 ============
 
 @app.command("migrate-existing")

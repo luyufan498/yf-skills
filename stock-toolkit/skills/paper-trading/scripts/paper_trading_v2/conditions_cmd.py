@@ -9,7 +9,7 @@ cron 关键集：atr-sync + check-triggers + conditions 是交易循环的止损
 import typer
 from typing import Optional
 
-from paper_trading_v2.cli import _normalize_stock_name, _auto_exright_check, _get_stock_name_suggestions
+from paper_trading_v2.helpers import normalize_stock_name, auto_exright_check, get_stock_name_suggestions
 from paper_trading_v2.conditions import ConditionType, ConditionCategory, EventConditionType
 from paper_trading_v2.conditions_manager import ConditionsManager
 from paper_trading_v2.trading import PaperTrader
@@ -29,11 +29,11 @@ def register(app):
         force: bool = typer.Option(False, "--force", "-f", help="强制清除除权缓存并重新检测"),
     ):
         """手动触发除权检测（自动除权检查的 CLI 封装）"""
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
         trader = PaperTrader()
         account = trader.get_account(stock_name)
         if not account:
-            suggestions = _get_stock_name_suggestions(stock_name, PortfolioManager())
+            suggestions = get_stock_name_suggestions(stock_name, PortfolioManager())
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户记录{suggestions}", err=True)
             raise typer.Exit(1)
         if force:
@@ -80,12 +80,12 @@ def register(app):
         event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
     ):
         """条件管理：查看、设定、修改、触发、过期股票交易条件"""
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
 
         # 自动除权检查
         try:
             trader = PaperTrader()
-            _auto_exright_check(trader, stock_name)
+            auto_exright_check(trader, stock_name)
         except Exception:
             pass
 
@@ -440,7 +440,7 @@ def register(app):
 
         # 确定目标股票列表
         if stock_name:
-            targets = [_normalize_stock_name(stock_name)]
+            targets = [normalize_stock_name(stock_name)]
         else:
             targets = trader.storage.list_accounts()
 
@@ -578,7 +578,7 @@ def register(app):
         cond_mgr = ConditionsManager(trader.storage)
 
         if stock_name:
-            targets = [_normalize_stock_name(stock_name)]
+            targets = [normalize_stock_name(stock_name)]
         else:
             targets = trader.storage.list_accounts()
 

@@ -2,49 +2,10 @@
 import typer
 from typing import Optional
 
+from paper_trading_v2.helpers import normalize_stock_name, get_stock_name_suggestions, auto_exright_check
+
 app = typer.Typer(help="ptrade2 — SQLite 深迁移 + 弹性组合总池",
                   add_completion=False, no_args_is_help=True)
-
-
-def _normalize_stock_name(stock_name: str) -> str:
-    """繁体→简体 归一（与 ptrade v1 一致）"""
-    try:
-        from opencc import OpenCC
-        return OpenCC('t2s').convert(stock_name)
-    except Exception:
-        return stock_name
-
-
-def _get_stock_name_suggestions(stock_name: str, manager) -> str:
-    """获取股票名称纠错建议"""
-    import difflib
-    try:
-        accounts = manager.list_accounts() or []
-    except Exception:
-        return ""
-    suggestions = difflib.get_close_matches(stock_name, accounts, n=3, cutoff=0.5)
-    if suggestions:
-        return f"\n    💡 你是不是想找：{', '.join(suggestions)}？"
-    return ""
-
-
-def _auto_exright_check(trader, stock_name: str) -> bool:
-    """自动除权检查（懒加载），返回是否发生了变更"""
-    from paper_trading_v2.exright_cache import ExRightCache
-    from paper_trading_v2.exright_handler import ExRightHandler
-    try:
-        account = trader.get_account(stock_name)
-        if not account or not account.stock_code:
-            return False
-
-        cache = ExRightCache()
-        handler = ExRightHandler(trader, cache)
-        changed, msg = handler.check_and_apply(stock_name, account)
-        if changed:
-            typer.echo(f"📢 除权除息已处理: {msg}")
-        return changed
-    except Exception:
-        return False
 
 
 @app.command()
@@ -94,7 +55,7 @@ def master_pool_allocate(
     code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选）"),
 ):
     """开持仓段（从 free 拨 budget）"""
-    stock = _normalize_stock_name(stock)
+    stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -112,7 +73,7 @@ def master_pool_topup(
     reason: str = typer.Option("", "--reason"),
 ):
     """段内注资"""
-    stock = _normalize_stock_name(stock)
+    stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -130,7 +91,7 @@ def master_pool_release(
     source: str = typer.Option("agent", "--source", help="agent/manual"),
 ):
     """关持仓段（空仓回池）"""
-    stock = _normalize_stock_name(stock)
+    stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
@@ -174,7 +135,7 @@ def watchlist_add(
     reason: str = typer.Option("", "--reason"),
 ):
     """入池"""
-    stock = _normalize_stock_name(stock)
+    stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
@@ -192,7 +153,7 @@ def watchlist_remove(
     reason: str = typer.Option("", "--reason"),
 ):
     """移出池"""
-    stock = _normalize_stock_name(stock)
+    stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
@@ -213,7 +174,7 @@ def init(
     force: bool = typer.Option(False, "--force", "-f"),
 ):
     """初始化资金池（一般用 master-pool-allocate 替代）"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     # 有 open 段的股票，账户资金由段管理，禁止 init --force（防幻影资金）
     from paper_trading_v2.db import get_connection, migrate_db
     from paper_trading_v2.config import get_workspace_config
@@ -244,7 +205,7 @@ def buy(
     note: str = typer.Option("", "--note", "-n"),
 ):
     """买入股票"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().buy_stock(stock_name, quantity=qty, amount=amount, note=note)
@@ -262,7 +223,7 @@ def sell(
     note: str = typer.Option("", "--note", "-n"),
 ):
     """卖出股票"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().sell_stock(stock_name, quantity=qty, sell_all=all, note=note)
@@ -297,7 +258,7 @@ def info(
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/markdown)"),
 ):
     """查看账户详情（合并显示资金池、持仓、收益）"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.portfolio import PortfolioManager
     from paper_trading_v2.reporting import ReportGenerator
     from paper_trading_v2.trading import PaperTrader
@@ -307,14 +268,14 @@ def info(
         # 自动除权检查
         try:
             trader = PaperTrader()
-            _auto_exright_check(trader, stock_name)
+            auto_exright_check(trader, stock_name)
         except Exception:
             pass
         # 查询单个股票的完整信息
         summary = manager.get_account_summary(stock_name)
 
         if not summary:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户记录{suggestions}")
             raise typer.Exit(1)
 
@@ -410,7 +371,7 @@ def info(
 @app.command()
 def pool(stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则列出所有）")):
     """查询资金池状态"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.portfolio import PortfolioManager
     manager = PortfolioManager()
 
@@ -419,7 +380,7 @@ def pool(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
         summary = manager.get_account_summary(stock_name)
 
         if not summary:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的资金池记录{suggestions}")
             raise typer.Exit(1)
 
@@ -450,7 +411,7 @@ def pool(stock_name: Optional[str] = typer.Argument(None, help="股票名称（�
 @app.command()
 def holdings(stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则列出所有）")):
     """查看持仓"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.portfolio import PortfolioManager
     manager = PortfolioManager()
 
@@ -459,7 +420,7 @@ def holdings(stock_name: Optional[str] = typer.Argument(None, help="股票名称
         summary = manager.get_account_summary(stock_name)
 
         if not summary:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的持仓记录{suggestions}")
             raise typer.Exit(1)
 
@@ -498,7 +459,7 @@ def holdings(stock_name: Optional[str] = typer.Argument(None, help="股票名称
 @app.command()
 def profit(stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则列出所有）")):
     """查看收益报告"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.portfolio import PortfolioManager
     from paper_trading_v2.reporting import ReportGenerator
     generator = ReportGenerator()
@@ -508,7 +469,7 @@ def profit(stock_name: Optional[str] = typer.Argument(None, help="股票名称�
         manager = PortfolioManager()
         summary = manager.get_account_summary(stock_name)
         if not summary:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户记录{suggestions}")
             raise typer.Exit(1)
         report = generator.generate_profit_report(stock_name)
@@ -550,7 +511,7 @@ def delete(
     force: bool = typer.Option(False, "--force", "-f", help="强制删除（即使有持仓）")
 ):
     """删除账户"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.portfolio import PortfolioManager
     manager = PortfolioManager()
 
@@ -559,7 +520,7 @@ def delete(
         if result:
             typer.echo(f"✅ 已删除账户: {stock_name}")
         else:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到账户: {stock_name}{suggestions}")
             raise typer.Exit(1)
     except ValueError as e:
@@ -574,7 +535,7 @@ def operations(
     limit: Optional[int] = typer.Option(None, "--limit", "-n", help="最多显示最近N条操作记录")
 ):
     """查看操作历史"""
-    stock_name = _normalize_stock_name(stock_name)
+    stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.reporting import ReportGenerator
     from paper_trading_v2.portfolio import PortfolioManager
     generator = ReportGenerator()
@@ -584,7 +545,7 @@ def operations(
         manager = PortfolioManager()
         account = manager.trader.get_account(stock_name)
         if not account:
-            suggestions = _get_stock_name_suggestions(stock_name, manager)
+            suggestions = get_stock_name_suggestions(stock_name, manager)
             typer.echo(f"❌ 未找到股票 '{stock_name}' 的账户记录{suggestions}")
             raise typer.Exit(1)
         report = generator.generate_operations_report(stock_name, days=days, limit=limit)

@@ -12,7 +12,7 @@ from typing import Optional
 
 import typer
 
-from paper_trading_v2.cli import _normalize_stock_name
+from paper_trading_v2.helpers import normalize_stock_name
 from paper_trading_v2.analysis import AnalysisManager
 from paper_trading_v2.config import get_workspace_config
 from paper_trading_v2.export import DataExporter
@@ -31,7 +31,7 @@ def register(app):
         output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径")
     ):
         """导出数据"""
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
         exporter = DataExporter()
 
         if stock_name:
@@ -56,7 +56,7 @@ def register(app):
         stock_name: Optional[str] = typer.Argument(None, help="股票名称（不指定则修复所有账户）")
     ):
         """根据 FIFO 重新修正 SELL operation 的 cost 和 profit（修复旧 Bug 数据污染）"""
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
         trader = PaperTrader()
 
         if stock_name:
@@ -171,7 +171,7 @@ def register(app):
         """
         临时数据管理
         """
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
 
         """
         支持的数据类别（示例）:
@@ -318,7 +318,7 @@ def register(app):
         """
         分析报告管理
         """
-        stock_name = _normalize_stock_name(stock_name)
+        stock_name = normalize_stock_name(stock_name)
 
         """
         示例:

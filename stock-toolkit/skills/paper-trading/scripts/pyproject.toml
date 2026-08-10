@@ -22,10 +22,11 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 ptrade = "paper_trading.cli:app"
 paper-trading = "paper_trading.cli:app"
+ptrade2 = "paper_trading_v2.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["paper_trading*"]
+include = ["paper_trading*", "paper_trading_v2*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

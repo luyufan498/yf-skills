@@ -155,6 +155,35 @@ def test_operations_command_not_found(ws):
     assert "未找到股票" in r.output
 
 
+def test_operations_list_all_and_days_filter(ws):
+    """operations 列出全部 + --days 过滤（--days 是 operations 的子命令选项）"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool, AccountHistory, Operation
+    s = SqlStorage()
+    s.save_account(Account(stock_name='测试股', stock_code='sz000001',
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    s.save_operations('测试股', AccountHistory(stock_name='测试股', operations=[
+        Operation(type='init', capital=500000, timestamp='2026-01-01T09:00:00'),
+        Operation(type='buy', price=100.0, quantity=100, amount=10000,
+                  timestamp='2026-08-01T10:00:00'),
+    ]))
+    # 不指定股票 → 列出全部（多账户分支打印 op.type.value）
+    r = runner.invoke(app, ["operations"])
+    assert r.exit_code == 0
+    assert "测试股" in r.output
+    assert "buy" in r.output
+    assert "init" in r.output
+    # --days 365 时间窗覆盖两条操作（均为近一年内）
+    r = runner.invoke(app, ["operations", "--days", "365"])
+    assert r.exit_code == 0
+    # --days 30 只保留 2026-08-01 的 buy，过滤掉 2026-01-01 的 init
+    r = runner.invoke(app, ["operations", "--days", "30"])
+    assert r.exit_code == 0
+    assert "buy" in r.output
+    assert "init" not in r.output
+
+
 def test_fetch_price_command_registered(ws):
     """fetch-price 命令已注册（--help 不触网络）"""
     from paper_trading_v2.cli import app

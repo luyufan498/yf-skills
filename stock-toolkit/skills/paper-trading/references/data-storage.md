@@ -1,5 +1,7 @@
 # 数据存储结构详解
 
+> ⚠️ **本文档描述 v1（ptrade）的 JSON 存储。ptrade2（V2）已改用 SQLite（`master_pool.db`）单一事实源**，账户/操作/条件深迁移为规范化表。V2 存储结构见 [elastic-master-pool.md](elastic-master-pool.md) 第六节。本页保留作 v1 兼容与历史理解参考。
+
 本指南详细说明 paper-trading 的数据存储机制、文件结构和存储路径。
 
 ## 目录

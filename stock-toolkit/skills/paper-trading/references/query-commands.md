@@ -1,5 +1,7 @@
 # 查询命令说明详解
 
+> 本文命令（info/pool/holdings/operations/profit/list）在 **ptrade2 下同名可用**（`ptrade2 info 股票` 等）。注意：ptrade2 的 `pool` 命令仍显示**单账户**资金池；总池视角用 `ptrade2 master-pool-show`。详见 [elastic-master-pool.md](elastic-master-pool.md)。
+
 本指南详细说明 paper-trading 的查询命令：资金池查询、持仓查询、操作历史、收益报告。
 
 ## 目录

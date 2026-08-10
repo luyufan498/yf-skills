@@ -5,6 +5,8 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
 
 # 股票深度分析
 
+> **命令说明**：本流程中的 `ptrade` 命令（operations/search/market-summary/analysis/temp-data 等）在 **ptrade2 下同名可用**（前缀换成 `ptrade2` 即可，存储为 SQLite）。模拟盘持仓读取时，若用 ptrade2 还应 `ptrade2 master-pool-show` 看总池状态 + 该股是否在池（watchlist）。交易纪律含"总池资金纪律"章节，见 [references/trading-discipline.md](references/trading-discipline.md) 第八节。
+
 执行系统化的股票深度分析流程，通过自适应搜索和多数据源整合，生成专业的股票分析报告。
 
 ## 分析模式识别

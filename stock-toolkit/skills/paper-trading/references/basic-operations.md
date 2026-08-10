@@ -1,6 +1,33 @@
 # 基础交易操作详解
 
-本指南详细说明 paper-trading 的基础交易操作：初始化资金池、买入股票、卖出股票。
+> ⚠️ **ptrade2（V2）建仓方式已变**：不再"每只股票独立 init"，而是 `ptrade2 master-pool-allocate`（从总池分配资金建仓）。buy/sell 命令与 v1 同名。以下 v1 说明保留作兼容参考，V2 建仓流程见下方"ptrade2 建仓"与 [elastic-master-pool.md](elastic-master-pool.md)。
+
+## ptrade2 建仓（V2，推荐）
+
+```bash
+# 1. 确认池名单与总池
+ptrade2 watchlist-list
+ptrade2 master-pool-show
+
+# 2. 入池（若未在池中）——L2 agent 可加，L1 须 --source manual
+ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
+
+# 3. 开持仓段（从 free 拨预算建账户，替代 v1 init）
+ptrade2 master-pool-allocate 股票 --amount 200000 --reason 右侧建仓
+
+# 4. 交易（buy/sell 与 v1 同名）
+ptrade2 buy 股票 --qty 100
+
+# 5. 买入缺口补资金
+ptrade2 master-pool-topup 股票 --amount 50000 --reason 补弹药
+
+# 6. 空仓后释放回池（7 日冷却）
+ptrade2 master-pool-release 股票 --reason 空仓释放
+```
+
+---
+
+## 初始化资金池（v1 兼容）
 
 ## 目录
 

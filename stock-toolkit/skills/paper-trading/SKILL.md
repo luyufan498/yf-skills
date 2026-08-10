@@ -5,7 +5,50 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 
 # 模拟盘交易系统
 
-## 概览
+## ⚡ ptrade2（V2 弹性组合总池，推荐）
+
+> **2026-08-10 起 ptrade2 已完整上线**：命令面与 v1 完全对齐（35 命令），SQLite 深迁移存储 + 弹性组合总池 + 三档策略。旧 ptrade v1 保留但仅用于回退。
+
+**核心区别**：
+- **存储**：`ptrade2` 用 SQLite（`master_pool.db`）单一事实源，取代 v1 的每账户 JSON 文件。命令 `ptrade2` 与 v1 命令同名同参，直接替换前缀即可。
+- **资金模型**：v1"每只股票独立资金池互不相通" → v2"**一个总池 1000 万 + 按股分配/释放**"。池 ≠ 持仓 ≠ 预算三者解耦。
+- **三档策略**：L1 人工锁定（AI 无权 release）/ L2 稳健（agent 自主+三重释放条件）/ L3 投机（agent 完全自由，空仓即剔）。当前 8 股全部 L2。
+
+**快速开始（ptrade2）**：
+```bash
+# 总池状态（每次交易/审查先看）
+ptrade2 master-pool-show              # total/free/占用率/活跃段/已实现盈亏
+
+# 池名单
+ptrade2 watchlist-list                # 三档名单
+ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
+ptrade2 watchlist-add 股票 --strategy L1 --source manual --reason 人工锁定  # L1 必须 manual
+
+# 开持仓段（从 free 拨预算建账户）——替代 v1 的 ptrade init
+ptrade2 master-pool-allocate 股票 --amount 200000 --reason 右侧建仓
+
+# 段内注资（买入缺口时）
+ptrade2 master-pool-topup 股票 --amount 50000 --reason 补弹药
+
+# 关段回池（空仓后，7 日冷却）
+ptrade2 master-pool-release 股票 --reason 空仓释放
+
+# 交易命令与 v1 同名（buy/sell/conditions/atr-sync/check-triggers/fetch-* 全部可用）
+ptrade2 buy 股票 --qty 100
+ptrade2 atr-sync 股票
+ptrade2 check-triggers 股票
+
+# 历史迁移（一次性，把 v1 JSON 账户归档为 closed 段）
+ptrade2 migrate-existing
+```
+
+详细文档：[弹性组合总池（V2）](references/elastic-master-pool.md)、[V2 资金纪律](references/trading-principles.md)
+
+---
+
+## 概览（v1 兼容说明）
+
+> 以下为 v1 `ptrade` 的说明。功能命令与 ptrade2 一致，但存储为每账户独立 JSON、资金互不相通。ptrade2 已上线后，**新操作请用 `ptrade2`**。
 
 模拟盘交易系统是一个功能完善的虚拟交易平台，支持 A股、港股和美股交易，每个股票有独立的资金池管理，提供完整的交易流程追踪、市场数据查询和市场新闻获取功能。
 

@@ -1,284 +1,207 @@
-"""数据存储模块
-
-提供JSON文件存储和可选的数据库存储
-"""
-
+"""SqlStorage — SQLite 深迁移存储（接口与 JsonStorage 一致）"""
 import json
-from abc import ABC, abstractmethod
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
-from datetime import datetime
 
-from paper_trading_v2.models import Account, AccountHistory, Operation
-
-
-class StorageBackend(ABC):
-    """存储后端抽象接口"""
-
-    @abstractmethod
-    def save_account(self, account: Account) -> Path:
-        """保存账户信息"""
-        pass
-
-    @abstractmethod
-    def load_account(self, stock_name: str) -> Optional[Account]:
-        """加载账户信息"""
-        pass
-
-    @abstractmethod
-    def delete_account(self, stock_name: str) -> bool:
-        """删除账户信息"""
-        pass
-
-    @abstractmethod
-    def save_operation(self, stock_name: str, operation: Operation) -> Path:
-        """保存操作记录"""
-        pass
-
-    @abstractmethod
-    def load_operations(self, stock_name: str) -> Optional[AccountHistory]:
-        """加载操作记录"""
-        pass
-
-    @abstractmethod
-    def save_operations(self, stock_name: str, operations: AccountHistory) -> Path:
-        """覆盖保存完整的操作记录"""
-        pass
-
-    @abstractmethod
-    def list_accounts(self) -> List[str]:
-        """列出所有账户"""
-        pass
+from paper_trading_v2.models import (
+    Account, AccountHistory, Operation, Position, ExRightAppliedRecord, CapitalPool,
+)
+from paper_trading_v2.db import get_connection, migrate_db
 
 
-class JsonStorage(StorageBackend):
-    """JSON文件存储实现"""
+class StorageBackend:
+    """存储后端抽象（兼容保留）"""
+    pass
 
-    def __init__(self, base_dir: str = None):
-        """
-        初始化JSON存储
 
-        Args:
-            base_dir: 基础目录路径，默认使用配置文件中的 tradings_dir
-        """
-        if base_dir:
-            self.base_dir = Path(base_dir)
-        else:
+class SqlStorage(StorageBackend):
+    """SQLite 规范化表存储。水合：表 → 内存模型，领域逻辑照常。"""
+
+    def __init__(self, db_path=None):
+        if db_path is None:
             from paper_trading_v2.config import get_workspace_config
-            config = get_workspace_config()
-            self.base_dir = config['tradings_dir']
+            db_path = get_workspace_config()['db_path']
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = get_connection(self.db_path)
+        migrate_db(conn)
+        conn.close()
 
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+    def _conn(self):
+        return get_connection(self.db_path)
 
-    def _get_account_dir(self, stock_name: str) -> Path:
-        """
-        获取账户目录
+    def _account_id(self, conn, stock_name: str) -> Optional[int]:
+        row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
+        return row[0] if row else None
 
-        直接使用原始股票名称，不再进行字符清理
-        目录结构: tradings_dir/stock_name
-        """
-        return self.base_dir / stock_name
+    # ---- Account ----
+    def load_account(self, stock_name: str) -> Optional[Account]:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT * FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
+            if not row:
+                return None
+            positions = self._load_positions(conn, row['id'])
+            exright = self._load_exright(conn, row['id'])
+            return Account(
+                stock_name=row['stock_name'],
+                stock_code=row['stock_code'],
+                capital_pool=CapitalPool(
+                    total=row['capital_total'],
+                    available=row['capital_available'],
+                    used=row['capital_used'],
+                ),
+                positions=positions,
+                fifo_index=row['fifo_index'],
+                fifo_offset=row['fifo_offset'],
+                exright_applied=exright,
+                created_at=row['created_at'],
+                updated_at=row['updated_at'],
+            )
+        finally:
+            conn.close()
 
-    def _get_account_file(self, stock_name: str) -> Path:
-        """获取账户文件路径
+    def _load_positions(self, conn, account_id: int) -> List[Position]:
+        rows = conn.execute("SELECT * FROM positions WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
+        return [Position(
+            stock_code=r['stock_code'] or '', quantity=r['quantity'] or 0,
+            price=r['price'] or 0.0, total_cost=r['total_cost'] or 0.0,
+            operation=r['operation'], timestamp=r['timestamp'] or '', note=r['note'] or '',
+        ) for r in rows]
 
-        优先使用新格式 account.json，如果不存在则尝试旧格式 holdings.json
-        """
-        account_dir = self._get_account_dir(stock_name)
-        new_file = account_dir / "account.json"
-        old_file = account_dir / "holdings.json"
-
-        # 返回存在的文件，优先新格式
-        if new_file.exists():
-            return new_file
-        elif old_file.exists():
-            return old_file
-        else:
-            return new_file  # 返回新格式路径用于创建新文件
-
-    def _get_operations_file(self, stock_name: str) -> Path:
-        """获取操作记录文件路径"""
-        return self._get_account_dir(stock_name) / "operations.json"
+    def _load_exright(self, conn, account_id: int) -> List[ExRightAppliedRecord]:
+        rows = conn.execute("SELECT * FROM exright_applied WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
+        return [ExRightAppliedRecord(
+            cqr=r['cqr'] or '', fhcontent=r['fhcontent'] or '',
+            applied_at=r['applied_at'] or '', reason=r['reason'] or '',
+            migrated=bool(r['migrated']),
+        ) for r in rows]
 
     def save_account(self, account: Account) -> Path:
-        """保存账户信息"""
-        account_file = self._get_account_file(account.stock_name)
-        account_dir = account_file.parent
-        account_dir.mkdir(parents=True, exist_ok=True)
-
         account.updated_at = datetime.now().isoformat()
-
-        with open(account_file, 'w', encoding='utf-8') as f:
-            f.write(account.model_dump_json(ensure_ascii=False, indent=2))
-
-        return account_file
-
-    def load_account(self, stock_name: str) -> Optional[Account]:
-        """加载账户信息
-
-        如果检测到旧格式数据，会自动迁移为新格式
-        """
-        account_dir = self._get_account_dir(stock_name)
-        new_file = account_dir / "account.json"
-        old_file = account_dir / "holdings.json"
-
-        # 决定使用哪个文件
-        if new_file.exists():
-            account_file = new_file
-        elif old_file.exists():
-            account_file = old_file
-        else:
-            return None
-
+        conn = self._conn()
         try:
-            with open(account_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            existing = self._account_id(conn, account.stock_name)
+            with conn:
+                if existing is None:
+                    cur = conn.execute(
+                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
+                        "capital_available, capital_used, fifo_index, fifo_offset, "
+                        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (account.stock_name, account.stock_code,
+                         account.capital_pool.total, account.capital_pool.available,
+                         account.capital_pool.used, account.fifo_index, account.fifo_offset,
+                         account.created_at, account.updated_at))
+                    account_id = cur.lastrowid
+                else:
+                    account_id = existing
+                    conn.execute(
+                        "UPDATE accounts SET stock_code=?, capital_total=?, "
+                        "capital_available=?, capital_used=?, fifo_index=?, fifo_offset=?, "
+                        "updated_at=? WHERE id=?",
+                        (account.stock_code, account.capital_pool.total,
+                         account.capital_pool.available, account.capital_pool.used,
+                         account.fifo_index, account.fifo_offset,
+                         account.updated_at, account_id))
+                conn.execute("DELETE FROM positions WHERE account_id=?", (account_id,))
+                for i, pos in enumerate(account.positions):
+                    conn.execute(
+                        "INSERT INTO positions (account_id, seq, operation, stock_code, "
+                        "quantity, price, total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (account_id, i, pos.operation, pos.stock_code, pos.quantity,
+                         pos.price, pos.total_cost, pos.timestamp, pos.note))
+                conn.execute("DELETE FROM exright_applied WHERE account_id=?", (account_id,))
+                for i, ex in enumerate(account.exright_applied):
+                    conn.execute(
+                        "INSERT INTO exright_applied (account_id, seq, cqr, fhcontent, "
+                        "applied_at, reason, migrated) VALUES (?,?,?,?,?,?,?)",
+                        (account_id, i, ex.cqr, ex.fhcontent, ex.applied_at,
+                         ex.reason, int(ex.migrated)))
+            return Path(self.db_path)
+        finally:
+            conn.close()
 
-            # 兼容旧格式：为 position 添加缺失的 stock_code 字段
-            if 'positions' in data:
-                stock_code = data.get('stock_code', '')
-                for position in data['positions']:
-                    if isinstance(position, dict) and 'stock_code' not in position:
-                        position['stock_code'] = stock_code
-
-            account = Account.model_validate(data)
-
-            # 如果读取的是旧格式，自动迁移为新格式
-            if account_file == old_file:
-                print(f"🔄 检测到旧格式数据，正在迁移到新格式...")
-                self.save_account(account)
-                print(f"✅ 已迁移到新格式: {new_file}")
-
-                # 备份旧文件
-                backup_file = account_dir / "holdings.json.bak"
-                old_file.rename(backup_file)
-                print(f"📦 备份旧文件: {backup_file}")
-
-            return account
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading account: {e}")
-            return None
-
-    def delete_account(self, stock_name: str) -> bool:
-        """删除账户信息"""
-        account_dir = self._get_account_dir(stock_name)
-
-        if not account_dir.exists():
-            return False
-
-        import shutil
+    # ---- Operations ----
+    def load_operations(self, stock_name: str) -> Optional[AccountHistory]:
+        conn = self._conn()
         try:
-            shutil.rmtree(account_dir)
-            return True
-        except Exception as e:
-            print(f"Error deleting account: {e}")
-            return False
-
-    def save_operation(self, stock_name: str, operation: Operation) -> Path:
-        """保存操作记录"""
-        operations = self.load_operations(stock_name)
-
-        if operations is None:
-            operations = AccountHistory(
+            account_id = self._account_id(conn, stock_name)
+            if account_id is None:
+                return None
+            rows = conn.execute("SELECT * FROM operations WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
+            ops = [Operation(
+                type=r['type'], price=r['price'], quantity=r['quantity'],
+                amount=r['amount'], cost=r['cost'], profit=r['profit'],
+                capital=r['capital'], timestamp=r['timestamp'] or '', note=r['note'] or '',
+            ) for r in rows]
+            return AccountHistory(
                 stock_name=stock_name,
-                created_at=datetime.now().isoformat()
+                created_at=rows[0]['timestamp'] if rows else datetime.now().isoformat(),
+                operations=ops,
             )
-
-        operations.operations.append(operation)
-        operations.updated_at = datetime.now().isoformat()
-
-        return self.save_operations(stock_name, operations)
+        finally:
+            conn.close()
 
     def save_operations(self, stock_name: str, operations: AccountHistory) -> Path:
-        """覆盖保存完整的操作记录"""
-        operations.updated_at = datetime.now().isoformat()
-
-        operations_file = self._get_operations_file(stock_name)
-        operations_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(operations_file, 'w', encoding='utf-8') as f:
-            f.write(operations.model_dump_json(ensure_ascii=False, indent=2))
-
-        return operations_file
-
-    def load_operations(self, stock_name: str) -> Optional[AccountHistory]:
-        """加载操作记录"""
-        operations_file = self._get_operations_file(stock_name)
-
-        if not operations_file.exists():
-            return None
-
+        conn = self._conn()
         try:
-            with open(operations_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            account_id = self._account_id(conn, stock_name)
+            if account_id is None:
+                raise ValueError(f"账户 '{stock_name}' 不存在，请先初始化")
+            with conn:
+                conn.execute("DELETE FROM operations WHERE account_id=?", (account_id,))
+                for i, op in enumerate(operations.operations):
+                    conn.execute(
+                        "INSERT INTO operations (account_id, seq, type, price, quantity, "
+                        "amount, cost, profit, capital, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (account_id, i, op.type, op.price, op.quantity, op.amount,
+                         op.cost, op.profit, op.capital, op.timestamp or '', op.note or ''))
+            return Path(self.db_path)
+        finally:
+            conn.close()
 
-            # 兼容旧格式中 type 字段可能叫 'operation'
-            if isinstance(data, dict) and 'operations' in data:
-                # 过滤掉决策记录（向后兼容）
-                valid_operations = []
-                for op in data['operations']:
-                    if isinstance(op, dict):
-                        # 兼容不同的字段名
-                        if 'type' not in op and 'operation' in op:
-                            op['type'] = op['operation']
+    def save_operation(self, stock_name: str, operation: Operation) -> Path:
+        ops = self.load_operations(stock_name)
+        if ops is None:
+            ops = AccountHistory(stock_name=stock_name)
+        ops.operations.append(operation)
+        return self.save_operations(stock_name, ops)
 
-                        # 跳过决策记录
-                        if op.get('type') not in ['decision', 'decision']:
-                            valid_operations.append(op)
-
-                # 更新操作列表
-                data['operations'] = valid_operations
-
-            return AccountHistory.model_validate(data)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading operations: {e}")
-            return None
-
+    # ---- 账户列表 / 删除 ----
     def list_accounts(self) -> List[str]:
-        """列出所有账户"""
-        accounts = []
+        conn = self._conn()
+        try:
+            rows = conn.execute("SELECT stock_name FROM accounts ORDER BY id").fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
 
-        if not self.base_dir.exists():
-            return accounts
+    def delete_account(self, stock_name: str) -> bool:
+        conn = self._conn()
+        try:
+            account_id = self._account_id(conn, stock_name)
+            if account_id is None:
+                return False
+            with conn:
+                conn.execute("DELETE FROM positions WHERE account_id=?", (account_id,))
+                conn.execute("DELETE FROM operations WHERE account_id=?", (account_id,))
+                conn.execute("DELETE FROM condition_history WHERE condition_id IN "
+                             "(SELECT id FROM conditions WHERE account_id=?)", (account_id,))
+                conn.execute("DELETE FROM conditions WHERE account_id=?", (account_id,))
+                conn.execute("DELETE FROM exright_applied WHERE account_id=?", (account_id,))
+                conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+            return True
+        finally:
+            conn.close()
 
-        for stock_dir in self.base_dir.iterdir():
-            if not stock_dir.is_dir():
-                continue
 
-            # 检查新格式或旧格式
-            account_file_new = stock_dir / "account.json"
-            account_file_old = stock_dir / "holdings.json"
-
-            account_file = account_file_new if account_file_new.exists() else account_file_old
-            if account_file.exists():
-                try:
-                    with open(account_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        accounts.append(data.get('stock_name', stock_dir.name))
-                except Exception:
-                    pass
-
-        return accounts
+# ---- 兼容别名：vendored 领域层 import 这些符号 ----
+JsonStorage = SqlStorage
 
 
 class StorageFactory:
-    """存储工厂"""
-
     @staticmethod
-    def create_storage(backend: str = "json", **kwargs) -> StorageBackend:
-        """
-        创建存储后端实例
-
-        Args:
-            backend: 后端类型 (json, mongodb)
-            **kwargs: 后端特定配置
-
-        Returns:
-            StorageBackend 实例
-        """
-        if backend == "json":
-            return JsonStorage(**kwargs)
-        elif backend == "mongodb":
-            raise NotImplementedError("MongoDB storage not implemented yet")
-        else:
-            raise ValueError(f"Unknown storage backend: {backend}")
+    def create_storage(backend="json", **kwargs):
+        return SqlStorage(**kwargs)

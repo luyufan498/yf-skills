@@ -214,3 +214,43 @@ def test_search_command_registered(ws):
     r = runner.invoke(app, ["search", "--help"])
     assert r.exit_code == 0
     assert "search" in r.output
+
+
+# ============ T4：风险控制命令组（conditions / atr-sync / check-triggers / check-exright） ============
+
+def test_conditions_command(ws):
+    """conditions 读取 SQLite 中的条件"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    from paper_trading_v2.conditions import ConditionsRecord, Condition
+    s = SqlStorage()
+    s.save_account(Account(stock_name='测试股', stock_code=None,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    cm = ConditionsManager(storage=s)
+    cm.save_conditions(ConditionsRecord(stock_name='测试股', conditions={
+        'trailing_stop': Condition(id='c1', type='trailing_stop', name='移动止损', price=80.0,
+                                   action='减仓50%', category='hard', status='active')}))
+    # code=None 账户 → conditions 的实时价/除权路径 early-return，避免网络
+    r = runner.invoke(app, ["conditions", "测试股", "--format", "markdown", "--template", "all"])
+    assert r.exit_code == 0
+    assert "移动止损" in r.output
+
+
+def test_atr_sync_command_registered(ws):
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["atr-sync", "--help"])
+    assert r.exit_code == 0
+
+
+def test_check_triggers_command_registered(ws):
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["check-triggers", "--help"])
+    assert r.exit_code == 0
+
+
+def test_check_exright_command_registered(ws):
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["check-exright", "--help"])
+    assert r.exit_code == 0

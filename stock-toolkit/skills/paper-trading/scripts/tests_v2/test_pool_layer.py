@@ -88,7 +88,7 @@ def test_allocate_slot_limit(mpm, ws):
         mpm.allocate('第九只', 100000, reason='满员')
     # L1 豁免
     w.add('L1股', 'sh600000', strategy='L1', source='manual')
-    mpm.allocate('L1股', 1000000, reason='人工')
+    mpm.allocate('L1股', 1000000, reason='人工', source='manual')
     d = mpm.show()
     assert d['open_segments'] == 9
 
@@ -109,7 +109,7 @@ def test_topup(mpm, ws):
 def test_l1_release_requires_manual(mpm, ws):
     from paper_trading_v2.watchlist import Watchlist
     Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L1', source='manual')
-    mpm.allocate('赛力斯', 1000000, reason='人工')
+    mpm.allocate('赛力斯', 1000000, reason='人工', source='manual')
     with pytest.raises(ValueError, match="L1"):
         mpm.release('赛力斯', reason='agent想释放', source='agent')
     mpm.release('赛力斯', reason='人工释放', source='manual')
@@ -158,3 +158,41 @@ def test_allocate_blocks_when_already_open(mpm, ws):
     mpm.allocate('科创新源', 500000, reason='建仓')
     with pytest.raises(ValueError, match="open 段"):
         mpm.allocate('科创新源', 500000, reason='重复分配')
+
+
+def test_l1_downgrade_rejected(ws):
+    from paper_trading_v2.watchlist import Watchlist
+    w = Watchlist(ws / 'master_pool.db')
+    w.add('赛力斯', 'sh603527', strategy='L1', source='manual', reason='用户锁定')
+    with pytest.raises(ValueError, match="L1"):
+        w.add('赛力斯', strategy='L2', source='agent', reason='agent想降级')
+    # 人工可降级
+    w.add('赛力斯', strategy='L2', source='manual', reason='人工降级')
+    assert w.get('赛力斯')['strategy'] == 'L2'
+
+
+def test_l1_allocate_requires_manual(mpm, ws):
+    from paper_trading_v2.watchlist import Watchlist
+    Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L1', source='manual')
+    with pytest.raises(ValueError, match="L1"):
+        mpm.allocate('赛力斯', 1000000, reason='agent想开L1仓')
+    mpm.allocate('赛力斯', 1000000, reason='人工开仓', source='manual')
+
+
+def test_show_reflects_realized_pnl(mpm, ws):
+    """释放盈利段后 free > total，show 的 occupied 应为 0、realized_pnl 反映盈亏"""
+    from paper_trading_v2.watchlist import Watchlist
+    Watchlist(ws / 'master_pool.db').add('英维克', 'sz000301', strategy='L2', source='agent')
+    mpm.allocate('英维克', 2000000, reason='建仓')
+    # 模拟盈利：账户 available 增 50 万（本应通过买卖产生）
+    conn = mpm._conn()
+    conn.execute("UPDATE accounts SET capital_available=capital_available+500000, "
+                 "capital_total=capital_total+500000 WHERE stock_name='英维克'")
+    conn.commit()
+    conn.close()
+    mpm.release('英维克', reason='盈利释放')
+    d = mpm.show()
+    assert d['free'] == 10000000 + 500000
+    assert d['occupied'] == 0
+    assert d['open_segments'] == 0
+    assert abs(d['realized_pnl'] - 500000) < 1

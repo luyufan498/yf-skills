@@ -30,6 +30,8 @@ class Watchlist:
             with conn:
                 existing = conn.execute("SELECT * FROM pool WHERE stock=?", (stock,)).fetchone()
                 if existing:
+                    if existing['strategy'] == 'L1' and source != 'manual':
+                        raise ValueError("L1 锁定股的任何变更需人工确认（source=manual）")
                     conn.execute("UPDATE pool SET code=COALESCE(?,code), strategy=?, pool_status='active', "
                                  "entered_at=COALESCE(entered_at, ?) WHERE stock=?",
                                  (code, strategy, datetime.now().isoformat(), stock))

@@ -41,11 +41,14 @@ class MasterPoolManager:
             if not ledger:
                 return {"error": "总池未初始化"}
             open_count = conn.execute("SELECT COUNT(*) c FROM position WHERE status='open'").fetchone()['c']
-            occupied = ledger['total'] - ledger['free']
+            occupied = conn.execute(
+                "SELECT COALESCE(SUM(budget),0) s FROM position WHERE status='open'").fetchone()['s']
+            realized = ledger['free'] + occupied - ledger['total']  # 累计已实现盈亏（进池部分）
             return {
                 "total": ledger['total'], "free": ledger['free'],
                 "occupied": occupied,
                 "usage_rate": occupied / ledger['total'] if ledger['total'] else 0,
+                "realized_pnl": realized,
                 "open_segments": open_count,
             }
         finally:
@@ -82,6 +85,8 @@ class MasterPoolManager:
             strat, pool_code = self._get_strategy(conn, stock)
             if code is None:
                 code = pool_code
+            if strat == 'L1' and source != 'manual':
+                raise ValueError("L1 锁定股需人工 allocate（source=manual）")
             if strat != 'L1':
                 cool = conn.execute(
                     "SELECT cooldown_until FROM position WHERE stock=? ORDER BY id DESC LIMIT 1",
@@ -120,6 +125,10 @@ class MasterPoolManager:
                         (aid, now, seg_id, aid))
                     conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
                     conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
+                    conn.execute("DELETE FROM condition_history WHERE condition_id IN "
+                                 "(SELECT id FROM conditions WHERE account_id=?)", (aid,))
+                    conn.execute("DELETE FROM conditions WHERE account_id=?", (aid,))
+                    conn.execute("DELETE FROM exright_applied WHERE account_id=?", (aid,))
                     conn.execute(
                         "UPDATE accounts SET stock_code=COALESCE(?, stock_code), capital_total=?, "
                         "capital_available=?, capital_used=0, fifo_index=-1, fifo_offset=0, "

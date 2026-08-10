@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -100,6 +100,64 @@ CREATE TABLE IF NOT EXISTS exright_applied (
 );
 """
 
+# v3：弹性组合池层 5 张表（池 / 持仓段 / 总池账本 / 审计 / 池变更日志）
+V3_DDL = """
+CREATE TABLE IF NOT EXISTS pool (
+    stock TEXT PRIMARY KEY,
+    code TEXT,
+    strategy TEXT NOT NULL,      -- L1 / L2 / L3
+    pool_status TEXT NOT NULL,   -- active / removed
+    refresh_cadence TEXT,        -- daily / weekly / event
+    entered_at TEXT,
+    exit_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS position (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stock TEXT NOT NULL,
+    code TEXT,
+    strategy TEXT,
+    status TEXT NOT NULL,        -- open / closed
+    budget REAL,
+    topup_total REAL DEFAULT 0,
+    opened_at TEXT,
+    closed_at TEXT,
+    close_value REAL,
+    realized_pnl REAL,
+    cooldown_until TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pool_ledger (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total REAL NOT NULL,
+    free REAL NOT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    action TEXT,             -- init / allocate / topup / release
+    stock TEXT,
+    amount REAL,
+    free_before REAL,
+    free_after REAL,
+    reason TEXT,
+    source TEXT              -- agent / manual
+);
+
+CREATE TABLE IF NOT EXISTS watchlog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    action TEXT,             -- add / remove / set_strategy / lock
+    stock TEXT,
+    strategy_from TEXT,
+    strategy_to TEXT,
+    reason TEXT,
+    source TEXT
+);
+"""
+
 def get_connection(db_path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -125,4 +183,9 @@ def migrate_db(conn: sqlite3.Connection):
             if 'duplicate column' not in str(e).lower():
                 raise
         conn.execute("UPDATE schema_meta SET version=2")
+        conn.commit()
+    if current < 3:
+        # v3: 弹性组合池层（池 / 持仓段 / 总池账本 / 审计 / 池变更日志）
+        conn.executescript(V3_DDL)
+        conn.execute("UPDATE schema_meta SET version=3")
         conn.commit()

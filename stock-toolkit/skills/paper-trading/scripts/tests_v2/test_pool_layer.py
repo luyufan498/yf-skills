@@ -113,3 +113,39 @@ def test_l1_release_requires_manual(mpm, ws):
     with pytest.raises(ValueError, match="L1"):
         mpm.release('赛力斯', reason='agent想释放', source='agent')
     mpm.release('赛力斯', reason='人工释放', source='manual')
+
+
+def test_reallocate_after_release_resets_account(mpm, ws):
+    """冷却期过后重新 allocate：账户重置为新预算 + 旧操作归档"""
+    from paper_trading_v2.watchlist import Watchlist
+    from paper_trading_v2.storage import SqlStorage
+    Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L2', source='agent')
+    mpm.allocate('赛力斯', 1000000, reason='第一段')
+    mpm.release('赛力斯', reason='释放')
+    # 绕过冷却：把 cooldown_until 改到过去
+    conn = mpm._conn()
+    conn.execute("UPDATE position SET cooldown_until=? WHERE stock='赛力斯'",
+                 ('2026-01-01T00:00:00',))
+    conn.commit()
+    conn.close()
+    mpm.allocate('赛力斯', 800000, reason='第二段')
+    acct = SqlStorage(ws / 'master_pool.db').load_account('赛力斯')
+    assert acct.capital_pool.total == 800000
+    assert acct.capital_pool.available == 800000
+    ops = SqlStorage(ws / 'master_pool.db').load_operations('赛力斯')
+    assert len(ops.operations) == 1 and ops.operations[0].type == 'init'
+    conn = mpm._conn()
+    archived = conn.execute("SELECT COUNT(*) c FROM operations_archive WHERE account_id="
+                            "(SELECT id FROM accounts WHERE stock_name='赛力斯')").fetchone()['c']
+    conn.close()
+    assert archived >= 1
+
+
+def test_allocate_blocked_during_cooldown(mpm, ws):
+    """冷却期内禁止重新 allocate"""
+    from paper_trading_v2.watchlist import Watchlist
+    Watchlist(ws / 'master_pool.db').add('英维克', 'sz000301', strategy='L2', source='agent')
+    mpm.allocate('英维克', 500000, reason='建仓')
+    mpm.release('英维克', reason='释放')
+    with pytest.raises(ValueError, match="冷却"):
+        mpm.allocate('英维克', 500000, reason='想追回')

@@ -61,90 +61,112 @@ class MasterPoolManager:
         return (row['strategy'], row['code']) if row else ('L2', None)
 
     def allocate(self, stock, amount, reason, source="agent", code=None):
-        """开持仓段：从 free 拨 budget，建账户，记 audit。"""
+        """开持仓段：从 free 拨 budget，建/重置账户，记 audit。账户与池同事务。"""
         conn = self._conn()
+        now = datetime.now().isoformat()
         try:
+            free = self._get_free(conn)
+            if free is None:
+                raise ValueError("总池未初始化，请先 ptrade2 master-pool-init")
+            if amount <= 0:
+                raise ValueError("分配金额必须 > 0")
+            if amount > free:
+                raise ValueError(f"总池空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
+            total = conn.execute("SELECT total FROM pool_ledger WHERE id=1").fetchone()[0]
+            if amount > 0.3 * total:
+                raise ValueError(f"单股分配超过总池 30%：¥{amount:,.0f} > 30%×{total:,.0f}")
+            strat, pool_code = self._get_strategy(conn, stock)
+            if code is None:
+                code = pool_code
+            if strat != 'L1':
+                cool = conn.execute(
+                    "SELECT cooldown_until FROM position WHERE stock=? ORDER BY id DESC LIMIT 1",
+                    (stock,)).fetchone()
+                if cool and cool[0] and datetime.now() < datetime.fromisoformat(cool[0]):
+                    raise ValueError(f"{stock} 在冷却期内（至 {cool[0]}），禁止 allocate")
+                open_count = conn.execute(
+                    "SELECT COUNT(*) c FROM position WHERE status='open' AND strategy!='L1'"
+                ).fetchone()['c']
+                if open_count >= 8:
+                    raise ValueError(f"持仓段已满（{open_count}/8），需先 release 再开新段")
             with conn:
-                free = self._get_free(conn)
-                if free is None:
-                    raise ValueError("总池未初始化，请先 ptrade2 master-pool-init")
-                if amount <= 0:
-                    raise ValueError(f"分配金额必须 > 0")
-                if amount > free:
-                    raise ValueError(f"总池空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
-                total = conn.execute("SELECT total FROM pool_ledger WHERE id=1").fetchone()[0]
-                if amount > 0.3 * total:
-                    raise ValueError(f"单股分配超过总池 30%：¥{amount:,.0f} > 30%×{total:,.0f}")
-                # 冷却检查（非 L1）
-                strat, pool_code = self._get_strategy(conn, stock)
-                if code is None:
-                    code = pool_code
-                if strat != 'L1':
-                    cool = conn.execute(
-                        "SELECT cooldown_until FROM position WHERE stock=? ORDER BY id DESC LIMIT 1",
-                        (stock,)).fetchone()
-                    if cool and cool[0] and datetime.now() < datetime.fromisoformat(cool[0]):
-                        raise ValueError(f"{stock} 在冷却期内（至 {cool[0]}），禁止 allocate")
-                    # 段位上限 8（非 L1）
-                    open_count = conn.execute(
-                        "SELECT COUNT(*) c FROM position WHERE status='open' AND strategy!='L1'"
-                    ).fetchone()['c']
-                    if open_count >= 8:
-                        raise ValueError(f"持仓段已满（{open_count}/8），需先 release 再开新段")
-                # 扣 free
                 new_free = free - amount
                 conn.execute("UPDATE pool_ledger SET free=?, updated_at=? WHERE id=1",
-                             (new_free, datetime.now().isoformat()))
-                # 建持仓段
+                             (new_free, now))
                 conn.execute("INSERT INTO position (stock, code, strategy, status, budget, "
                              "topup_total, opened_at) VALUES (?,?,?,'open',?,0,?)",
-                             (stock, code, strat, amount, datetime.now().isoformat()))
+                             (stock, code, strat, amount, now))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (datetime.now().isoformat(), 'allocate', stock, amount, free,
-                              new_free, reason, source))
-            # 建账户（传 code 避免网络验证）— 必须在池事务提交后，避免同库写锁冲突
-            from paper_trading_v2.trading import PaperTrader
-            trader = PaperTrader()
-            trader.init_account(stock_name=stock, capital=amount, stock_code=code)
+                             (now, 'allocate', stock, amount, free, new_free, reason, source))
+                # ---- 账户：同一事务直接 SQL ----
+                acct = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock,)).fetchone()
+                if acct:
+                    aid = acct[0]
+                    # 归档旧段操作（保留历史），再重置账户
+                    seg_id = conn.execute(
+                        "SELECT id FROM position WHERE stock=? AND status='closed' "
+                        "ORDER BY id DESC LIMIT 1", (stock,)).fetchone()
+                    seg_id = seg_id[0] if seg_id else None
+                    conn.execute(
+                        "INSERT INTO operations_archive (account_id, archived_at, segment_id, type, "
+                        "price, quantity, amount, cost, profit, capital, timestamp, note, seq) "
+                        "SELECT ?, ?, ?, type, price, quantity, amount, cost, profit, capital, "
+                        "timestamp, note, seq FROM operations WHERE account_id=?",
+                        (aid, now, seg_id, aid))
+                    conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
+                    conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
+                    conn.execute(
+                        "UPDATE accounts SET stock_code=COALESCE(?, stock_code), capital_total=?, "
+                        "capital_available=?, capital_used=0, fifo_index=-1, fifo_offset=0, "
+                        "updated_at=? WHERE id=?",
+                        (code, amount, amount, now, aid))
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
+                        "capital_available, capital_used, fifo_index, fifo_offset, created_at, "
+                        "updated_at) VALUES (?,?,?,?,0,-1,0,?,?)",
+                        (stock, code, amount, amount, now, now))
+                    aid = cur.lastrowid
+                conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
+                             "note) VALUES (?,0,'init',?,?,'初始化资金池')",
+                             (aid, amount, now))
             return True
         finally:
             conn.close()
 
     def topup(self, stock, amount, reason, source="agent"):
-        """段内注资：从 free 拨差额进账户，同步加 total/available。"""
+        """段内注资：从 free 拨差额进账户，同步加 total/available。同事务。"""
         conn = self._conn()
+        now = datetime.now().isoformat()
         try:
+            free = self._get_free(conn)
+            if free is None:
+                raise ValueError("总池未初始化")
+            if amount <= 0:
+                raise ValueError("注资金额必须 > 0")
+            if amount > free:
+                raise ValueError(f"总池空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
+            seg = conn.execute("SELECT * FROM position WHERE stock=? AND status='open'",
+                               (stock,)).fetchone()
+            if not seg:
+                raise ValueError(f"{stock} 没有 open 段，需先 allocate")
+            acct = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock,)).fetchone()
+            if not acct:
+                raise ValueError(f"账户 {stock} 不存在")
+            aid = acct[0]
             with conn:
-                free = self._get_free(conn)
-                if free is None:
-                    raise ValueError("总池未初始化")
-                if amount <= 0:
-                    raise ValueError("注资金额必须 > 0")
-                if amount > free:
-                    raise ValueError(f"总池空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
-                seg = conn.execute("SELECT * FROM position WHERE stock=? AND status='open'",
-                                   (stock,)).fetchone()
-                if not seg:
-                    raise ValueError(f"{stock} 没有 open 段，需先 allocate")
                 conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+? "
                              "WHERE id=?", (amount, amount, seg['id']))
                 new_free = free - amount
                 conn.execute("UPDATE pool_ledger SET free=?, updated_at=? WHERE id=1",
-                             (new_free, datetime.now().isoformat()))
+                             (new_free, now))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (datetime.now().isoformat(), 'topup', stock, amount, free,
-                              new_free, reason, source))
-            # 同步账户资金 — 事务提交后，避免同库写锁冲突
-            from paper_trading_v2.trading import PaperTrader
-            trader = PaperTrader()
-            acct = trader.get_account(stock)
-            if acct is None:
-                raise ValueError(f"账户 {stock} 不存在")
-            acct.capital_pool.total += amount
-            acct.capital_pool.available += amount
-            trader.storage.save_account(acct)
+                             (now, 'topup', stock, amount, free, new_free, reason, source))
+                conn.execute("UPDATE accounts SET capital_total=capital_total+?, "
+                             "capital_available=capital_available+?, updated_at=? WHERE id=?",
+                             (amount, amount, now, aid))
             return True
         finally:
             conn.close()
@@ -157,8 +179,7 @@ class MasterPoolManager:
                                (stock,)).fetchone()
             if not seg:
                 raise ValueError(f"{stock} 没有 open 段")
-            strat = seg['strategy']
-            if strat == 'L1' and source != 'manual':
+            if seg['strategy'] == 'L1' and source != 'manual':
                 raise ValueError("L1 锁定股不能由 agent release，需人工确认")
             # 读账户（可能触发写回）在池写事务前完成，避免同库写锁冲突
             from paper_trading_v2.trading import PaperTrader
@@ -172,18 +193,18 @@ class MasterPoolManager:
             value = acct.capital_pool.available
             free = self._get_free(conn)
             new_free = free + value
+            now = datetime.now().isoformat()
             with conn:
                 conn.execute("UPDATE pool_ledger SET free=?, updated_at=? WHERE id=1",
-                             (new_free, datetime.now().isoformat()))
+                             (new_free, now))
                 realized = value - seg['budget']
                 conn.execute("UPDATE position SET status='closed', closed_at=?, close_value=?, "
                              "realized_pnl=?, cooldown_until=? WHERE id=?",
-                             (datetime.now().isoformat(), value, realized,
+                             (now, value, realized,
                               (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (datetime.now().isoformat(), 'release', stock, value, free,
-                              new_free, reason, source))
+                             (now, 'release', stock, value, free, new_free, reason, source))
             return True
         finally:
             conn.close()

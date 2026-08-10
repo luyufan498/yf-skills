@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -158,6 +158,21 @@ CREATE TABLE IF NOT EXISTS watchlog (
 );
 """
 
+# v4：重新 allocate（重入）前归档旧段操作，保留历史
+V4_DDL = """
+CREATE TABLE IF NOT EXISTS operations_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    archived_at TEXT,
+    segment_id INTEGER,
+    type TEXT NOT NULL,
+    price REAL, quantity INTEGER, amount REAL, cost REAL, profit REAL, capital REAL,
+    timestamp TEXT, note TEXT,
+    seq INTEGER,
+    FOREIGN KEY(account_id) REFERENCES accounts(id)
+);
+"""
+
 def get_connection(db_path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -188,4 +203,9 @@ def migrate_db(conn: sqlite3.Connection):
         # v3: 弹性组合池层（池 / 持仓段 / 总池账本 / 审计 / 池变更日志）
         conn.executescript(V3_DDL)
         conn.execute("UPDATE schema_meta SET version=3")
+        conn.commit()
+    if current < 4:
+        # v4: 重新 allocate 前归档旧段操作（operations_archive）
+        conn.executescript(V4_DDL)
+        conn.execute("UPDATE schema_meta SET version=4")
         conn.commit()

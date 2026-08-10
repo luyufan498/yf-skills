@@ -97,9 +97,9 @@ def test_idempotent_resave(cm):
     assert loaded.conditions['trailing_stop'].id == 'i1'
 
 def test_v1_to_v2_migration(ws):
-    """v1 DB（conditions 表无新列）→ migrate 后补列 + version=3（s/v3 池层表）"""
+    """v1 DB（conditions 表无新列）→ migrate 后补列 + version=最新（含 v3 池层表 / v4 归档表）"""
     import sqlite3
-    from paper_trading_v2.db import get_connection, migrate_db
+    from paper_trading_v2.db import get_connection, migrate_db, SCHEMA_VERSION
     db = ws / 'master_pool.db'
     conn = get_connection(db)
     conn.executescript("""
@@ -116,10 +116,10 @@ def test_v1_to_v2_migration(ws):
     cols = [r[1] for r in conn.execute("PRAGMA table_info(conditions)").fetchall()]
     assert 'cond_uid' in cols and 'created_at' in cols and 'modified_at' in cols
     v = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-    assert v == 3
-    # v3 池层表也应建齐
+    assert v == SCHEMA_VERSION
+    # v3 池层表 + v4 归档表也应建齐
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    for t in ['pool', 'position', 'pool_ledger', 'audit', 'watchlog']:
+    for t in ['pool', 'position', 'pool_ledger', 'audit', 'watchlog', 'operations_archive']:
         assert t in tables
     conn.close()

@@ -16,3 +16,10 @@ def get_workspace_config() -> dict:
 
 def get_trading_account_dir(stock_name: str) -> Path:
     return get_workspace_config()['tradings_dir'] / stock_name
+
+def get_stock_temp_data_dir(stock_name: str, category: str = None) -> Path:
+    """临时数据目录: temp_data_dir/stock_name[/category]"""
+    base_dir = get_workspace_config()['temp_data_dir'] / stock_name
+    if category:
+        return base_dir / category
+    return base_dir

@@ -1,0 +1,299 @@
+"""数据模型定义
+
+使用 Pydantic 进行数据验证和序列化
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional
+from pydantic import BaseModel, Field, field_validator, computed_field
+
+
+class MarketType(str, Enum):
+    """股票市场类型"""
+    A_SHARE = "A股"
+    HK_STOCK = "港股"
+    US_STOCK = "美股"
+
+
+class OperationType(str, Enum):
+    """操作类型"""
+    INIT = "init"
+    BUY = "buy"
+    SELL = "sell"
+    EXRIGHT_BONUS = "exright_bonus"
+    EXRIGHT_DIVIDEND = "exright_dividend"
+
+
+class ExRightAppliedRecord(BaseModel):
+    """已应用的除权记录"""
+    cqr: str = Field(..., description="除权除息日")
+    fhcontent: str = Field(default="", description="方案内容")
+    applied_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    reason: str = Field(default="", description="应用原因或备注")
+    migrated: bool = Field(default=False, description="是否为迁移记录")
+
+    class Config:
+        use_enum_values = True
+
+
+class StockInfo(BaseModel):
+    """股票基本信息"""
+    code: str = Field(..., min_length=1, description="股票代码")
+    name: str = Field(..., min_length=1, description="股票名称")
+    market: MarketType = Field(default=MarketType.A_SHARE, description="市场类型")
+    current_price: Optional[float] = None
+    pre_close: Optional[float] = None
+    open_price: Optional[float] = Field(None, alias="open")
+    high: Optional[float] = None
+    low: Optional[float] = None
+    volume: Optional[str] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    source: str = "unknown"
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        """验证股票代码"""
+        if not v:
+            raise ValueError("股票代码不能为空")
+        return v.lower()
+
+    class Config:
+        use_enum_values = True
+        json_encoders = {datetime: lambda v: v.isoformat()}
+
+
+class CapitalPool(BaseModel):
+    """资金池"""
+    total: float = Field(..., gt=0, description="初始总资金（历史不变）")
+    available: float = Field(..., description="可用资金")
+    used: float = Field(default=0.0, description="占用资金")
+
+    @field_validator("available")
+    @classmethod
+    def validate_available(cls, v: float) -> float:
+        """验证可用资金，允许超过初始总资金（含已实现盈利）"""
+        return v
+
+    @field_validator("used")
+    @classmethod
+    def validate_used(cls, v: float) -> float:
+        """验证占用资金并允许小的负值为计算误差"""
+        return v
+
+    def withdraw(self, amount: float) -> bool:
+        """扣减资金"""
+        if amount > self.available:
+            return False
+        self.available -= amount
+        self.used += amount
+        return True
+
+    def deposit(self, amount: float):
+        """增加资金"""
+        self.available += amount
+        self.used -= amount
+
+    @computed_field
+    @property
+    def current_total(self) -> float:
+        """当前总资产（可用 + 占用，包含已实现盈利）"""
+        return self.available + self.used
+
+    @computed_field
+    @property
+    def usage_rate(self) -> float:
+        """资金使用率（基于当前总资产）"""
+        total = self.current_total
+        return (self.used / total * 100) if total > 0 else 0.0
+
+
+class Position(BaseModel):
+    """持仓记录"""
+    stock_code: str
+    quantity: int = Field(..., ge=0, description="股数，除权分红时为0")
+    price: float = Field(..., ge=0, description="价格，除权送转股时为0")
+    total_cost: float = Field(..., description="总成本，除权分红时为负值（成本减少）")
+    operation: OperationType
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    note: str = ""
+
+    class Config:
+        use_enum_values = True
+
+
+class Operation(BaseModel):
+    """操作记录"""
+    type: OperationType
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+    amount: Optional[float] = None
+    cost: Optional[float] = None
+    profit: Optional[float] = None
+    capital: Optional[float] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    note: str = ""
+
+    class Config:
+        use_enum_values = True
+
+
+class Account(BaseModel):
+    """账户信息"""
+    stock_name: str
+    stock_code: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    capital_pool: CapitalPool
+    positions: List[Position] = Field(default_factory=list)
+    fifo_index: int = Field(default=-1, description="FIFO指针：当前成本基准BUY position在positions列表中的索引")
+    fifo_offset: float = Field(default=0.0, description="当前fifo_index指向的BUY position中已消耗的股数（除权后可能为小数）")
+    exright_applied: List[ExRightAppliedRecord] = Field(default_factory=list, description="已应用的除权记录")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "stock_name": "赛力斯",
+                "stock_code": "sh603527",
+                "capital_pool": {
+                    "total": 100000.0,
+                    "available": 100000.0,
+                    "used": 0.0
+                },
+                "positions": [],
+                "exright_applied": []
+            }
+        }
+
+
+class AccountHistory(BaseModel):
+    """账户历史记录"""
+    stock_name: str
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    operations: List[Operation] = Field(default_factory=list)
+
+
+class PortfolioSummary(BaseModel):
+    """投资组合汇总"""
+    total_capital: float
+    total_current_assets: float
+    total_available: float
+    total_used: float
+    total_positions: int
+    total_market_value: float
+    total_cost: float
+    realized_profit: float
+    floating_profit: float
+    total_profit: float
+    return_rate: float
+
+
+class PerformanceMetrics(BaseModel):
+    """性能指标"""
+    total_return: float
+    annualized_return: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    total_trades: int
+    win_rate: Optional[float] = None
+    avg_win_amount: Optional[float] = None
+    avg_loss_amount: Optional[float] = None
+    profit_loss_ratio: Optional[float] = None
+    avg_holding_period: Optional[float] = None
+    turnover_rate: Optional[float] = None
+
+
+class KLineData(BaseModel):
+    """K线数据"""
+    code: str = Field(..., min_length=1, description="股票代码")
+    date: str = Field(..., min_length=1, description="日期")
+    open: Optional[float] = Field(None, description="开盘价")
+    close: Optional[float] = Field(None, description="收盘价")
+    high: Optional[float] = Field(None, description="最高价")
+    low: Optional[float] = Field(None, description="最低价")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        """验证股票代码"""
+        if not v:
+            raise ValueError("股票代码不能为空")
+        return v.lower()
+
+    class Config:
+        use_enum_values = True
+
+
+class IntradayData(BaseModel):
+    """分时数据"""
+    code: str = Field(..., description="股票代码")
+    date: str = Field(..., description="交易日期")
+    time: Optional[str] = Field(None, description="时间")
+    price: Optional[float] = Field(None, description="价格")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        """验证股票代码"""
+        if not v:
+            raise ValueError("股票代码不能为空")
+        return v.lower()
+
+    class Config:
+        use_enum_values = True
+
+
+class NewsItem(BaseModel):
+    """单条新闻"""
+    title: str = Field(..., description="标题")
+    content: str = Field(..., description="内容")
+    time: str = Field(..., description="时间 HH:MM:SS")
+    date: str = Field(..., description="日期 YYYY-MM-DD")
+    datetime: str = Field(..., description="完整时间 ISO 格式")
+    url: str = Field(default="", description="新闻链接")
+    source: str = Field(..., description="来源: 财联社电报, 新浪财经, TradingView外媒")
+    is_red: bool = Field(default=False, description="是否重要")
+    tags: List[str] = Field(default_factory=list, description="标签")
+    description: str = Field(default="", description="描述")
+
+
+class MarketNews(BaseModel):
+    """市场新闻集合"""
+    total: int = Field(..., description="总数量")
+    items: List[NewsItem] = Field(default_factory=list, description="新闻列表")
+
+
+class AnalysisRecord(BaseModel):
+    """分析记录：用于存储股票分析报告的数据模型"""
+    stock_name: str = Field(..., min_length=1, description="股票名称")
+    stock_code: Optional[str] = Field(None, description="股票代码")
+    content: str = Field(..., description="分析内容（Markdown格式）", max_length=1000000)
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat(), description="创建时间")
+    file_path: Optional[str] = Field(None, min_length=1, description="文件路径")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "stock_name": "赛力斯",
+                "stock_code": "sh603527",
+                "content": "# 股票分析报告\n\n## 技术面分析...",
+                "timestamp": "2026-04-08T22:30:00"
+            }
+        }
+        use_enum_values = True
+
+
+class TempDataRecord(BaseModel):
+    """临时数据记录：用于存储临时分析数据的模型"""
+    stock_name: str = Field(..., min_length=1, description="股票名称")
+    category: str = Field(..., min_length=1, description="数据类别（如deep-search, gf-finance等）")
+    content: str = Field(..., description="数据内容")
+    timestamp: str = Field(..., description="ISO格式时间戳")
+    file_path: str = Field(..., min_length=1, description="文件路径")

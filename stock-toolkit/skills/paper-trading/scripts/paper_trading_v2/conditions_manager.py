@@ -30,32 +30,89 @@ class ConditionsManager:
         account_dir = self.storage._get_account_dir(stock_name)
         return account_dir / "conditions.json"
 
+    def _db_conn(self):
+        from paper_trading_v2.db import get_connection
+        return get_connection(self.storage.db_path)
+
     def load_conditions(self, stock_name: str) -> Optional[ConditionsRecord]:
-        """加载条件记录"""
-        file_path = self._get_conditions_file(stock_name)
-
-        if not file_path.exists():
-            return None
-
+        """从 SQLite 水合 ConditionsRecord（conditions dict + events 列表，保序）"""
+        conn = self._db_conn()
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return ConditionsRecord.model_validate(data)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading conditions for {stock_name}: {e}")
-            return None
+            row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
+            if not row:
+                return None
+            account_id = row[0]
+            conditions = {}
+            events = []
+            cond_rows = conn.execute(
+                "SELECT * FROM conditions WHERE account_id=? ORDER BY is_event, seq",
+                (account_id,)).fetchall()
+            for r in cond_rows:
+                cond = Condition(
+                    id=r['cond_uid'] or r['type'],
+                    type=r['type'], name=r['name'] or '', price=r['price'] or 0.0,
+                    action=r['action'] or '', category=r['category'],
+                    expiry_date=r['expiry_date'], status=r['status'],
+                    auto_link_cost=bool(r['auto_link_cost']), peak_price=r['peak_price'],
+                    created_at=r['created_at'] or datetime.now().isoformat(),
+                    modified_at=r['modified_at'] or datetime.now().isoformat(),
+                )
+                hist_rows = conn.execute(
+                    "SELECT * FROM condition_history WHERE condition_id=? ORDER BY id",
+                    (r['id'],)).fetchall()
+                cond.history = [ConditionChange(
+                    old_price=h['old_price'], new_price=h['new_price'],
+                    reason=h['reason'] or '', timestamp=h['timestamp'] or '',
+                    level=h['level'], override_triggers=json.loads(h['override_triggers'] or '[]'),
+                ) for h in hist_rows]
+                if r['is_event']:
+                    events.append(cond)
+                else:
+                    conditions[r['cond_key'] or r['type']] = cond
+            return ConditionsRecord(
+                stock_name=stock_name,
+                updated_at=datetime.now().isoformat(),
+                conditions=conditions, events=events,
+            )
+        finally:
+            conn.close()
 
     def save_conditions(self, record: ConditionsRecord) -> Path:
-        """保存条件记录"""
-        file_path = self._get_conditions_file(record.stock_name)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        """把 ConditionsRecord 事务化 upsert 进 SQLite"""
+        conn = self._db_conn()
+        try:
+            row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (record.stock_name,)).fetchone()
+            if not row:
+                raise ValueError(f"账户 '{record.stock_name}' 不存在，请先初始化")
+            account_id = row[0]
+            record.updated_at = datetime.now().isoformat()
+            with conn:
+                conn.execute("DELETE FROM condition_history WHERE condition_id IN "
+                             "(SELECT id FROM conditions WHERE account_id=?)", (account_id,))
+                conn.execute("DELETE FROM conditions WHERE account_id=?", (account_id,))
+                for key, cond in record.conditions.items():
+                    self._insert_condition(conn, account_id, key, 0, cond)
+                for cond in record.events:
+                    self._insert_condition(conn, account_id, None, 1, cond)
+            return Path(self.storage.db_path)
+        finally:
+            conn.close()
 
-        record.updated_at = datetime.now().isoformat()
-
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(record.model_dump_json(ensure_ascii=False, indent=2))
-
-        return file_path
+    def _insert_condition(self, conn, account_id, key, is_event, cond):
+        cur = conn.execute(
+            "INSERT INTO conditions (account_id, cond_key, is_event, cond_uid, type, name, price, "
+            "action, category, expiry_date, status, auto_link_cost, peak_price, created_at, "
+            "modified_at, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (account_id, key, is_event, cond.id, cond.type, cond.name, cond.price, cond.action,
+             cond.category, cond.expiry_date, cond.status, int(cond.auto_link_cost),
+             cond.peak_price, cond.created_at, cond.modified_at, 0))
+        cid = cur.lastrowid
+        for h in cond.history:
+            conn.execute(
+                "INSERT INTO condition_history (condition_id, old_price, new_price, reason, "
+                "timestamp, level, override_triggers) VALUES (?,?,?,?,?,?,?)",
+                (cid, h.old_price, h.new_price, h.reason, h.timestamp, h.level,
+                 json.dumps(h.override_triggers)))
 
     def init_conditions(self, stock_name: str,
                         trailing_stop: float = None,

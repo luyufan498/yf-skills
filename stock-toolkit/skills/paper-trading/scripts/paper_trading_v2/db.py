@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS conditions (
     auto_link_cost INTEGER DEFAULT 0,
     peak_price REAL,
     seq INTEGER,
+    cond_uid TEXT,
+    created_at TEXT,
+    modified_at TEXT,
     FOREIGN KEY(account_id) REFERENCES accounts(id)
 );
 
@@ -112,4 +115,13 @@ def migrate_db(conn: sqlite3.Connection):
         conn.executescript(SCHEMA_DDL)
         conn.execute("INSERT INTO schema_meta (version, migrated_at) VALUES (1, ?)",
                      (datetime.now().isoformat(),))
-    conn.commit()
+    if current < 2:
+        # v2: conditions 表补 cond_uid / created_at / modified_at
+        try:
+            conn.execute("ALTER TABLE conditions ADD COLUMN cond_uid TEXT")
+            conn.execute("ALTER TABLE conditions ADD COLUMN created_at TEXT")
+            conn.execute("ALTER TABLE conditions ADD COLUMN modified_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        conn.execute("UPDATE schema_meta SET version=2")
+        conn.commit()

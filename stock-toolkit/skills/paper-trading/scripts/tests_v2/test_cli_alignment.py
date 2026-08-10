@@ -63,7 +63,11 @@ def _mk_acct(ws, name='测试股', code='sz000001'):
 
 def test_info_command_markdown(ws):
     from paper_trading_v2.cli import app
-    _mk_acct(ws)
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    # code=None 让 _auto_exright_check 走 early-return，避免真实网络除权抓取
+    SqlStorage().save_account(Account(stock_name='测试股', stock_code=None,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
     r = runner.invoke(app, ["info", "测试股", "--format", "markdown"])
     assert r.exit_code == 0
     # vendored generate_info_markdown_table 输出的是无股票名的数据表格
@@ -106,4 +110,22 @@ def test_delete_command(ws):
     r = runner.invoke(app, ["delete", "测试股"])
     assert r.exit_code == 0
     from paper_trading_v2.storage import SqlStorage
+    assert SqlStorage().load_account('测试股') is None
+
+
+def test_delete_requires_force_with_position(ws):
+    """有持仓时 delete 需 --force"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool, Position
+    SqlStorage().save_account(Account(stock_name='测试股', stock_code='sz000001',
+        capital_pool=CapitalPool(total=500000, available=500000, used=0),
+        positions=[Position(stock_code='sz000001', quantity=100, price=10.0,
+                            total_cost=1000, operation='buy')]))
+    r = runner.invoke(app, ["delete", "测试股"])
+    assert r.exit_code == 1
+    assert "仍有持仓" in r.output
+    # 有持仓 + --force 删除成功
+    r = runner.invoke(app, ["delete", "测试股", "--force"])
+    assert r.exit_code == 0
     assert SqlStorage().load_account('测试股') is None

@@ -249,8 +249,14 @@ def migrate_existing_cmd(
     from paper_trading_v2.migrate import migrate_existing
     from paper_trading_v2.config import get_workspace_config
     cfg = get_workspace_config()
-    src = Path(source) if source else cfg['workspace_root'].parent / '.paper-trading' / 'tradings'
+    src = Path(source) if source else cfg['workspace_root'] / 'tradings'
     arch = Path(archive) if archive else cfg['workspace_root'] / 'tradings_archive'
+    if not src.exists():
+        typer.echo(f"❌ 源目录不存在：{src}", err=True)
+        raise typer.Exit(1)
+    has_account = any((src / d.name / 'account.json').exists() for d in src.iterdir() if d.is_dir())
+    if not has_account:
+        typer.echo(f"⚠ 源目录 {src} 下未找到任何 account.json", err=True)
     try:
         result = migrate_existing(src, cfg['db_path'], arch)
         typer.echo(f"✅ 迁移完成：{result['count']} 个账户 → {cfg['db_path']}")

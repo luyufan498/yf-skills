@@ -32,6 +32,11 @@ class SqlStorage(StorageBackend):
     def _conn(self):
         return get_connection(self.db_path)
 
+    def _get_account_dir(self, stock_name: str) -> Path:
+        """兼容 shim：conditions_manager 用文件模式写条件（Task 5 才迁 SQL 表）"""
+        from paper_trading_v2.config import get_workspace_config
+        return get_workspace_config()['tradings_dir'] / stock_name
+
     def _account_id(self, conn, stock_name: str) -> Optional[int]:
         row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
         return row[0] if row else None

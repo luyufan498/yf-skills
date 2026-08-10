@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 from paper_trading_v2.models import (
-    Account, AccountHistory, CapitalPool, Operation, Position,
+    Account, AccountHistory, CapitalPool, ExRightAppliedRecord, Operation, Position,
 )
 
 @pytest.fixture
@@ -74,3 +74,54 @@ def test_compat_symbols_exist(ws):
     assert hasattr(storage, 'StorageFactory')
     assert hasattr(storage, 'JsonStorage')
     assert storage.JsonStorage is storage.SqlStorage
+
+def test_fifo_index_offset_roundtrip(store):
+    account = Account(
+        stock_name='奥来德', stock_code='sz300331',
+        capital_pool=CapitalPool(total=500000, available=500000, used=0),
+        positions=[
+            Position(stock_code='sz300331', quantity=1000, price=50.0,
+                     total_cost=50000, operation='buy', timestamp='2026-01-01T10:00:00'),
+        ],
+        fifo_index=0, fifo_offset=400.0,
+    )
+    store.save_account(account)
+    loaded = store.load_account('奥来德')
+    assert loaded.fifo_index == 0
+    assert loaded.fifo_offset == 400.0
+
+def test_exright_roundtrip(store):
+    account = Account(
+        stock_name='恒申新材', stock_code='sz000782',
+        capital_pool=CapitalPool(total=500000, available=500000, used=0),
+        exright_applied=[
+            ExRightAppliedRecord(cqr='2026-05-01', fhcontent='10送5', reason='迁移'),
+        ],
+    )
+    store.save_account(account)
+    loaded = store.load_account('恒申新材')
+    assert len(loaded.exright_applied) == 1
+    assert loaded.exright_applied[0].cqr == '2026-05-01'
+    assert loaded.exright_applied[0].migrated is False
+
+def test_update_existing_account(store):
+    store.save_account(Account(stock_name='赛力斯', stock_code='sh603527',
+                               capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    store.save_account(Account(stock_name='赛力斯', stock_code='sh603527',
+                               capital_pool=CapitalPool(total=500000, available=400000, used=100000)))
+    loaded = store.load_account('赛力斯')
+    assert loaded.capital_pool.available == 400000
+    assert loaded.capital_pool.used == 100000
+
+def test_delete_account_cascades(store):
+    store.save_account(Account(stock_name='英维克', stock_code='sz000301',
+                               capital_pool=CapitalPool(total=500000, available=500000, used=0),
+                               positions=[Position(stock_code='sz000301', quantity=100, price=10.0,
+                                                   total_cost=1000, operation='buy')]))
+    store.delete_account('英维克')
+    conn = store._conn()
+    try:
+        c = conn.execute("SELECT COUNT(*) c FROM positions").fetchone()['c']
+        assert c == 0
+    finally:
+        conn.close()

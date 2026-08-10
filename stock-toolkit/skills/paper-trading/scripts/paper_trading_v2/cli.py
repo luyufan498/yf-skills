@@ -836,6 +836,10 @@ def migrate_existing_cmd(
 from paper_trading_v2.conditions_cmd import register as _register_conditions
 _register_conditions(app)
 
+# 注册 export/fix/fetch-news/temp-data/analysis（T5 数据/分析命令组，显式注册）
+from paper_trading_v2.data_cmd import register as _register_data
+_register_data(app)
+
 
 if __name__ == "__main__":
     app()

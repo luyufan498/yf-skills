@@ -260,3 +260,63 @@ def test_check_exright_no_code_account(ws):
     r = runner.invoke(app, ["check-exright", "测试股"])
     assert r.exit_code == 0
     assert "股票代码为空" in r.output
+
+
+# ============ T5：数据/分析命令组（export / fix / fetch-news / temp-data / analysis） ============
+
+def test_export_command(ws):
+    """export：单股 JSON 导出写入指定路径"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    SqlStorage().save_account(Account(stock_name='测试股', stock_code=None,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    r = runner.invoke(app, ["export", "--stock", "测试股", "--format", "json",
+                            "--output", str(ws / 'export.json')])
+    assert r.exit_code == 0
+    assert (ws / 'export.json').exists()
+
+
+def test_fix_command(ws):
+    """fix：无 SELL 记录时报告全部正确（exit 0）。
+
+    注意：fix_operations 要求账户有操作记录（无 operations 会抛 ValueError → exit 1），
+    因此测试先存一条 init 操作。
+    """
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool, AccountHistory, Operation
+    s = SqlStorage()
+    s.save_account(Account(stock_name='测试股', stock_code=None,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    s.save_operations('测试股', AccountHistory(stock_name='测试股', operations=[
+        Operation(type='init', capital=500000, timestamp='2026-01-01T09:00:00')]))
+    r = runner.invoke(app, ["fix", "测试股"])
+    assert r.exit_code == 0
+
+
+def test_fetch_news_command_registered(ws):
+    """fetch-news 命令已注册（--help 不触网络）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["fetch-news", "--help"])
+    assert r.exit_code == 0
+
+
+def test_temp_data_command(ws):
+    """temp-data list：列出某股票的类别（stock_name 是位置参数，--action 选子操作）"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.temp_data_manager import TempDataManager
+    # 先存一条临时数据
+    mgr = TempDataManager(validate_stock=False)
+    mgr.save_temp_data('测试股', 'deep-search', '测试内容')
+    r = runner.invoke(app, ["temp-data", "测试股", "--action", "list"])
+    assert r.exit_code == 0
+    assert "deep-search" in r.output
+    assert "测试股" in r.output
+
+
+def test_analysis_command_registered(ws):
+    """analysis 命令已注册（--help 不触数据目录）"""
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["analysis", "--help"])
+    assert r.exit_code == 0

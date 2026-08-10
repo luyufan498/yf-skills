@@ -121,7 +121,8 @@ def migrate_db(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE conditions ADD COLUMN cond_uid TEXT")
             conn.execute("ALTER TABLE conditions ADD COLUMN created_at TEXT")
             conn.execute("ALTER TABLE conditions ADD COLUMN modified_at TEXT")
-        except sqlite3.OperationalError:
-            pass  # 列已存在
+        except sqlite3.OperationalError as e:
+            if 'duplicate column' not in str(e).lower():
+                raise
         conn.execute("UPDATE schema_meta SET version=2")
         conn.commit()

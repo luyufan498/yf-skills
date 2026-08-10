@@ -5,7 +5,7 @@
 
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from datetime import datetime
 
 from paper_trading_v2.conditions import (
@@ -24,11 +24,6 @@ class ConditionsManager:
 
     def __init__(self, storage: JsonStorage = None):
         self.storage = storage or JsonStorage()
-
-    def _get_conditions_file(self, stock_name: str) -> Path:
-        """获取条件文件路径"""
-        account_dir = self.storage._get_account_dir(stock_name)
-        return account_dir / "conditions.json"
 
     def _db_conn(self):
         from paper_trading_v2.db import get_connection
@@ -90,22 +85,22 @@ class ConditionsManager:
                 conn.execute("DELETE FROM condition_history WHERE condition_id IN "
                              "(SELECT id FROM conditions WHERE account_id=?)", (account_id,))
                 conn.execute("DELETE FROM conditions WHERE account_id=?", (account_id,))
-                for key, cond in record.conditions.items():
-                    self._insert_condition(conn, account_id, key, 0, cond)
-                for cond in record.events:
-                    self._insert_condition(conn, account_id, None, 1, cond)
+                for i, (key, cond) in enumerate(record.conditions.items()):
+                    self._insert_condition(conn, account_id, key, 0, i, cond)
+                for i, cond in enumerate(record.events):
+                    self._insert_condition(conn, account_id, None, 1, i, cond)
             return Path(self.storage.db_path)
         finally:
             conn.close()
 
-    def _insert_condition(self, conn, account_id, key, is_event, cond):
+    def _insert_condition(self, conn, account_id, key, is_event, seq, cond):
         cur = conn.execute(
             "INSERT INTO conditions (account_id, cond_key, is_event, cond_uid, type, name, price, "
             "action, category, expiry_date, status, auto_link_cost, peak_price, created_at, "
             "modified_at, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, key, is_event, cond.id, cond.type, cond.name, cond.price, cond.action,
              cond.category, cond.expiry_date, cond.status, int(cond.auto_link_cost),
-             cond.peak_price, cond.created_at, cond.modified_at, 0))
+             cond.peak_price, cond.created_at, cond.modified_at, seq))
         cid = cur.lastrowid
         for h in cond.history:
             conn.execute(

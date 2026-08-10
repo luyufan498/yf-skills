@@ -237,5 +237,30 @@ def list_cmd():
                        f"¥{acct.capital_pool.current_total:,.0f} 当前总资产")
 
 
+# ============ 迁移命令 ============
+
+@app.command("migrate-existing")
+def migrate_existing_cmd(
+    source: Optional[str] = typer.Option(None, "--source", help="旧 JSON tradings 目录"),
+    archive: Optional[str] = typer.Option(None, "--archive", help="归档目录"),
+):
+    """迁移旧 JSON 账户入 SQLite（一次性，源目录移入归档）"""
+    from pathlib import Path
+    from paper_trading_v2.migrate import migrate_existing
+    from paper_trading_v2.config import get_workspace_config
+    cfg = get_workspace_config()
+    src = Path(source) if source else cfg['workspace_root'].parent / '.paper-trading' / 'tradings'
+    arch = Path(archive) if archive else cfg['workspace_root'] / 'tradings_archive'
+    try:
+        result = migrate_existing(src, cfg['db_path'], arch)
+        typer.echo(f"✅ 迁移完成：{result['count']} 个账户 → {cfg['db_path']}")
+        typer.echo(f"   归档目录：{arch}")
+        if result['migrated']:
+            typer.echo(f"   账户：{', '.join(result['migrated'])}")
+    except Exception as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

@@ -29,5 +29,5 @@ where = ["."]
 include = ["paper_trading*", "paper_trading_v2*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tests_v2"]
 python_files = ["test_*.py"]

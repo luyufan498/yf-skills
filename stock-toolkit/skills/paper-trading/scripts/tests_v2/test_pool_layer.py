@@ -106,6 +106,14 @@ def test_topup(mpm, ws):
     assert acct.capital_pool.available == 800000
 
 
+def test_topup_enforces_cumulative_30pct(mpm, ws):
+    from paper_trading_v2.watchlist import Watchlist
+    Watchlist(ws / 'master_pool.db').add('英维克', 'sz000301', strategy='L2', source='agent')
+    mpm.allocate('英维克', 3000000, reason='建仓')          # 30% of 10M
+    with pytest.raises(ValueError, match="30%"):
+        mpm.topup('英维克', 1000000, reason='超累计')        # 30%+10% = 40%
+
+
 def test_l1_release_requires_manual(mpm, ws):
     from paper_trading_v2.watchlist import Watchlist
     Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L1', source='manual')

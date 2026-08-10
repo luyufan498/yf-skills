@@ -128,7 +128,9 @@ def migrate_existing(source_tradings_dir: Path, db_path: Path, archive_dir: Path
                             print(f"⚠ 条件跳过 {stock_dir.name}: {w}", file=sys.stderr)
                     except Exception as e:
                         print(f"⚠ 条件迁移失败 {stock_dir.name}: {e}", file=sys.stderr)
-                # 落一条 closed 段（历史记录，不占预算）。
+                # 落一条 closed 段（历史记录，不占预算）+ 已迁账户转为纯历史壳
+                # （资金归零，操作归档），同一事务原子提交——避免段已落但账户未归零的
+                # 半成品在重跑时被幂等跳过，留下池外幻影资金。
                 # 注意：直接写主 conn 必须用 `with conn:` 立即提交——save_account 等走独立连接，
                 # 若本连接挂未提交写事务会持 RESERVED 锁，迁第二个账户时触发 database is locked。
                 with conn:
@@ -139,6 +141,27 @@ def migrate_existing(source_tradings_dir: Path, db_path: Path, archive_dir: Path
                         (stock_name, account.stock_code, account.capital_pool.total,
                          account.created_at, now, account.capital_pool.available,
                          account.capital_pool.available - account.capital_pool.total))
+                    aid_row = conn.execute(
+                        "SELECT id FROM accounts WHERE stock_name=?",
+                        (account.stock_name,)).fetchone()
+                    if aid_row:
+                        aid = aid_row[0]
+                        seg_row = conn.execute(
+                            "SELECT id FROM position WHERE stock=? AND status='closed' "
+                            "ORDER BY id DESC LIMIT 1", (account.stock_name,)).fetchone()
+                        seg_id = seg_row[0] if seg_row else None
+                        conn.execute(
+                            "INSERT INTO operations_archive (account_id, archived_at, segment_id, "
+                            "type, price, quantity, amount, cost, profit, capital, timestamp, note, "
+                            "seq) SELECT ?, ?, ?, type, price, quantity, amount, cost, profit, "
+                            "capital, timestamp, note, seq FROM operations WHERE account_id=?",
+                            (aid, now, seg_id, aid))
+                        conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
+                        conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
+                        conn.execute(
+                            "UPDATE accounts SET capital_total=0, capital_available=0, "
+                            "capital_used=0, fifo_index=-1, fifo_offset=0, updated_at=? "
+                            "WHERE id=?", (now, aid))
                 # 移入归档
                 archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = archive_dir / stock_dir.name

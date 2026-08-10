@@ -67,7 +67,7 @@ class StockInfo(BaseModel):
 
 class CapitalPool(BaseModel):
     """资金池"""
-    total: float = Field(..., gt=0, description="初始总资金（历史不变）")
+    total: float = Field(..., ge=0, description="初始总资金（历史不变；已迁账户为 0 资金壳）")
     available: float = Field(..., description="可用资金")
     used: float = Field(default=0.0, description="占用资金")
 

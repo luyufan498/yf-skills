@@ -111,7 +111,7 @@ def master_pool_records(
     mpm = MasterPoolManager()
     for r in mpm.records(days):
         typer.echo(f"{r['timestamp'][:10]} {r['action']:8} {str(r['stock'] or ''):8} "
-                   f"¥{r['amount'] or 0:,.0f}  free {r['free_before']:,.0f}→{r['free_after']:,.0f}  "
+                   f"¥{r['amount'] or 0:,.0f}  free {r['free_before'] or 0:,.0f}→{r['free_after'] or 0:,.0f}  "
                    f"{r['reason']}")
 
 
@@ -175,6 +175,19 @@ def init(
 ):
     """初始化资金池（一般用 master-pool-allocate 替代）"""
     stock_name = _normalize_stock_name(stock_name)
+    # 有 open 段的股票，账户资金由段管理，禁止 init --force（防幻影资金）
+    from paper_trading_v2.db import get_connection, migrate_db
+    from paper_trading_v2.config import get_workspace_config
+    _conn = get_connection(get_workspace_config()['db_path'])
+    try:
+        migrate_db(_conn)
+        seg = _conn.execute("SELECT id FROM position WHERE stock=? AND status='open'",
+                            (stock_name,)).fetchone()
+    finally:
+        _conn.close()
+    if seg:
+        typer.echo(f"❌ {stock_name} 有 open 段，账户资金由段管理，禁止 init --force", err=True)
+        raise typer.Exit(1)
     from paper_trading_v2.trading import PaperTrader
     try:
         account = PaperTrader().init_account(stock_name, capital, stock_code=code, force=force)

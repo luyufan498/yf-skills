@@ -49,10 +49,20 @@ def test_migrate_existing(tmp_path):
     s = SqlStorage(db)
     acct = s.load_account('赛力斯')
     assert acct is not None
-    assert acct.capital_pool.total == 500000
-    assert acct.capital_pool.available == 550000
-    ops = s.load_operations('赛力斯')
-    assert ops is not None and len(ops.operations) == 2
+    # 已迁账户为纯历史壳
+    assert acct.capital_pool.total == 0
+    assert acct.capital_pool.available == 0
+    # 操作已归档
+    live_ops = s.load_operations('赛力斯')
+    assert live_ops is None or len(live_ops.operations) == 0
+    conn = s._conn()
+    try:
+        archived = conn.execute(
+            "SELECT COUNT(*) c FROM operations_archive WHERE account_id="
+            "(SELECT id FROM accounts WHERE stock_name='赛力斯')").fetchone()['c']
+        assert archived >= 1
+    finally:
+        conn.close()
     # 条件迁入 SQLite
     from paper_trading_v2.conditions_manager import ConditionsManager
     cm = ConditionsManager(storage=s)
@@ -101,9 +111,16 @@ def test_migrate_legacy_operation_and_decision(tmp_path):
     result = migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')
     assert result['count'] == 1
     s = SqlStorage(tmp_path / 'master_pool.db')
-    ops = s.load_operations('英维克')
-    assert len(ops.operations) == 2  # init + buy，decision 被过滤
-    assert ops.operations[0].type == 'init'
+    # 操作已归档（init + buy 入库，decision 被过滤）
+    conn = s._conn()
+    try:
+        rows = conn.execute(
+            "SELECT type FROM operations_archive WHERE account_id="
+            "(SELECT id FROM accounts WHERE stock_name='英维克') ORDER BY seq").fetchall()
+        types = [r['type'] for r in rows]
+    finally:
+        conn.close()
+    assert types == ['init', 'buy']
 
 
 def test_migrate_idempotent_reskip(tmp_path):

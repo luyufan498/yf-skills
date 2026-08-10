@@ -18,7 +18,11 @@ def _normalize_stock_name(stock_name: str) -> str:
 def _get_stock_name_suggestions(stock_name: str, manager) -> str:
     """获取股票名称纠错建议"""
     import difflib
-    suggestions = difflib.get_close_matches(stock_name, manager.list_accounts(), n=3, cutoff=0.5)
+    try:
+        accounts = manager.list_accounts() or []
+    except Exception:
+        return ""
+    suggestions = difflib.get_close_matches(stock_name, accounts, n=3, cutoff=0.5)
     if suggestions:
         return f"\n    💡 你是不是想找：{', '.join(suggestions)}？"
     return ""

@@ -52,3 +52,58 @@ def test_auto_exright_check_no_code_returns_false(ws):
             return Account(stock_name=stock_name, stock_code=None,
                            capital_pool=CapitalPool(total=500000, available=500000, used=0))
     assert _auto_exright_check(FakeTrader(), '赛力斯') is False
+
+
+def _mk_acct(ws, name='测试股', code='sz000001'):
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    SqlStorage().save_account(Account(stock_name=name, stock_code=code,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+
+
+def test_info_command_markdown(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["info", "测试股", "--format", "markdown"])
+    assert r.exit_code == 0
+    # vendored generate_info_markdown_table 输出的是无股票名的数据表格
+    assert "| 资金池状态" in r.output
+    assert "¥500,000.00" in r.output
+
+
+def test_pool_command(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["pool"])
+    assert r.exit_code == 0
+    assert "测试股" in r.output
+
+
+def test_holdings_command(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["holdings", "测试股"])
+    assert r.exit_code == 0
+
+
+def test_profit_command(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["profit", "测试股"])
+    assert r.exit_code == 0
+
+
+def test_portfolio_command(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["portfolio"])
+    assert r.exit_code == 0
+
+
+def test_delete_command(ws):
+    from paper_trading_v2.cli import app
+    _mk_acct(ws)
+    r = runner.invoke(app, ["delete", "测试股"])
+    assert r.exit_code == 0
+    from paper_trading_v2.storage import SqlStorage
+    assert SqlStorage().load_account('测试股') is None

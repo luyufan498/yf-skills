@@ -250,7 +250,13 @@ def test_check_triggers_command_registered(ws):
     assert r.exit_code == 0
 
 
-def test_check_exright_command_registered(ws):
+def test_check_exright_no_code_account(ws):
+    """code-less 账户：check-exright 正常返回（不崩、不触网络）"""
     from paper_trading_v2.cli import app
-    r = runner.invoke(app, ["check-exright", "--help"])
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    SqlStorage().save_account(Account(stock_name='测试股', stock_code=None,
+        capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    r = runner.invoke(app, ["check-exright", "测试股"])
     assert r.exit_code == 0
+    assert "股票代码为空" in r.output

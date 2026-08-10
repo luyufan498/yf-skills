@@ -832,8 +832,9 @@ def migrate_existing_cmd(
         raise typer.Exit(1)
 
 
-# 注册 conditions/atr-sync/check-triggers/check-exright（T4 风险控制命令组，独立子模块）
-from paper_trading_v2 import conditions_cmd  # noqa: F401
+# 注册 conditions/atr-sync/check-triggers/check-exright（T4 风险控制命令组，显式注册）
+from paper_trading_v2.conditions_cmd import register as _register_conditions
+_register_conditions(app)
 
 
 if __name__ == "__main__":

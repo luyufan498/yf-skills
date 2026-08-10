@@ -631,6 +631,7 @@ class ConditionsManager:
         kk = k if k is not None else ATR_K_TRAIL
 
         # peak 初始化 / 重置 / 合并
+        stale_peak_reset = False  # 标记是否因旧peak来自上一轮而重置
         if reset_peak or (init_peak == "current" and condition.peak_price is None):
             # 首次或重置：用当前价（保守，防突变）
             seed = current_price
@@ -641,17 +642,37 @@ class ConditionsManager:
             new_peak = seed
             peak_note = "当前价" if not reset_peak else "重置为当前价"
         else:
-            # 合并：max(旧peak, 区间最高high, realtime_high)
-            new_peak = merge_peak(condition.peak_price, klines or [], realtime_high)
-            if new_peak is None:
-                return record
-            peak_note = f"max(旧peak¥{condition.peak_price}, 区间high)"
+            # 合并：max(旧peak, 本轮区间最高high, realtime_high)
+            # Bug #2 修复：只取本轮建仓以来的 K 线，剔除上一轮历史高点（如中科曙光 113）。
+            # 若旧 peak 来自上一轮（本轮 K 线 high 全 < 旧 peak），视为 None 重新用当前价 seed，
+            # 否则 max(旧peak, 本轮high) 永远被旧 peak 锁死，止损位虚高。
+            round_klines, stale_peak = self._filter_klines_by_round(
+                stock_name, klines or [], condition.peak_price)
+            if stale_peak:
+                # 旧 peak 是上一轮污染值 → 重新用当前价初始化（不走 max，允许止损下移）
+                seed = current_price
+                if seed is None and klines:
+                    seed = klines[-1].get("close")
+                if seed is None:
+                    return record
+                new_peak = seed
+                peak_note = f"旧peak¥{condition.peak_price}来自上一轮，重置为当前价¥{seed}"
+                stale_peak_reset = True
+            else:
+                new_peak = merge_peak(condition.peak_price, round_klines, realtime_high)
+                if new_peak is None:
+                    return record
+                peak_note = f"max(旧peak¥{condition.peak_price}, 本轮区间high)"
 
-        # ATR 移动止损：peak − k×ATR，只升不降
+        # ATR 移动止损：peak − k×ATR
         raw_stop = round(new_peak - kk * atr_val, 2)
-        target = max(condition.price, raw_stop)  # 硬只升不降
+        if stale_peak_reset:
+            # 旧 peak 是污染值，止损下移是纠错而非趋势走弱 → 不套只升不降（同除权缩放语义）
+            target = raw_stop
+        else:
+            target = max(condition.price, raw_stop)  # 硬只升不降
 
-        peak_changed = (condition.peak_price is None) or (new_peak > condition.peak_price)
+        peak_changed = (condition.peak_price is None) or (new_peak > condition.peak_price) or stale_peak_reset
         stop_changed = abs(condition.price - target) >= 0.01
 
         if not peak_changed and not stop_changed:
@@ -662,10 +683,11 @@ class ConditionsManager:
         if stop_changed:
             old_price = condition.price
             condition.price = target
+            only_up_note = "" if stale_peak_reset else "，只升不降"
             condition.history.append(ConditionChange(
                 old_price=old_price,
                 new_price=target,
-                reason=f"ATR移动止损自动同步（peak¥{new_peak:.2f} − {kk}×ATR¥{atr_val:.2f} = ¥{raw_stop:.2f}，只升不降取¥{target:.2f}）",
+                reason=f"ATR移动止损自动同步（peak¥{new_peak:.2f} − {kk}×ATR¥{atr_val:.2f} = ¥{raw_stop:.2f}{only_up_note}取¥{target:.2f}）",
                 level=ConditionLevel.LEVEL_1,
             ))
         condition.modified_at = datetime.now().isoformat()
@@ -742,7 +764,160 @@ class ConditionsManager:
 
         return expired
 
-    # ========== 格式化输出 ==========
+    # ========== 止损触发检测（Bug #1 修复）==========
+
+    # 跌破触发的条件类型/名称（现价 <= 触发价 即破位）
+    DIRECTION_DOWN_TYPES = {
+        ConditionType.TRAILING_STOP,
+        ConditionType.COST_PROTECTION,
+    }
+    DIRECTION_DOWN_NAME_KEYWORDS = ("止损", "保护", "破位")
+
+    # 涨破触发的条件类型/名称（现价 >= 触发价 即触发）
+    DIRECTION_UP_TYPES = {
+        ConditionType.TAKE_PROFIT_1,
+        ConditionType.TAKE_PROFIT_2,
+    }
+    DIRECTION_UP_NAME_KEYWORDS = ("止盈", "目标")
+
+    def _condition_direction(self, condition: Condition) -> str:
+        """判定条件触发方向：'down'（跌破触发）或 'up'（涨破触发）。
+
+        优先按名称关键字判定（事件条件 type 统一为 TRAILING_STOP，无法按 type 区分），
+        标准条件按 ConditionType 兜底，避免中文名脆性。
+        """
+        name = condition.name or ""
+        if any(k in name for k in self.DIRECTION_UP_NAME_KEYWORDS):
+            return "up"
+        if any(k in name for k in self.DIRECTION_DOWN_NAME_KEYWORDS):
+            return "down"
+        # 按 type 兜底（标准条件）
+        if condition.type in self.DIRECTION_UP_TYPES:
+            return "up"
+        if condition.type in self.DIRECTION_DOWN_TYPES:
+            return "down"
+        # 默认按跌破（止损类是主流场景）
+        return "down"
+
+    def check_triggers(self, stock_name: str, current_price: float) -> List[dict]:
+        """检测已破位的硬条件（只读，不改 status、不执行卖出）。
+
+        遍历所有 status==ACTIVE 的硬条件（标准 + 事件），按方向比较 current_price 与
+        condition.price，返回已触发清单。这是对"trigger-table 只反映手动标记、不反映
+        实时破位"这一缺陷的补救——cron 在 atr-sync 后调用，把结果写进报告供 LLM 决策。
+        """
+        record = self.load_conditions(stock_name)
+        if not record or current_price is None:
+            return []
+
+        breaches = []
+        # 标准 hard 条件 + 事件 hard 条件，仅看 ACTIVE（跳过 SUSPENDED/EXPIRED/TRIGGERED）
+        candidates = [c for c in record.list_hard() if c.status == ConditionStatus.ACTIVE]
+
+        for cond in candidates:
+            direction = self._condition_direction(cond)
+            if direction == "down":
+                is_breach = current_price <= cond.price
+            else:  # up
+                is_breach = current_price >= cond.price
+            if not is_breach:
+                continue
+            amount = abs(current_price - cond.price)
+            pct = (amount / cond.price * 100.0) if cond.price else 0.0
+            breaches.append({
+                "name": cond.name,
+                "type": cond.type.value if hasattr(cond.type, "value") else str(cond.type),
+                "trigger_price": cond.price,
+                "current_price": round(current_price, 2),
+                "direction": direction,
+                "breach_amount": round(amount, 2),
+                "breach_pct": round(pct, 2),
+                "action": cond.action,
+                "condition_id": cond.id,
+            })
+
+        # 按穿透幅度降序（最严重的在前）
+        breaches.sort(key=lambda b: b["breach_amount"], reverse=True)
+        return breaches
+
+    # ========== 本轮建仓起点（Bug #2 修复：peak 只取本轮 K 线）==========
+
+    def _current_build_round_start(self, stock_name: str) -> Optional[str]:
+        """返回本轮建仓起点的 ISO timestamp（最近一次清仓后的首笔 buy），无则 None。
+
+        用累计 buy qty − 累计 sell qty 追踪持仓量，降到 <=0 即清仓点；
+        返回该清仓点之后的**第一笔 buy** 的 timestamp。
+        若从未清仓过（建仓后一直持有），返回第一笔 buy 的 timestamp（本轮=唯一轮）。
+        任何异常 / 无操作记录 → 返回 None（调用方退回现有行为）。
+
+        注意 op.type 是字符串（Operation.Config.use_enum_values=True），按
+        _is_within_build_buffer_period 的惯例用 == "buy"/"sell" 比较。
+        """
+        try:
+            history = self.storage.load_operations(stock_name)
+            if not history or not history.operations:
+                return None
+
+            ops = history.operations
+            first_buy_ts = None
+            last_clearance_ts = None  # 最近一次使持仓归零的 sell 的 timestamp
+            holding = 0  # 累计持仓量（buy 加，sell 减）
+
+            for op in ops:
+                t = op.type
+                if t == "buy" and op.quantity:
+                    if first_buy_ts is None:
+                        first_buy_ts = op.timestamp
+                    holding += op.quantity
+                elif t == "sell" and op.quantity:
+                    holding -= op.quantity
+                    if holding <= 0:
+                        holding = 0
+                        last_clearance_ts = op.timestamp  # 记录最近一次清仓时点
+
+            if last_clearance_ts is None:
+                # 从未清仓过 → 本轮就是唯一一轮，起点是首笔 buy
+                return first_buy_ts
+
+            # 找 last_clearance_ts 之后的第一笔 buy
+            for op in ops:
+                if op.type == "buy" and op.timestamp > last_clearance_ts:
+                    return op.timestamp
+
+            # 清仓后尚未重新建仓（当前应空仓，调用方一般不会走到这）
+            return None
+        except Exception:
+            return None
+
+    def _filter_klines_by_round(self, stock_name: str, klines: List[dict],
+                                stored_peak: Optional[float]) -> tuple:
+        """按本轮建仓起点过滤 K 线，并判断旧 peak_price 是否来自上一轮（需重置）。
+
+        返回 (filtered_klines, stale_peak)：
+        - filtered_klines：date >= round_start 的 K 线子集（round_start 为 None 时返回原列表）。
+        - stale_peak：bool，当 round_start 存在且 stored_peak 非 None，但本轮过滤后的 K 线 high
+          全部 < stored_peak 时为 True——说明 stored peak 来自上一轮历史高点（如中科曙光 113），
+          应被视为 None 重新用 current 初始化，否则 max(旧peak, 本轮high) 永远被旧 peak 锁死。
+        """
+        round_start = self._current_build_round_start(stock_name)
+        if round_start is None:
+            return klines, False
+        round_date = round_start[:10]
+        filtered = [k for k in (klines or []) if k.get("date", "") >= round_date]
+
+        stale_peak = False
+        if stored_peak is not None:
+            if not filtered:
+                # 本轮建仓后尚无已收盘 K 线（如建仓当日盘中运行 atr-sync，K线只到昨日）：
+                # stored peak 不可能来自本轮（本轮还没有 K 线），必为上一轮污染 → 重置。
+                stale_peak = True
+            else:
+                round_high = max((k.get("high") for k in filtered if k.get("high") is not None), default=None)
+                if round_high is not None and round_high < stored_peak:
+                    stale_peak = True
+        return filtered, stale_peak
+
+
 
     def format_markdown(self, stock_name: str, template: str = "all",
                         current_date: str = None) -> str:

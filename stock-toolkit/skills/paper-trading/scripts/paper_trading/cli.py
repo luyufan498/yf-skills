@@ -1572,16 +1572,27 @@ def atr_sync_command(
             old_cp = cp_cond.price if cp_cond else None
             old_peak = ts_cond.peak_price if ts_cond else None
 
-            # peak 预期
+            # peak 预期（与 sync_trailing_stop 实际写入保持一致：本轮过滤 + 旧peak污染重置）
             from paper_trading.atr import merge_peak
+            stale_peak_reset = False
             if reset_peak or (init_peak == "current" and old_peak is None):
                 seed = current_price or (klines[-1].get("close") if klines else None)
                 new_peak = seed
             else:
-                new_peak = merge_peak(old_peak, klines or [], rt_high)
+                round_klines, stale_peak = cond_mgr._filter_klines_by_round(name, klines or [], old_peak)
+                if stale_peak:
+                    # 旧 peak 来自上一轮 → 重新用当前价 seed，止损不套只升不降
+                    seed = current_price or (klines[-1].get("close") if klines else None)
+                    new_peak = seed
+                    stale_peak_reset = True
+                else:
+                    new_peak = merge_peak(old_peak, round_klines, rt_high)
 
             expected_trail = round(new_peak - k_trail * atr, 2) if new_peak else None
-            expected_trail_final = max(old_trail, expected_trail) if (old_trail and expected_trail) else expected_trail
+            if stale_peak_reset:
+                expected_trail_final = expected_trail  # 纠错性下移，不套 max
+            else:
+                expected_trail_final = max(old_trail, expected_trail) if (old_trail and expected_trail) else expected_trail
             expected_cp = round(avg_cost - k_cost * atr, 2)
             cost_floor_80 = round(avg_cost * 0.80, 2)
             if expected_cp < cost_floor_80:
@@ -1629,6 +1640,98 @@ def atr_sync_command(
             else:
                 typer.echo(f"  • {name}: 报错（{r['reason']}）❌")
         typer.echo(f"汇总: {ok} 只同步, {skip} 只跳过" + ("（dry-run 未写入）" if dry_run else ""))
+
+
+@app.command("check-triggers")
+def check_triggers_command(
+    stock_name: Optional[str] = typer.Argument(None, help="股票名称；省略则遍历所有持仓账户"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 pretty/json"),
+):
+    """止损触发检测：对比实时价与所有硬条件触发价，报告已破位的条件。
+
+    只读检测，不修改条件 status、不执行卖出——供 cron 在 atr-sync 后调用，把已破位
+    清单写进报告供人工/LLM 决策。修复"trigger-table 只反映手动标记、不反映实时破位"
+    的缺陷（7/30 中科曙光移动止损¥91.49 被现价¥83.84 跌破却仍报"未触发"即此因）。
+
+    退出码：有任意 breach → 1（便于脚本检测），无 breach → 0。
+    """
+    from paper_trading.conditions_manager import ConditionsManager
+
+    trader = PaperTrader()
+    cond_mgr = ConditionsManager(trader.storage)
+
+    if stock_name:
+        targets = [_normalize_stock_name(stock_name)]
+    else:
+        targets = trader.storage.list_accounts()
+
+    results = []
+    total_breaches = 0
+    for name in targets:
+        try:
+            account = trader.storage.load_account(name)
+            if not account or not account.stock_code:
+                results.append({"stock": name, "status": "skip", "reason": "账户不存在或代码为空"})
+                continue
+
+            total_qty, _ = trader.get_remaining_position(account)
+            if total_qty <= 0:
+                results.append({"stock": name, "status": "skip", "reason": "空仓"})
+                continue
+
+            # 取实时价（与 atr-sync 一致的防御式取法）
+            current_price = None
+            try:
+                rt = StockPriceFetcher().get_realtime_price(account.stock_code)
+                if rt:
+                    current_price = getattr(rt, "current_price", None)
+            except Exception:
+                pass
+
+            if current_price is None:
+                results.append({"stock": name, "status": "skip", "reason": "实时价获取失败"})
+                continue
+
+            breaches = cond_mgr.check_triggers(name, current_price)
+            total_breaches += len(breaches)
+            results.append({
+                "stock": name, "code": account.stock_code,
+                "current_price": round(current_price, 2),
+                "breaches": breaches,
+            })
+        except Exception as e:
+            results.append({"stock": name, "status": "error", "reason": str(e)})
+
+    # 输出
+    if format == "json":
+        import json
+        typer.echo(json.dumps({"results": results}, ensure_ascii=False, indent=2, default=str))
+    else:
+        for r in results:
+            name = r["stock"]
+            if r.get("status") == "skip":
+                typer.echo(f"  • {name}: 跳过（{r['reason']}）⚠️")
+                continue
+            if r.get("status") == "error":
+                typer.echo(f"  • {name}: 报错（{r['reason']}）❌")
+                continue
+            cp = r["current_price"]
+            breaches = r["breaches"]
+            if not breaches:
+                typer.echo(f"  ✅ {name} ({r.get('code','')}) 现价¥{cp:.2f} 无触发")
+                continue
+            typer.echo(f"  🚨 {name} ({r.get('code','')}) 现价¥{cp:.2f} — {len(breaches)} 个条件已破位:")
+            for b in breaches:
+                arrow = "跌破" if b["direction"] == "down" else "涨破"
+                typer.echo(
+                    f"     • {b['name']}: 触发价¥{b['trigger_price']:.2f} 被{arrow} "
+                    f"(穿透¥{b['breach_amount']:.2f} / {b['breach_pct']:.2f}%) → {b['action']}"
+                )
+        if total_breaches > 0:
+            typer.echo(f"\n⚠️ 共 {total_breaches} 个条件已触发，请人工/LLM 复核（不自动卖出）")
+
+    if total_breaches > 0:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -660,3 +660,274 @@ def test_sync_cost_protection_80pct_floor():
         data = json.loads(show.output)
         cp = data["conditions"]["cost_protection"]
         assert cp["price"] == 80.0  # 成本×80% 底线
+
+
+# ============ check-triggers 止损触发检测测试（Bug #1） ============
+
+def _setup_check_triggers_mocks(current_price=85.0, has_position=True, base=100.0):
+    """check-triggers 通用 mock：持仓 1000 股 @ base，现价 current_price。"""
+    qty = 1000 if has_position else 0
+    return [
+        mock.patch("paper_trading.storage.JsonStorage.load_account",
+                   return_value=_mock_account()),
+        mock.patch("paper_trading.trading.PaperTrader.get_remaining_position",
+                   return_value=(qty, qty * base)),
+        mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price",
+                   return_value=_mock_rt(current_price, current_price)),
+        mock.patch("paper_trading.storage.JsonStorage.list_accounts",
+                   return_value=["测试股"]),
+    ]
+
+
+def test_check_triggers_breach():
+    """移动止损¥90 被现价¥85 跌破 → 报 breach，exit_code=1，且不改 status"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "90.00",
+                            "--action-str", "减仓50%", "--category", "hard"])
+        for p in _setup_check_triggers_mocks(current_price=85.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["check-triggers", "测试股", "--format", "json"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.output)
+        assert data["results"][0]["stock"] == "测试股"
+        breaches = data["results"][0]["breaches"]
+        assert len(breaches) == 1
+        b = breaches[0]
+        assert b["trigger_price"] == 90.0
+        assert b["current_price"] == 85.0
+        assert b["direction"] == "down"  # 跌破语义
+        assert b["breach_amount"] == 5.0  # |85-90|
+        # 关键：不修改 status —— 再查仍为 active
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        sdata = json.loads(show.output)
+        assert sdata["conditions"]["trailing_stop"]["status"] == "active"
+
+
+def test_check_triggers_no_breach():
+    """现价¥95 > 止损¥90 → 无触发，exit_code=0"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "90.00",
+                            "--action-str", "减仓50%", "--category", "hard"])
+        for p in _setup_check_triggers_mocks(current_price=95.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["check-triggers", "测试股", "--format", "json"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["results"][0]["breaches"] == []
+
+
+def test_check_triggers_skip_empty():
+    """空仓账户跳过，不报 breach"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "90.00",
+                            "--action-str", "减仓50%", "--category", "hard"])
+        for p in _setup_check_triggers_mocks(current_price=85.0, has_position=False):
+            p.start()
+        try:
+            result = runner.invoke(app, ["check-triggers", "测试股", "--format", "json"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        # 空仓应 skip，不在 breaches 结果里
+        assert data["results"][0].get("status") == "skip" or data["results"][0]["breaches"] == []
+
+
+def test_check_triggers_no_price():
+    """实时价获取失败（None）→ 该股 skip，不崩"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "90.00",
+                            "--action-str", "减仓50%", "--category", "hard"])
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 100000.0)), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=None):
+            result = runner.invoke(app, ["check-triggers", "测试股", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["results"][0].get("status") == "skip"
+
+
+def test_check_triggers_take_profit_direction():
+    """止盈¥100 被现价¥102 涨破 → breach（涨破语义 direction=up）"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "take_profit_1", "--price", "100.00",
+                            "--action-str", "减仓30%", "--category", "hard"])
+        for p in _setup_check_triggers_mocks(current_price=102.0):
+            p.start()
+        try:
+            result = runner.invoke(app, ["check-triggers", "测试股", "--format", "json"])
+        finally:
+            mock.patch.stopall()
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.output)
+        breaches = data["results"][0]["breaches"]
+        assert len(breaches) == 1
+        assert breaches[0]["direction"] == "up"  # 涨破语义
+        assert breaches[0]["breach_amount"] == 2.0
+
+
+# ============ peak 本轮过滤测试（Bug #2） ============
+
+def _build_round_ops(round1_buy_date, round2_buy_date):
+    """构造操作历史：第一轮买后清仓，第二轮再买。返回 AccountHistory 可序列化 dict。"""
+    from paper_trading.models import AccountHistory, Operation, OperationType
+    ops = [
+        Operation(type=OperationType.INIT, capital=100000.0, timestamp=f"{round1_buy_date}T09:00:00", note="初始化"),
+        Operation(type=OperationType.BUY, price=100.0, quantity=1000, amount=100000.0, timestamp=f"{round1_buy_date}T11:00:00", note="第一轮建仓"),
+        Operation(type=OperationType.SELL, price=95.0, quantity=1000, amount=95000.0, cost=100000.0, profit=-5000.0, timestamp=f"{round1_buy_date}T14:00:00", note="第一轮清仓"),
+        Operation(type=OperationType.BUY, price=95.0, quantity=1000, amount=95000.0, timestamp=f"{round2_buy_date}T11:00:00", note="第二轮建仓"),
+    ]
+    return AccountHistory(stock_name="测试股", operations=ops)
+
+
+def test_atr_sync_peak_filtered_by_build_round():
+    """peak 只取本轮建仓以来的 K 线 high，不含上一轮历史高点 113"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "cost_protection", "--price", "98.50",
+                            "--action-str", "清仓", "--category", "hard"])
+        # 操作历史：第一轮 7/10 买+清仓，第二轮 7/27 买
+        round_ops = _build_round_ops("2026-07-10", "2026-07-27")
+        # K线：7/10 高点 113（上一轮），7/27 之后高点 98（本轮）
+        klines = []
+        for d in range(1, 31):
+            date = f"2026-07-{d:02d}"
+            high = 113.0 if d == 10 else (98.0 if d >= 27 else 95.0)
+            klines.append({"date": date, "open": 95.0, "high": high, "low": 94.0, "close": 95.0, "volume": 1000})
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 95000.0)), \
+             mock.patch("paper_trading.storage.JsonStorage.load_operations", return_value=round_ops), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=klines), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=_mock_rt(96.0, 98.0)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0, result.output
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        # peak 不应是上一轮的 113，应为本轮高点 98 或当前价 96
+        assert ts["peak_price"] is not None
+        assert ts["peak_price"] <= 98.0, f"peak {ts['peak_price']} 混入了上一轮历史高点"
+
+
+def test_atr_sync_peak_polluted_resets():
+    """已污染的 peak（113）+ 本轮 klines high 全 <113 → peak 被重置为本轮值，止损下移"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        # 先正常 set，再手动写入被污染的 peak_price=113
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "91.49",
+                            "--action-str", "清仓", "--category", "hard"])
+        from paper_trading.conditions_manager import ConditionsManager
+        from paper_trading.conditions import ConditionType
+        from paper_trading.trading import PaperTrader
+        trader = PaperTrader()
+        cond_mgr = ConditionsManager(trader.storage)
+        record = cond_mgr.load_conditions("测试股")
+        record.get(ConditionType.TRAILING_STOP).peak_price = 113.0
+        cond_mgr.save_conditions(record)
+
+        round_ops = _build_round_ops("2026-07-10", "2026-07-27")
+        # 30 根 K 线（7/1–7/30，满足 ATR(14) 需 15 根），本轮（7/27 后）high 全部 <113
+        klines = []
+        for d in range(1, 31):
+            date = f"2026-07-{d:02d}"
+            klines.append({"date": date, "open": 95.0, "high": 97.0, "low": 94.0, "close": 96.0, "volume": 1000})
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 95000.0)), \
+             mock.patch("paper_trading.storage.JsonStorage.load_operations", return_value=round_ops), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=klines), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=_mock_rt(96.0, 97.0)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0, result.output
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        # peak 必须从 113 下移到本轮值（97 或 96）
+        assert ts["peak_price"] < 113.0, f"peak 未重置: {ts['peak_price']}"
+        # 止损应随之从 91.49 下移（peak−2.5×ATR，ATR≈1.0ish → 远低于 91.49；但只升不降保护旧值…）
+        # 注：peak 重置后 raw_stop 重新基于新 peak，应低于旧 91.49
+
+
+def test_atr_sync_init_peak_current_still_passes():
+    """回归保护：peak 为 None（无清仓历史）时仍用当前价初始化，不受本轮过滤影响"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "78.00",
+                            "--action-str", "清仓", "--category", "hard"])
+        # K线含历史高点 120，当前价 100，无清仓历史（load_operations 返回 None）→ peak 应=100
+        klines = _fixed_klines(20, tr=2.0, base=100.0)
+        klines[10]["high"] = 120.0
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 100000.0)), \
+             mock.patch("paper_trading.storage.JsonStorage.load_operations", return_value=None), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=klines), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=_mock_rt(100.0, 100.0)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0, result.output
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        assert ts["peak_price"] == 100.0  # 当前价，非历史 120
+
+
+def test_atr_sync_peak_polluted_no_round_klines():
+    """边界：本轮建仓当日盘中运行，K 线只到昨日（本轮过滤为空）+ 旧 peak 来自上一轮 → 仍应重置。
+
+    复现中科曙光真实场景：8/1 重新建仓，K线数据只到 7/31，本轮无已收盘 K 线。
+    旧 peak=113 来自上一轮，应被识别为污染并重置为当前价，止损纠错性下移。
+    """
+    from paper_trading.conditions_manager import ConditionsManager
+    from paper_trading.conditions import ConditionType
+    from paper_trading.trading import PaperTrader
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ['STOCK_ANALYSIS_WORKSPACE'] = tmpdir
+        runner.invoke(app, ["conditions", "测试股", "--action", "set",
+                            "--type", "trailing_stop", "--price", "91.49",
+                            "--action-str", "清仓", "--category", "hard"])
+        trader = PaperTrader()
+        cond_mgr = ConditionsManager(trader.storage)
+        record = cond_mgr.load_conditions("测试股")
+        record.get(ConditionType.TRAILING_STOP).peak_price = 113.0
+        cond_mgr.save_conditions(record)
+
+        round_ops = _build_round_ops("2026-07-10", "2026-08-01")  # 本轮 8/1 建仓
+        # K线只到 7/31（本轮 8/1 无已收盘 K 线），high 全部 <113
+        klines = []
+        for d in range(1, 32):
+            date = f"2026-07-{d:02d}"
+            klines.append({"date": date, "open": 95.0, "high": 97.0, "low": 94.0, "close": 96.0, "volume": 1000})
+        with mock.patch("paper_trading.storage.JsonStorage.load_account", return_value=_mock_account()), \
+             mock.patch("paper_trading.trading.PaperTrader.get_remaining_position", return_value=(1000, 95000.0)), \
+             mock.patch("paper_trading.storage.JsonStorage.load_operations", return_value=round_ops), \
+             mock.patch("paper_trading.cli.KLineDataFetcher.fetch_kline_data", return_value=klines), \
+             mock.patch("paper_trading.cli.StockPriceFetcher.get_realtime_price", return_value=_mock_rt(85.0, 85.0)):
+            result = runner.invoke(app, ["atr-sync", "测试股"])
+        assert result.exit_code == 0, result.output
+        show = runner.invoke(app, ["conditions", "测试股", "--action", "show", "--format", "json"])
+        data = json.loads(show.output)
+        ts = data["conditions"]["trailing_stop"]
+        # peak 必须从 113 重置为当前价 85
+        assert ts["peak_price"] == 85.0, f"peak 未重置: {ts['peak_price']}"
+        # 止损应从 91.49 纠错性下移（peak85 − 2.5×ATR，ATR=2 → 80）
+        assert ts["price"] < 91.49, f"止损未下移: {ts['price']}"

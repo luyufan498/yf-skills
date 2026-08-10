@@ -122,6 +122,21 @@ ptrade conditions "股票名称" --action event-remove --event-id XXX
 
 详细文档：[条件管理](references/conditions.md)
 
+### ATR 止损同步与触发检测
+
+```bash
+# 同步 ATR 动态止损（trailing_stop = peak−2.5×ATR，cost_protection = 成本−2×ATR）。持仓时每日跑
+ptrade atr-sync "股票名称"              # 算 ATR(14)+更新 peak+同步止损位（只升不降）
+ptrade atr-sync "股票名称" --dry-run    # 只算不写，预览止损位变化
+ptrade atr-sync "股票名称" --reset-peak # 重新建仓后重置 peak 为当前价（不继承上一轮）
+
+# 检测现价是否已跌破硬条件触发价（只读，不自动卖出）
+ptrade check-triggers "股票名称"        # 对比实时价与所有硬条件，返回已破位清单；有破位退出码 1
+ptrade check-triggers                   # 省略股票名则遍历所有持仓账户
+```
+
+> ⚠️ `conditions --template trigger-table` 的"未触发/已触发"只反映**手动标记**，不反映实时破位——止损位设了必须跑 `check-triggers` 才知道有没有被跌破。详见 [交易纪律](references/trading-principles.md) 规则 2.2/2.5。
+
 ### 分析报告管理
 
 ```bash

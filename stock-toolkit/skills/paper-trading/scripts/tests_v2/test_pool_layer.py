@@ -149,3 +149,12 @@ def test_allocate_blocked_during_cooldown(mpm, ws):
     mpm.release('英维克', reason='释放')
     with pytest.raises(ValueError, match="冷却"):
         mpm.allocate('英维克', 500000, reason='想追回')
+
+
+def test_allocate_blocks_when_already_open(mpm, ws):
+    """已有 open 段时禁止重复 allocate"""
+    from paper_trading_v2.watchlist import Watchlist
+    Watchlist(ws / 'master_pool.db').add('科创新源', 'sz300731', strategy='L2', source='agent')
+    mpm.allocate('科创新源', 500000, reason='建仓')
+    with pytest.raises(ValueError, match="open 段"):
+        mpm.allocate('科创新源', 500000, reason='重复分配')

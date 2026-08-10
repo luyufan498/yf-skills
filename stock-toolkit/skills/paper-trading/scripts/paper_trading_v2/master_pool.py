@@ -72,6 +72,10 @@ class MasterPoolManager:
                 raise ValueError("分配金额必须 > 0")
             if amount > free:
                 raise ValueError(f"总池空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
+            already_open = conn.execute(
+                "SELECT id FROM position WHERE stock=? AND status='open'", (stock,)).fetchone()
+            if already_open:
+                raise ValueError(f"{stock} 已有 open 段，需先 release 再重新 allocate")
             total = conn.execute("SELECT total FROM pool_ledger WHERE id=1").fetchone()[0]
             if amount > 0.3 * total:
                 raise ValueError(f"单股分配超过总池 30%：¥{amount:,.0f} > 30%×{total:,.0f}")

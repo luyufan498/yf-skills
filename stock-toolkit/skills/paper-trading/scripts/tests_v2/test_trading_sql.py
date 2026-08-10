@@ -51,6 +51,29 @@ def test_buy_sell_fifo_cost(trader):
     assert abs(cost - 36000) < 1  # 300 @ 120
 
 
+def test_buy_by_amount_truncates(trader):
+    _mk_account(trader, '测试股')
+    with _patch_price(100.0):
+        trader.buy_stock('测试股', amount=150000)  # int(150000/100) = 1500 shares
+    loaded = trader.storage.load_account('测试股')
+    qty, cost = trader.get_remaining_position(loaded)
+    assert qty == 1500
+    assert loaded.capital_pool.available == 500000 - 150000
+
+
+def test_sell_all_clears_position(trader):
+    _mk_account(trader, '测试股')
+    with _patch_price(100.0):
+        trader.buy_stock('测试股', quantity=1000)
+    with _patch_price(110.0):
+        trader.sell_stock('测试股', sell_all=True)
+    loaded = trader.storage.load_account('测试股')
+    qty, cost = trader.get_remaining_position(loaded)
+    assert qty == 0
+    assert cost == 0.0
+    assert abs(loaded.capital_pool.available - 500000 - 10000) < 1  # 1000*(110-100) realized profit
+
+
 def test_buy_insufficient_funds_raises(trader):
     _mk_account(trader, '测试股')
     with _patch_price(100.0):
@@ -68,4 +91,6 @@ def test_persistence_across_instances(trader, ws):
     qty, cost = trader2.get_remaining_position(loaded)
     assert qty == 1000
     ops = trader2.storage.load_operations('赛力斯')
-    assert ops is not None and len(ops.operations) >= 2  # init + buy
+    assert ops is not None
+    # 严格顺序：init 先于 buy，且都持久化到 SQL
+    assert [op.type for op in ops.operations] == ['init', 'buy']

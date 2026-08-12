@@ -125,6 +125,20 @@ def show_stats():
         typer.echo("   (暂无事件)")
 
 
+@app.command("kv")
+def kv_cmd(
+    key: str = typer.Argument(..., help="KV 键（如 watch_scan_state）"),
+    value: str = typer.Argument(None, help="值（缺省则读取该键）"),
+):
+    """读写 KV 状态存储（watch_scan 异动状态、atr-sync 日期等持久化状态）。"""
+    if value is None:
+        v = db.kv_get(key)
+        typer.echo(json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else (v or "(空)"))
+    else:
+        db.kv_set(key, value)
+        typer.echo(f"✅ {key} 已写入")
+
+
 @app.command("ack")
 def ack_events(
     task_ids: list[int] = typer.Argument(..., help="事件 ID 列表（可多个）"),

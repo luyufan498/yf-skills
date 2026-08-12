@@ -23,7 +23,8 @@ from datetime import datetime
 TASKS_DB = os.environ.get("STOCK_TASKS_DB") or os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 WS = os.environ.get("STOCK_ANALYSIS_WORKSPACE", os.path.join(os.getcwd(), ".paper-trading"))
 POOL_DB = os.path.join(WS, "master_pool.db")
-STATE_FILE = "/tmp/watch_scan_state.json"
+STATE_FILE = "/tmp/watch_scan_state.json"  # 兼容旧文件（已迁移到 kv_store，读时优先 kv）
+KV_STATE_KEY = "watch_scan_state"
 RECOVER_STALE_HOURS = 2.0
 TRADE_START, TRADE_END = "09:30", "15:00"
 BUY_WORDS = ("建仓", "买入", "加仓")
@@ -39,16 +40,32 @@ def in_trade_hours() -> bool:
 
 
 def load_state() -> dict:
-    try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
+    """从 kv_store 读状态（数据库持久化，重启不丢）。"""
+    if not os.path.exists(TASKS_DB):
         return {}
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        row = conn.execute("SELECT value FROM kv_store WHERE key=?", (KV_STATE_KEY,)).fetchone()
+        return json.loads(row[0]) if row else {}
+    finally:
+        conn.close()
 
 
 def save_state(st: dict):
-    with open(STATE_FILE, "w") as f:
-        json.dump(st, f)
+    """状态写入 kv_store（upsert）。"""
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        conn.execute(
+            "INSERT INTO kv_store (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=datetime('now','localtime')",
+            (KV_STATE_KEY, json.dumps(st, ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def ptrade2(*args, timeout=90) -> str:
@@ -80,6 +97,11 @@ CREATE TABLE IF NOT EXISTS task_events (
     claimed_at  TEXT,
     done_at     TEXT,
     note        TEXT
+);
+CREATE TABLE IF NOT EXISTS kv_store (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 """
 

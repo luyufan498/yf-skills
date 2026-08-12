@@ -78,8 +78,17 @@ taskbus fail 42 --note "分析失败：数据不可用"    # 失败
 taskbus requeue 42                          # failed→pending 重试
 taskbus recover --stale-hours 2             # 卡死恢复
 taskbus stats                               # 各状态计数 + 最新事件 ID
+taskbus kv watch_scan_state                  # 读 KV 状态（watch_scan 异动状态/atr 日期）
+taskbus kv watch_scan_state '{"a":1}'        # 写 KV 状态
 taskbus ack 42 43 44 --note "串行消费完成"     # 批量完成
 ```
+
+## KV 状态存储
+
+`kv_store` 表（tasks.db 内）提供持久化 KV，供 watch_scan 等脚本存状态（**数据库持久化，重启不丢**，不依赖 /tmp）：
+
+- `watch_scan_state`：异动检测状态机（每只股票 last_state）+ atr-sync 每日日期
+- 脚本通过 `kv_set`/`kv_get` 读写（taskbus CLI 的 `kv` 命令可调试查看）
 
 ## 生产者/消费者协议
 

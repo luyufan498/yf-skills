@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS task_events (
 CREATE INDEX IF NOT EXISTS idx_task_status ON task_events(status);
 CREATE INDEX IF NOT EXISTS idx_task_type ON task_events(type);
 CREATE INDEX IF NOT EXISTS idx_task_created ON task_events(created_at);
+CREATE TABLE IF NOT EXISTS kv_store (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 
@@ -161,5 +166,37 @@ def stats() -> dict:
             "latest_id": latest["id"] if latest else None,
             "latest": dict(latest) if latest else None,
         }
+    finally:
+        conn.close()
+
+
+# ---------- kv 状态存储（watch_scan 等脚本的持久化状态） ----------
+
+def kv_set(key: str, value: dict | str) -> None:
+    """写入 KV（upsert）。value 为 dict 时序列化为 JSON。"""
+    conn = connect()
+    try:
+        v = json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
+        conn.execute(
+            "INSERT INTO kv_store (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now','localtime')",
+            (key, v),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def kv_get(key: str) -> dict | str | None:
+    """读取 KV。JSON 可解析则返回 dict，否则返回原始字符串。"""
+    conn = connect()
+    try:
+        row = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return row[0]
     finally:
         conn.close()

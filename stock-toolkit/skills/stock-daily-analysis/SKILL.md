@@ -346,6 +346,11 @@ ptrade conditions "<股票名>" --action event-remove --event-id <event_id>
 3. **调整价位**：若需调整某个买点价位，目前需要 remove + set 两步（先 `event-remove` 移除原事件，再 `event-set` 设定新价位）。
 4. **`--action-str` 命名规范**：使用 `<触发位置>-建仓<比例>%` 格式（如"买点下沿-建仓40%"），便于步骤 7 审查时识别。
 
+**触发价与心跳联动（2026-08 起）**：设定的 add_position / 止损 / 止盈条件会被 `watch_scan.py` 心跳每 30 分钟自动检测（读 conditions active 条件 vs 实时价，穿越即写 WATCH_ALERT 事件驱动交易 agent）。因此：
+- 买点必须落明确价位（现价 ≤ 触发价时触发），不要给模糊区间
+- soft 条件务必带 `--expiry-days 7`（过期自动失效，心跳不再检测）
+- 已触发/已调整的条件要及时 event-remove，避免下一 tick 重复触发
+
 **执行后检查**：
 1. 重新执行 `ptrade conditions "<股票名>" --format markdown --template all`
 2. 重新执行 `ptrade conditions "<股票名>" --action event-list`，确认事件条件显示正确（若涉及区间捕捉建仓）

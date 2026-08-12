@@ -36,9 +36,23 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `CANDIDATE` | 发现新候选标的/行业（新闻或扫描） | news-collector、市场扫描 | 分析（stock-daily-analysis） |
 | `REFRESH` | 新闻库缺信息需补搜 | 分析 agent | 新闻（news-collector） |
 | `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
-| `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测 | 交易（paper-trading） |
+| `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
 | `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
 | `CALENDAR` | 财报/解禁/除权日历 | 日历检查 | 分析/交易 |
+
+### WATCH_ALERT 价格条件触发（watch_scan 自动写入）
+
+`watch_scan.py` 每 tick 读 `conditions` 表 active 条件 vs 实时价，穿越触发时自动写事件，payload 规范：
+
+```json
+{"direction": "buy", "cond_id": 44, "cond_name": "买点下沿-建仓30%",
+ "trigger_price": 30.0, "current_price": 25.14}
+```
+
+- **buy**：现价 ≤ 买点触发价（action 含 建仓/买入/加仓）——消费 agent 评估纪律后执行买入，或纪律否决时**调整买卖点**（移除/重设条件）
+- **sell**：现价 ≤ 止损/止盈触发价（hard 或 action 含 清仓/减仓/止损）——确认破位后执行卖出；hard 条件只升不降
+- **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入
+- **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
 
 ## 状态机
 

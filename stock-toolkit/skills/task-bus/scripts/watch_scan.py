@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""watch_scan.py — 心跳监控脚本（Hermes cron monitor-script 模式）
+
+每个 tick（30 分钟，零 LLM 成本）：
+1. taskbus pending 事件检查 + processing 超时 recover
+2. atr-sync：每日交易时段首次 tick，对持仓股自动更新止损位（减少 agent 工作）
+3. 价格条件触发检测（交易时段）：读 conditions active 条件 vs 实时价
+   - 买入类（action 含 建仓/买入/加仓）：现价 ≤ 触发价 → WATCH_ALERT(buy)
+   - 止损类（hard / action 含 清仓/减仓/止损）：现价 ≤ 触发价 → WATCH_ALERT(sell)
+   - 去重：同实体同方向已有 pending/processing → 跳过
+4. 动量异动扫描（池内，甜点区/追高/单日异动）
+
+输出契约：无情况 → IDLE（稳定睡眠）；有情况 → 变化摘要（唤醒 agent）。
+"""
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime
+
+TASKS_DB = os.environ.get("STOCK_TASKS_DB") or os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
+WS = os.environ.get("STOCK_ANALYSIS_WORKSPACE", os.path.join(os.getcwd(), ".paper-trading"))
+POOL_DB = os.path.join(WS, "master_pool.db")
+STATE_FILE = "/tmp/watch_scan_state.json"
+RECOVER_STALE_HOURS = 2.0
+TRADE_START, TRADE_END = "09:30", "15:00"
+BUY_WORDS = ("建仓", "买入", "加仓")
+SELL_WORDS = ("清仓", "减仓", "止损", "止盈")
+
+
+def now_hhmm() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def in_trade_hours() -> bool:
+    return TRADE_START <= now_hhmm() <= TRADE_END
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(st: dict):
+    with open(STATE_FILE, "w") as f:
+        json.dump(st, f)
+
+
+def ptrade2(*args, timeout=90) -> str:
+    env = dict(os.environ)
+    env.setdefault("STOCK_ANALYSIS_WORKSPACE", WS)
+    try:
+        return subprocess.run(["ptrade2", *args], capture_output=True, text=True,
+                              timeout=timeout, env=env).stdout
+    except Exception:
+        return ""
+
+
+def fetch_price(code: str) -> float | None:
+    out = ptrade2("fetch-price", code)
+    m = re.search(r"当前价格:\s*¥([\d.]+)", out)
+    return float(m.group(1)) if m else None
+
+
+TASKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS task_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    priority    INTEGER NOT NULL DEFAULT 3,
+    source      TEXT,
+    entity      TEXT,
+    payload     TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    claimed_at  TEXT,
+    done_at     TEXT,
+    note        TEXT
+);
+"""
+
+
+def _ensure_task_table():
+    """确保任务表存在（脚本独立运行时不依赖 taskbus init）。"""
+    os.makedirs(os.path.dirname(TASKS_DB), exist_ok=True)
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        conn.executescript(TASKS_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------- 1. 任务事件检查 ----------
+def check_tasks() -> list[dict]:
+    if not os.path.exists(TASKS_DB):
+        return []
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(
+            "UPDATE task_events SET status='pending', claimed_at=NULL, "
+            "note=COALESCE(note,'') || '[recover: 超时重置]' "
+            "WHERE status='processing' AND claimed_at IS NOT NULL "
+            "AND (julianday('now','localtime') - julianday(claimed_at)) * 24 > ?",
+            (RECOVER_STALE_HOURS,),
+        )
+        conn.commit()
+        return [dict(r) for r in conn.execute(
+            "SELECT id, type, entity, priority, source FROM task_events "
+            "WHERE status='pending' ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
+    finally:
+        conn.close()
+
+
+# ---------- 2. atr-sync 每日维护 ----------
+def atr_sync_daily() -> list[str]:
+    """交易时段首次 tick：对持仓股（position open）跑 atr-sync 更新止损位。"""
+    if not in_trade_hours() or not os.path.exists(POOL_DB):
+        return []
+    st = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if st.get("last_atr_date") == today:
+        return []
+    conn = sqlite3.connect(POOL_DB)
+    try:
+        stocks = [r[0] for r in conn.execute("SELECT stock FROM position WHERE status='open'")]
+    finally:
+        conn.close()
+    if not stocks:
+        return []
+    done = []
+    for s in stocks:
+        out = ptrade2("atr-sync", s, timeout=60)
+        done.append(f"📐 {s} atr-sync {'✓' if out else '✗'}")
+    st["last_atr_date"] = today
+    save_state(st)
+    return done
+
+
+# ---------- 3. 价格条件触发检测 ----------
+def _has_pending_event(entity: str, direction: str) -> bool:
+    """去重：同实体同方向已有 pending/processing 事件则跳过。"""
+    if not os.path.exists(TASKS_DB):
+        return False
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
+            "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
+            (entity, f"%{direction}%"),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def _write_alert(entity: str, code: str, direction: str, cond_id: int,
+                 cond_name: str, trigger_price: float, current_price: float) -> None:
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        payload = json.dumps({
+            "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
+            "trigger_price": trigger_price, "current_price": current_price,
+        }, ensure_ascii=False)
+        conn.execute(
+            "INSERT INTO task_events (type, entity, source, priority, payload) "
+            "VALUES ('WATCH_ALERT', ?, 'heartbeat-scan', 1, ?)",
+            (entity, payload),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_price_triggers() -> list[str]:
+    """读 active 条件 vs 实时价，穿越触发 → 写 WATCH_ALERT（去重）。"""
+    if not in_trade_hours() or not os.path.exists(POOL_DB):
+        return []
+    conn = sqlite3.connect(POOL_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT cn.id, a.stock_name, a.stock_code, cn.price, cn.action, cn.category, cn.type "
+            "FROM conditions cn JOIN accounts a ON cn.account_id=a.id "
+            "WHERE cn.status='active' AND cn.price IS NOT NULL").fetchall()
+    finally:
+        conn.close()
+    triggers = []
+    for r in rows:
+        action = r["action"] or ""
+        is_buy = any(w in action for w in BUY_WORDS)
+        is_sell = any(w in action for w in SELL_WORDS) or r["category"] == "hard"
+        if not (is_buy or is_sell):
+            continue
+        price = fetch_price(r["stock_code"])
+        if price is None:
+            continue
+        hit = price <= r["price"]
+        if not hit:
+            continue
+        direction = "buy" if is_buy else "sell"
+        if _has_pending_event(r["stock_name"], direction):
+            continue  # 已有同向待处理事件，去重
+        _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
+                     action, r["price"], price)
+        triggers.append(
+            f"🔔 {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发: "
+            f"现价¥{price:.2f} ≤ 条件¥{r['price']:.2f} [{action}]")
+    return triggers
+
+
+# ---------- 4. 动量异动扫描（原有） ----------
+def pool_stocks() -> list[tuple[str, str]]:
+    if not os.path.exists(POOL_DB):
+        return []
+    conn = sqlite3.connect(POOL_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [(r["stock"], r["code"]) for r in conn.execute(
+            "SELECT stock, code FROM pool WHERE pool_status='active' AND code IS NOT NULL")]
+    finally:
+        conn.close()
+
+
+def fetch_kline_closes(code: str) -> list[float]:
+    out = ptrade2("fetch-kline", code, "--type", "day", "--count", "15")
+    closes = []
+    for line in out.splitlines():
+        m = re.search(r"收:\s*([\d.]+)", line)
+        if m:
+            closes.append(float(m.group(1)))
+    return closes  # 新→旧
+
+
+def scan_moves() -> list[str]:
+    if not in_trade_hours():
+        return []
+    alerts = []
+    for name, code in pool_stocks():
+        closes = fetch_kline_closes(code)
+        if len(closes) < 11:
+            continue
+        today, day_ago, ten_ago = closes[0], closes[1], closes[10]
+        day_chg = (today / day_ago - 1) * 100 if day_ago else 0
+        ten_chg = (today / ten_ago - 1) * 100 if ten_ago else 0
+        if 15 <= ten_chg <= 25:
+            alerts.append(f"⚡ {name}({code}) 近10日+{ten_chg:.1f}% 动量甜点区")
+        elif ten_chg > 25:
+            alerts.append(f"⚠️ {name}({code}) 近10日+{ten_chg:.1f}% 超25%追高区")
+        elif abs(day_chg) >= 7:
+            alerts.append(f"🔔 {name}({code}) 单日{day_chg:+.1f}% 异动")
+    return alerts
+
+
+def main() -> int:
+    lines = []
+    tasks = check_tasks()
+    if tasks:
+        latest = tasks[0]
+        lines.append(f"[EVENT] pending={len(tasks)} 个 | 最新 #{latest['id']} "
+                     f"[{latest['type']}] {latest['entity']} (p{latest['priority']})")
+        for t in tasks:
+            lines.append(f"  #{t['id']} [{t['type']}] {t['entity']} p{t['priority']} src={t['source']}")
+    lines.extend(atr_sync_daily())
+    lines.extend(check_price_triggers())
+    lines.extend(scan_moves())
+    if not lines:
+        print("IDLE")
+        return 0
+    print("\n".join(lines))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

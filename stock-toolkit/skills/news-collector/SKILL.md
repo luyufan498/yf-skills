@@ -91,3 +91,15 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 - `newsdb scan-status set <scope_type> <scope_id>` 记录本次扫描。
 - `newsdb ack-refresh <id>` 确认处理完的请求。
 - 总结：新建 X 事件、追加 Y 消息、跳过 Z、处理请求 N 个。
+
+## 候选事件（task-bus 接线）
+
+扫描中发现**值得关注但不在跟踪范围**的新标的/行业（重要度≥4 且 bullish 信号，或出现新题材主线）时，写入任务总线让心跳 agent 安排完整分析：
+
+```bash
+export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db
+taskbus add CANDIDATE <代码或行业名> --source news-collector --priority 2 \
+  --payload '{"evidence":"<一句话依据>","importance":4}'
+```
+
+心跳 agent 消费 CANDIDATE → 完整分析 → 评估关注/买入。已在 stocks 跟踪或 watchlist 的标的无需重复入队。

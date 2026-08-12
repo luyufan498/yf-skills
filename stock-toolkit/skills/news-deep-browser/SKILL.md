@@ -109,6 +109,18 @@ newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实
 2. **论坛情绪是趋势跟随者**——只在趋势方向变化上提前，反转点上滞后
 3. **置信度刚需**——粉黑互撕噪音巨大，必须过滤
 
+## 深挖请求接线（task-bus）
+
+发现需要**其他平台补充印证**的消息（X 消息需雪球/知乎确认、单一来源流言需多方核实）时，写入任务总线让心跳 agent 安排后续深挖：
+
+```bash
+export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db
+taskbus add DEEP_DIVE <代码或行业> --source x-scan --priority 3 \
+  --payload '{"reason":"X消息需雪球/知乎印证"}'
+```
+
+心跳 agent 消费 DEEP_DIVE → 驱动下一轮深挖（每轮限量 5 个目标内）。
+
 ## 完成后
 
 - `newsdb ack-deepdive <id>` 确认处理完的请求

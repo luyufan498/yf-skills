@@ -260,22 +260,50 @@ def fetch_kline_closes(code: str) -> list[float]:
 
 
 def scan_moves() -> list[str]:
+    """池内股票异动扫描（状态机 + 滞回：状态变化才输出，防反复唤醒）。
+
+    每只股票维护 last_state（normal/sweet/chase/daymove）：
+    - 状态不变 → 不输出（monitor 哈希稳定 → 睡眠）
+    - 状态跃迁 → 输出一次（唤醒 agent 处理）
+    - 滞回边界：进入甜点区 15% / 退出 14%；单日异动触发 7% / 复位 6.5%
+    """
     if not in_trade_hours():
         return []
+    st = load_state()
+    states = st.get("move_states", {})  # {name: last_state}
     alerts = []
     for name, code in pool_stocks():
         closes = fetch_kline_closes(code)
         if len(closes) < 11:
             continue
         today, day_ago, ten_ago = closes[0], closes[1], closes[10]
-        day_chg = (today / day_ago - 1) * 100 if day_ago else 0
-        ten_chg = (today / ten_ago - 1) * 100 if ten_ago else 0
-        if 15 <= ten_chg <= 25:
-            alerts.append(f"⚡ {name}({code}) 近10日+{ten_chg:.1f}% 动量甜点区")
-        elif ten_chg > 25:
-            alerts.append(f"⚠️ {name}({code}) 近10日+{ten_chg:.1f}% 超25%追高区")
-        elif abs(day_chg) >= 7:
-            alerts.append(f"🔔 {name}({code}) 单日{day_chg:+.1f}% 异动")
+        # round 防浮点精度（14.999999999999991 >= 15 判定失败）
+        day_chg = round((today / day_ago - 1) * 100, 2) if day_ago else 0.0
+        ten_chg = round((today / ten_ago - 1) * 100, 2) if ten_ago else 0.0
+
+        last = states.get(name, "normal")
+        # 滞回判定（进入阈值 > 退出阈值，边界抖动不反复切换）
+        if ten_chg > 25:
+            cur = "chase"
+        elif ten_chg >= 15 or (last == "sweet" and ten_chg >= 14):
+            cur = "sweet"
+        elif abs(day_chg) >= 7 or (last == "daymove" and abs(day_chg) >= 6.5):
+            cur = "daymove"
+        else:
+            cur = "normal"
+
+        if cur != last:  # 状态跃迁才输出
+            if cur == "sweet":
+                alerts.append(f"⚡ {name}({code}) 进入动量甜点区 近10日+{ten_chg:.1f}%")
+            elif cur == "chase":
+                alerts.append(f"⚠️ {name}({code}) 进入追高区 近10日+{ten_chg:.1f}% (>25%)")
+            elif cur == "daymove":
+                alerts.append(f"🔔 {name}({code}) 单日{day_chg:+.1f}% 异动")
+            elif last != "normal" and cur == "normal":
+                alerts.append(f"↩️ {name}({code}) 异动回落（{last}→正常）")
+        states[name] = cur
+    st["move_states"] = states
+    save_state(st)
     return alerts
 
 

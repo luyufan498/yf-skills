@@ -1,0 +1,113 @@
+---
+name: task-bus
+description: 股票任务总线（taskbus CLI）——事件驱动 agent 任务队列。当需要"发现候选/异动告警/深挖请求"等任务事件的入队、认领、消费、状态查询时使用。
+version: 1.0.0
+author: catmouse
+license: MIT
+metadata:
+  hermes:
+    tags: [task-bus, event-driven, 任务队列, 事件总线, agent编排]
+    related_skills: [news-database, news-collector, news-deep-browser, paper-trading, stock-daily-analysis]
+---
+
+# 🚌 股票任务总线（task-bus）
+
+事件驱动的 agent 任务队列。**信息域**（发生了什么）归 newsdb `events` 表；**任务域**（要做什么）归本总线 `task_events` 表。生产者发现需要处理的事项 → 写任务事件 → 心跳路由 agent 消费 → 标 done。两者分离，职责清晰。
+
+## When to Use
+
+- **生产者**（news-collector / x-scan / 分析 agent / 扫描脚本 / 用户）：发现值得分析的候选、需要补搜新闻、需要深挖、关注股异动、日历到期 → `taskbus add`
+- **消费者**（心跳路由 agent）：醒来后 `taskbus list --status pending` → 逐个 `taskbus claim` → 处理 → `taskbus done/fail`
+- 任何需要查询任务队列状态、最新事件 ID、剩余 pending 数的场景
+
+## 环境
+
+```bash
+export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db
+# 未设置时默认 <cwd>/data/tasks/tasks.db
+```
+
+安装：`cd <yf-skills>/stock-toolkit/skills/task-bus/scripts && uv tool install --editable .`
+
+## 事件类型（6 种核心）
+
+| 类型 | 含义 | 典型生产者 | 消费者 agent |
+|------|------|-----------|-------------|
+| `CANDIDATE` | 发现新候选标的/行业（新闻或扫描） | news-collector、市场扫描 | 分析（stock-daily-analysis） |
+| `REFRESH` | 新闻库缺信息需补搜 | 分析 agent | 新闻（news-collector） |
+| `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
+| `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测 | 交易（paper-trading） |
+| `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
+| `CALENDAR` | 财报/解禁/除权日历 | 日历检查 | 分析/交易 |
+
+## 状态机
+
+```
+pending ──claim──▶ processing ──done──▶ done
+   ▲                  │
+   │                  └──fail──▶ failed ──requeue──▶ pending
+   └────────────── recover(超时重置) ──────────────┘
+```
+
+- `claim` 是**原子认领**（`UPDATE ... WHERE status='pending'`）：串行消费 + 认领失败跳过，双保险防抢事件/重复消费
+- `recover` 把卡死（agent 崩溃）的 processing 重置回 pending，默认超时 2 小时
+
+## CLI 命令
+
+```bash
+taskbus init                                # 初始化库
+taskbus add CANDIDATE 光智科技 --source news-collector --priority 2 --payload '{"evidence":"磷化铟供需趋紧"}'
+taskbus list --status pending [--type X]    # 查待消费（按 priority 排序）
+taskbus claim 42                            # 原子认领 #42（pending→processing）
+taskbus done 42 --note "已入关注列表"          # 完成
+taskbus fail 42 --note "分析失败：数据不可用"    # 失败
+taskbus requeue 42                          # failed→pending 重试
+taskbus recover --stale-hours 2             # 卡死恢复
+taskbus stats                               # 各状态计数 + 最新事件 ID
+taskbus ack 42 43 44 --note "串行消费完成"     # 批量完成
+```
+
+## 生产者/消费者协议
+
+### 生产者（写事件，立即返回，不阻塞）
+
+```bash
+# news-collector 发现新候选
+taskbus add CANDIDATE <代码或行业> --source news-collector --priority 2 \
+  --payload '{"evidence":"...","importance":4}'
+
+# x-scan 发现需多平台补充的消息
+taskbus add DEEP_DIVE <代码> --source x-scan --priority 3 \
+  --payload '{"reason":"X消息需雪球/知乎印证"}'
+
+# 分析 agent 发现新闻库缺解释
+taskbus add REFRESH <代码> --source analysis --priority 2 \
+  --payload '{"signal":"异动无解释"}'
+```
+
+### 消费者（心跳路由 agent，串行消费）
+
+```bash
+# 1. 看待消费列表（按 priority 排序，高优先先处理）
+taskbus list --status pending
+
+# 2. 逐个串行：认领 → delegate 对应 skill 的 subagent 处理 → 完成
+taskbus claim 42        # 认领失败（返回非0）说明已被抢/状态变化，跳过
+# ... subagent 处理 ...
+taskbus done 42 --note "已入关注列表"
+
+# 3. 汇报时带统计
+taskbus stats           # 剩余 pending 数 + 最新事件 ID
+```
+
+### 心跳集成（watch_scan.py 参考）
+
+monitor 脚本每 tick：`taskbus list --status pending` + 异动检测 → 无事件输出 `IDLE`（稳定，睡眠）；有事件输出摘要（变化，唤醒 agent）。唤醒后 agent 按上面消费者协议串行消费。
+
+## 注意事项
+
+- **认领是唯一防重**：处理前必须先 `claim`，claim 失败（exit 1）就跳过该事件，不要强行处理
+- **done/fail 只接受 processing 状态**：直接对 pending 事件 done 会失败（防止未认领就结束）
+- **串行消费**：一次只 claim 一个、处理一个、done 一个；不要并行 claim 一堆（多 agent 抢事件）
+- 事件卡死：processing 超过 2 小时自动被 `recover` 重置（心跳脚本会顺带执行）
+- 事件不丢：生产者写入后即使无人消费也一直在队列，心跳恢复后继续处理

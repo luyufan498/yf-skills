@@ -1,0 +1,24 @@
+[project]
+name = "task-bus"
+version = "0.1.0"
+description = "股票任务总线 - 事件驱动 agent 任务队列（CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/REVIEW/CALENDAR）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.7.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+taskbus = "task_bus.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["task_bus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

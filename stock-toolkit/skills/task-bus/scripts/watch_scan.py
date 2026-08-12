@@ -162,6 +162,7 @@ def _has_pending_event(entity: str, direction: str) -> bool:
 
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                  cond_name: str, trigger_price: float, current_price: float) -> None:
+    """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。"""
     _ensure_task_table()
     conn = sqlite3.connect(TASKS_DB)
     try:
@@ -177,6 +178,25 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
         conn.commit()
     finally:
         conn.close()
+    # 触发即失效：把该股票该方向的所有 active 条件标记为 triggered
+    # （同组区间捕捉的 下沿/中沿/上沿 一并失效，避免事件消费后剩余条件重复触发）
+    if os.path.exists(POOL_DB):
+        if direction == "buy":
+            cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
+        else:
+            cond_filter = ("(action LIKE '%清仓%' OR action LIKE '%减仓%' OR action LIKE '%止损%' "
+                           "OR action LIKE '%止盈%' OR category='hard')")
+        pconn = sqlite3.connect(POOL_DB)
+        try:
+            pconn.execute(
+                f"UPDATE conditions SET status='triggered' "
+                f"WHERE account_id=(SELECT account_id FROM conditions WHERE id=?) "
+                f"AND status='active' AND {cond_filter}",
+                (cond_id,),
+            )
+            pconn.commit()
+        finally:
+            pconn.close()
 
 
 def check_price_triggers() -> list[str]:

@@ -75,6 +75,11 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
    - other 其他
    CLI: `newsdb save --message-type <type> ...`
 5. **summary 精炼**：保留关键数字（销量、金额、百分比），一句话说清影响。
+5.5. **预期信号标注（自动 + 可选覆盖）**：`save` 缺省会按标题/摘要关键词**自动识别** `--signal-direction`（bullish/bearish/event/none）与 `--signal-type`（buyback/reduction/earnings_preview/win_bid/...），无需手动传。以下情况**显式传参覆盖**：
+   - 关键词识别方向明显错误时（如"增资扩股"其实是 H1 预亏背景下的一次性增利）；
+   - 舆情/流言给出明确多空倾向时（`--signal-direction bullish/bearish` 让社区情绪进入预期层）；
+   - `--signal-direction none` 可禁用自动识别（纯事后描述）。
+   > 目的：把"预期/先导类信号"结构化，配合技术指标双层确认。股价走势（price_action）与 market 类事件天然不标预期，勿手动补标。
 6. **时效性标签**：`--sensitivity high/medium/low`——市场/大盘/个股异动 high，行业趋势/政策 medium，季度财报/一次性事件 low。
 
 ## 时效性×层级扫描规则

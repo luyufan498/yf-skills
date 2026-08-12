@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS messages (
     ts_updated  TEXT,                              -- 预留：语义扫描游标
     source_type TEXT NOT NULL DEFAULT 'media',     -- official/media/community/rumor
     confidence  INTEGER NOT NULL DEFAULT 4,        -- 1-5，1=流言 5=官方
-    message_type TEXT NOT NULL DEFAULT 'other'     -- financial_report/announcement/news/research/community/industry_change/capital_flow/price_action/policy/other
+    message_type TEXT NOT NULL DEFAULT 'other',    -- financial_report/announcement/news/research/community/industry_change/capital_flow/price_action/policy/other
+    signal_direction TEXT NOT NULL DEFAULT 'none', -- 预期方向：bullish/bearish/event/none（知情方对未来走势的预期，配合技术指标做双层确认）
+    signal_type TEXT NOT NULL DEFAULT ''           -- 信号类型：buyback/reduction/earnings_preview/win_bid/...（见 signal.py）
 );
 CREATE INDEX IF NOT EXISTS idx_messages_event ON messages(event_id);
 
@@ -151,6 +153,14 @@ def init_db(conn):
         pass
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'other'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN signal_direction TEXT NOT NULL DEFAULT 'none'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN signal_type TEXT NOT NULL DEFAULT ''")
     except sqlite3.OperationalError:
         pass  # 列已存在
     conn.commit()

@@ -26,6 +26,8 @@ uv tool install --editable .
 | `newsdb update-event <id> --latest-summary "..."` | 刷新事件最新摘要 |
 | `newsdb resolve-event <id>` | 标记事件结束 |
 | `newsdb track <code> --name ... [--industry] [--watchlist]` | 添加实体跟踪 |
+| `newsdb signal-backfill` | 对存量消息回填预期信号（关键词规则，仅补未标注的） |
+| `newsdb signal-set <msg_id> --direction bullish/bearish/event/none [--type X]` | 手动修正单条消息的信号标注（agent 复核用） |
 | `newsdb ack-refresh <id>` | 处理完异动请求后确认 |
 | `newsdb industry-aliases add <行业名> --alias <别名>` | 登记行业别名 |
 | `newsdb industry-aliases list [<行业名>]` | 查看行业别名 |
@@ -68,4 +70,8 @@ uv tool install --editable .
 - 输出中 `[msg#N]` 是消息 id，可配合 `newsdb event <事件id>` 追溯完整时间线。
 - 行业支持别名归一化：`upsert_industry` 先查别名再新建，入库用任意别名不分裂行业。`save --industry` 支持逗号分隔多行业。
 - `save --message-type <type>` 标内容类型（10 类：financial_report 财报业绩 / announcement 公告 / news 新闻资讯 / research 研报 / community 社区舆情 / industry_change 行业变化 / capital_flow 资金异动 / price_action 股价走势 / policy 政策 / other 其他），与 `--source-type`（谁说的）正交。采集 agent 入库时都应带。
+- **预期信号标注（2026-08 新增）**：`save --signal-direction <bullish/bearish/event>` 标消息的**预期方向**（知情方对未来走势的预期），`--signal-type <buyback/reduction/earnings_preview/win_bid/...>` 标信号类型（与 direction 正交）。**缺省时按标题/摘要关键词自动识别**；只有需要修正时才显式传。语义：
+  - bullish 偏多（回购/增持/中标/定增/调研…）；bearish 偏空（减持/质押/业绩暴雷/评级下调/解禁…）；event 事件驱动（预约披露日/分红除权，中性到点复核）；none 无预期。
+  - **股价走势（price_action）与 market 类事件不标预期**——它们是已发生的市场描述（"美股重挫"里出现"签署MOU"不应误标 bullish）。`signal-backfill` 同样跳过这两类。
+  - 目的：把"预期/先导类信号"结构化，配合技术指标做双层确认（新闻定区域、指标定时点），支撑后续"预期信号→未来5-10日收益"的统计验证。现在只积累，不下结论。
 - `query-industry` 支持别名匹配 + 父带子展开（查父行业含子行业事件）；未命中时给出候选提示。

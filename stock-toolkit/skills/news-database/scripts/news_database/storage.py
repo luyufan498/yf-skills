@@ -1,5 +1,7 @@
 """写入层：实体、事件、消息、关系、刷新请求。"""
 
+from news_database.signal import VALID_SIGNAL_DIRECTIONS
+
 # ---------- 实体 ----------
 
 def upsert_stock(conn, code, name, industry=None, market_cap=None, is_watchlist=0, priority=0):
@@ -100,7 +102,8 @@ MESSAGE_TYPES = {
 
 def add_message(conn, event_id, title, summary=None, url=None, source=None,
                 occurred_at=None, importance=3, keywords=None,
-                source_type="media", confidence=None, message_type="other"):
+                source_type="media", confidence=None, message_type="other",
+                signal_direction=None, signal_type=None):
     """向事件追加一条消息，更新事件的 msg_count/importance/latest_summary。返回消息 id。"""
     # 先校验事件存在，避免孤儿消息
     ev = conn.execute("SELECT importance FROM events WHERE id=?", (event_id,)).fetchone()
@@ -114,12 +117,18 @@ def add_message(conn, event_id, title, summary=None, url=None, source=None,
         confidence = SOURCE_TYPE_CONFIDENCE.get(source_type, SOURCE_TYPE_DEFAULT_CONFIDENCE)
     if not (0 < confidence <= 5):
         raise ValueError(f"confidence 必须在 1-5，收到 {confidence!r}")
+    if signal_direction is None:
+        signal_direction = "none"
+    if signal_direction not in VALID_SIGNAL_DIRECTIONS:
+        raise ValueError(f"未知 signal_direction: {signal_direction!r}（合法: {'/'.join(sorted(VALID_SIGNAL_DIRECTIONS))}）")
+    signal_type = signal_type or ""
     cur = conn.execute("""
         INSERT INTO messages (event_id, title, summary, url, source, occurred_at,
-                              fetched_at, importance, keywords, source_type, confidence, message_type)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?)
+                              fetched_at, importance, keywords, source_type, confidence, message_type,
+                              signal_direction, signal_type)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?)
     """, (event_id, title, summary, url, source, occurred_at, int(importance),
-          keywords, source_type, int(confidence), message_type))
+          keywords, source_type, int(confidence), message_type, signal_direction, signal_type))
     mid = cur.lastrowid
     _index_message(conn, mid, title, summary, keywords)
     new_importance = max(ev["importance"] or 0, int(importance))

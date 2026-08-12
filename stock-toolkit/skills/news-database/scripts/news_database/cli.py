@@ -90,6 +90,12 @@ def save(
     message_type: str = typer.Option(
         "other", "--message-type",
         help="financial_report/announcement/news/research/community/industry_change/capital_flow/price_action/policy/other"),
+    signal_direction: str = typer.Option(
+        None, "--signal-direction",
+        help="预期方向 bullish/bearish/event（缺省自动按关键词识别；明确标 none 禁用自动识别）"),
+    signal_type: str = typer.Option(
+        None, "--signal-type",
+        help="信号类型 buyback/reduction/earnings_preview/win_bid/...（仅与 --signal-direction 搭配使用）"),
 ):
     """结构化写入一条 agent 整理后的消息。要么 --event <id> 归属，要么 --new-event 新建。"""
     if bool(event_id) == bool(new_event):
@@ -108,6 +114,17 @@ def save(
     if confidence is not None and not (1 <= confidence <= 5):
         typer.echo("错误：--confidence 必须在 1-5")
         raise typer.Exit(code=2)
+    # 预期信号标注：显式指定优先；否则按标题/摘要关键词自动识别
+    if signal_direction is None:
+        from news_database.signal import classify_signal
+        signal_direction, auto_type = classify_signal(f"{title} {summary or ''}")
+        if signal_type is None:
+            signal_type = auto_type
+    if signal_type is None:
+        signal_type = ""
+    if signal_direction not in {"bullish", "bearish", "event", "none"}:
+        typer.echo(f"错误：--signal-direction 必须是 bullish/bearish/event/none 之一")
+        raise typer.Exit(code=2)
     conn = _open()
     if new_event:
         eid = storage.create_event(conn, title, entity_type=entity_type,
@@ -121,7 +138,8 @@ def save(
     mid = storage.add_message(conn, eid, title, summary=summary, url=url, source=source,
                               occurred_at=occurred_at, importance=importance, keywords=keywords,
                               source_type=source_type, confidence=confidence,
-                              message_type=message_type)
+                              message_type=message_type,
+                              signal_direction=signal_direction, signal_type=signal_type)
     if stock:
         for code in [s.strip() for s in stock.split(",") if s.strip()]:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
@@ -130,6 +148,42 @@ def save(
             storage.link_event_industry(conn, eid, ind, relevance=relevance)
     conn.close()
     typer.echo(f"✓ 已保存消息 #{mid} → 事件 #{eid}（{'新建' if new_event else '归属已有'}）")
+
+
+@app.command("signal-backfill")
+def signal_backfill():
+    """对存量消息回填预期信号标注（关键词规则，仅补 signal_direction='none' 的，已标注不覆盖）。"""
+    from news_database.signal import backfill_signals
+    conn = _open()
+    n, stats = backfill_signals(conn)
+    conn.close()
+    if n == 0:
+        typer.echo("（无待回填消息：全部已标注或无需标注）")
+        return
+    typer.echo(f"✓ 已回填 {n} 条消息的预期信号：")
+    for sig_type, cnt in sorted(stats.items(), key=lambda x: -x[1]):
+        typer.echo(f"  • {sig_type}: {cnt} 条")
+
+
+@app.command("signal-set")
+def signal_set(message_id: int = typer.Argument(...),
+               direction: str = typer.Option(..., "--direction",
+                                             help="bullish/bearish/event/none"),
+               signal_type: str = typer.Option("", "--type")):
+    """手动修正单条消息的预期信号标注（agent 复核用）。"""
+    if direction not in {"bullish", "bearish", "event", "none"}:
+        typer.echo("错误：--direction 必须是 bullish/bearish/event/none 之一")
+        raise typer.Exit(code=2)
+    conn = _open()
+    cur = conn.execute(
+        "UPDATE messages SET signal_direction=?, signal_type=? WHERE id=?",
+        (direction, signal_type, message_id))
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        typer.echo(f"消息 #{message_id} 不存在")
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ 消息 #{message_id} 信号标注: {direction}/{signal_type or '-'}")
 
 
 @app.command("update-event")
@@ -500,7 +554,18 @@ def _confidence_warn(msg):
 
 def _confidence_tag(msg):
     """消息级标签：[来源·内容类型]，confidence<3 追加 ⚠。event 与 query-* 共用。"""
-    return f"[{_source_label(msg)}·{_message_type_tag(msg)}]" + _confidence_warn(msg)
+    return f"[{_source_label(msg)}·{_message_type_tag(msg)}]" + _signal_tag(msg) + _confidence_warn(msg)
+
+
+def _signal_tag(msg):
+    """预期信号标签：有标注的消息追加方向/类型（如 🐂回购 / 🐻减持 / 📅业绩预告）。"""
+    direction = msg["signal_direction"] or "none"
+    if direction == "none":
+        return ""
+    from news_database.signal import DIRECTION_LABEL, SIGNAL_TYPE_LABEL
+    icon = {"bullish": "🐂", "bearish": "🐻", "event": "📅"}.get(direction, "·")
+    sig_type = SIGNAL_TYPE_LABEL.get(msg["signal_type"], msg["signal_type"]) if msg["signal_type"] else ""
+    return f" {icon}{DIRECTION_LABEL[direction]}{sig_type}"
 
 
 def _message_type_tag(msg):

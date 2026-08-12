@@ -1,18 +1,18 @@
 ---
 name: news-deep-browser
-description: 深度浏览补充采集 agent——用 agent-browser(真实 Chrome CDP+登录态) 访问雪球/知乎，补充主搜索路线够不到的信息(提前量/情绪流言/全局异动)，带置信度标签写入 newsdb。与 news-collector 完全解耦，挂了不影响主路线。当需要深挖论坛/社交/登录墙内容时使用。
+description: 深度浏览补充采集 agent——用裸 CDP 驱动真实 Chrome(9222+登录态) 访问雪球/知乎/X，补充主搜索路线够不到的信息(提前量/情绪流言/全局异动/国际AI科技情报)，带置信度标签写入 newsdb。与 news-collector 完全解耦，挂了不影响主路线。当需要深挖论坛/社交/登录墙/外网内容时使用。
 ---
 
 # 🌐 深度浏览补充采集 Agent
 
-独立运行的补充采集器，与主新闻采集(news-collector)完全解耦。用 agent-browser 访问雪球/知乎，把搜索引擎够不到的信息带置信度写入 newsdb。
+独立运行的补充采集器，与主新闻采集(news-collector)完全解耦。用裸 CDP 驱动真实 Chrome(9222) 访问雪球/知乎/X，把搜索引擎够不到的信息带置信度写入 newsdb。无 agent-browser、无 daemon，session 状态 = 真实 Chrome 的 tab 本身。
 
 ## 核心循环
 
 ```
 读 deepdive-requests(分析 agent 的深挖请求，优先处理)
 → 从库读深挖目标(高关注+open事件股票/异动股)
-→ 每个目标：查库已有内容 → 决定去哪找(雪球讨论/资讯/7×24、知乎) → agent-browser 独立 session 逛 → 甄别
+→ 每个目标：查库已有内容 → 决定去哪找(雪球讨论/资讯/7×24、知乎) → 裸 CDP 脚本逛 → 甄别
 → newsdb save 写回(source_type + confidence)
 → ack-deepdive 确认处理完的请求
 ```
@@ -21,16 +21,29 @@ description: 深度浏览补充采集 agent——用 agent-browser(真实 Chrome
 
 ```bash
 export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
-export PATH="$HOME/.nvm/versions/node/v24.13.0/bin:$PATH"   # agent-browser 所在
-unset AGENT_BROWSER_PROFILE        # 否则与 --state/restore 冲突
-unset AGENT_BROWSER_SESSION_NAME   # 否则干扰 eval 命令路由
+export DIVE_SCRIPTS=/home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/news-deep-browser/scripts
+export DIVE_SESSION_FILE=/tmp/news_deep_browser_tabs.json   # 记录本轮 dive 开的 tab，收尾 dedupe 用
 
-# 独立 session 每站一个(不要用 main-session)
-agent-browser --session xueqiu-dive --idle-timeout 0 open "<url>"
-# 真实 Chrome CDP 连接(登录态最完整)
-agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
-# 若 9222 连不上，先确认 Chrome 以 --remote-debugging-port=9222 启动(雪球股票页滑块验证，headless 过不了)
+# 裸 CDP 驱动真实 Chrome(9222 登录态最完整)。若连不上，先确认 Chrome 以 --remote-debugging-port=9222 启动
+python3 "$DIVE_SCRIPTS/cdp_drive.py" list
+# 知乎开工前先做"保登录清指纹"避免问题页 40362
+python3 "$DIVE_SCRIPTS/zh_cookie_clean.py"
 ```
+
+## 操作(优先用封装脚本)
+
+| 目标 | 命令 | 输出 |
+|---|---|---|
+| 雪球单股深挖(讨论+翻页+资讯) | `python3 "$DIVE_SCRIPTS/xq_dig.py" <代码> --pages 2` | JSON：`{captcha, pages[], news}` |
+| 雪球 7×24 快讯 | `cdp_drive.py new "https://xueqiu.com/today#/livenews"` → `read <tid> --site xueqiu-livenews` | — |
+| 雪球今日话题 | `cdp_drive.py new "https://xueqiu.com/today"` → `read <tid>` | — |
+| 知乎搜索(中期前瞻) | `python3 "$DIVE_SCRIPTS/zh_search.py" "预计XX"` | JSON：`{count, results[]}` |
+| 知乎问题页 | 先 `zh_cookie_clean.py`，再 `cdp_drive.py navigate <tid> <url>` + `read <tid>` | — |
+| X 推荐流(For you+趋势) | `python3 "$DIVE_SCRIPTS/x_scan.py" --both` | JSON：home.tweets + explore.trends |
+| X 定向搜索 | `python3 "$DIVE_SCRIPTS/x_search.py" "AI chip" --f live --since 2026-08-09 --min-faves 50` | JSON：tweets[{author,text,url}] |
+| 手动底层命令 | `python3 "$DIVE_SCRIPTS/cdp_drive.py" <cmd>`：list/new/close/dedupe/clean/navigate/eval/read/click/scroll/wait/paginate/captcha/title | — |
+
+`xq_dig.py` 一条命令完成雪球单股：开页 → 过滑块(如有) → 读讨论 → 翻页到 N → 点资讯 tab。读出的 JSON 直接甄别入库。
 
 ## 深挖目标来源(两路合并)
 
@@ -45,14 +58,20 @@ agent-browser --cdp 9222 --session xueqiu-dive --idle-timeout 0 open "<url>"
 
 | 目标 | 去哪找 | 做法 |
 |---|---|---|
-| 个股舆情/流言 | 雪球讨论区 | `https://xueqiu.com/S/<代码>` 新帖+热帖排序 |
-| 个股媒体新闻 | 雪球资讯 tab | 股票页点"资讯"，一次读全，来源+时间戳 |
+| 个股舆情/流言 | 雪球讨论区 | `xq_dig.py <代码>` 新帖+热帖排序 |
+| 个股媒体新闻 | 雪球资讯 tab | `xq_dig.py` 自动切"资讯"，一次读全，来源+时间戳 |
 | 全局实时异动 | 雪球 7×24 | `https://xueqiu.com/today#/livenews`，发现非 watchlist 新题材 → request-refresh |
 | 市场焦点 | 雪球今日话题 | `https://xueqiu.com/today` |
-| 中期前瞻 | 知乎 | 搜"预计XX/评价XX"前瞻型问题 |
+| 中期前瞻 | 知乎 | `zh_search.py "预计XX/评价XX"` 前瞻型问题 |
+| 国际AI/科技情报 | X | `x_scan.py` 推荐流 + `x_search.py` 定向搜(芯片涨价/HBM/大模型/新用法) |
 | 排除 | 小红书 | IP 风控 + 消费向信息密度低 |
 
-详见 `references/deepdive_rules.md`（含各渠道抓取 CSS 选择器、分页、环境坑等细节）。
+**各网站操作流程/选择器/错误解决已按站独立成文，动手前先读对应 ref**：
+- 雪球 → `references/xueqiu.md`（四层信息源/抓取/翻页/滑块验证/WAF 放行/API 拦截）
+- 知乎 → `references/zhihu.md`（搜索/问题页/**40362 cookie 指纹限流修复**）
+- X → `references/x.md`（推荐流+搜索/选择器/订阅号坑/已关注账号）
+- 小红书 → `references/xiaohongshu.md`（排除记录）
+跨站策略与裸 CDP 环境坑见 `references/deepdive_rules.md`。
 
 ## 置信度写入(关键)
 
@@ -93,4 +112,11 @@ newsdb save --event <id> --title "..." --summary "论坛舆情: ... 未经证实
 ## 完成后
 
 - `newsdb ack-deepdive <id>` 确认处理完的请求
+- **任务结束清理 tab**（必须做，别留一堆 tab）：
+  - 默认：去重本轮 dive 开的 tab（每站最多留一个，只动 `$DIVE_SESSION_FILE` 记录的、不碰用户手动开的 tab）：
+    `python3 "$DIVE_SCRIPTS/cdp_drive.py" dedupe`
+  - 需要连用户手动开的重复 tab 一起清（用户要求/浏览器 tab 太多时）：`dedupe --all`
+    对**全部** tab 按主域名去重，**相同网站保留 1 个**（保持登录 session），优先保留活跃 tab > 手动开的 tab > dive 开的 tab：
+    `python3 "$DIVE_SCRIPTS/cdp_drive.py" dedupe --all`
+  - 注意：`dedupe --all` 会关掉用户手动开的多余 tab，动手前先 `cdp_drive.py list` 确认保留哪个；用户原来开着的重要页面（watchlist 股票页等）优先保留
 - 总结：新建 X 事件、追加 Y 消息、跳过 Z、处理请求 N 个

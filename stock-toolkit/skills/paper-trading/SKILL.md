@@ -31,7 +31,8 @@ ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 - 新闻源：`newsdb important --min-importance 4 --days 3` + `newsdb query-market --days 3` 的高重要度 bullish 事件标的
 - 技术初筛：动量 15-25% 甜点区 / 周线收复 10 周均线 / 超跌企稳（`ptrade2 fetch-kline`）
 - 未在名单且双源有依据 → `watchlist-add --strategy L3 --source agent --reason "<事件摘要>; 动量+XX%"`
-- **入池 ≠ allocate**：新入池只进名单，等完整分析/后续验证后才谈资金
+- **入池后必须触发分析**：`taskbus add CANDIDATE <股> --source portfolio-review --priority 2 --payload '{"evidence":"<依据>"}'` → 心跳路由 agent 30 分钟内消费 → delegate 分析 subagent 完整分析并设定触发价。
+- **入池 ≠ allocate**：新入池只进名单，等分析结果验证后才谈资金
 
 **出池（僵尸清理）**：对**无持仓**股票评估（L2/L3）：
 - a. 连续 ≥5 交易日无新事件（`newsdb query-stock <code> --days 5` 无新增/open 事件）

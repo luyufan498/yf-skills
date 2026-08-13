@@ -209,11 +209,12 @@ def _cond_active(cond_id: int) -> bool:
 
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                  cond_name: str, trigger_price: float, current_price: float,
-                 manual: bool = False) -> bool:
+                 manual: bool = False, mode: str = "trade") -> bool:
     """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。
 
     manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
+    mode="eval"（L3 观察窗价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
     """
     if cond_id and cond_id > 0 and not _cond_active(cond_id):
         print(f"  ⏭ 跳过补录：条件#{cond_id}[{cond_name}] 已非 active（可能已触发/已移除）", file=sys.stderr)
@@ -224,7 +225,7 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     conn = sqlite3.connect(TASKS_DB)
     try:
         payload = json.dumps({
-            "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
+            "mode": mode, "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
             "trigger_price": trigger_price, "current_price": current_price,
         }, ensure_ascii=False)
         conn.execute(
@@ -236,8 +237,8 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     finally:
         conn.close()
     # 触发即失效：把该股票该方向的所有 active 条件标记为 triggered
-    # （同组区间捕捉的 下沿/中沿/上沿 一并失效，避免事件消费后剩余条件重复触发）
-    if os.path.exists(POOL_DB) and cond_id and cond_id > 0:
+    # （仅 trade 模式；eval 模式的价格点由调用方负责移除）
+    if mode == "trade" and os.path.exists(POOL_DB) and cond_id and cond_id > 0:
         if direction == "buy":
             cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
         else:
@@ -338,13 +339,17 @@ def audit_inconsistencies() -> list[str]:
 
 # ---------- 4. 动量异动扫描（原有） ----------
 def pool_stocks() -> list[tuple[str, str]]:
+    """池内 active 股票 (名称, code)。code 缺失时从 accounts 表兜底（pool.code 可能为 NULL）。"""
     if not os.path.exists(POOL_DB):
         return []
     conn = sqlite3.connect(POOL_DB)
     conn.row_factory = sqlite3.Row
     try:
-        return [(r["stock"], r["code"]) for r in conn.execute(
-            "SELECT stock, code FROM pool WHERE pool_status='active' AND code IS NOT NULL")]
+        rows = conn.execute(
+            "SELECT p.stock AS stock, COALESCE(p.code, a.stock_code) AS code "
+            "FROM pool p LEFT JOIN accounts a ON a.stock_name = p.stock "
+            "WHERE p.pool_status='active'").fetchall()
+        return [(r["stock"], r["code"]) for r in rows if r["code"]]
     finally:
         conn.close()
 
@@ -407,6 +412,72 @@ def scan_moves() -> list[str]:
     return alerts
 
 
+def _kv_get(key: str) -> dict:
+    """通用 kv_store 读取（JSON dict）。"""
+    if not os.path.exists(TASKS_DB):
+        return {}
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        row = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return {}
+        v = json.loads(row[0])
+        return v if isinstance(v, dict) else {}
+    finally:
+        conn.close()
+
+
+def _kv_set(key: str, value: dict):
+    """通用 kv_store 写入（upsert）。"""
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        conn.execute(
+            "INSERT INTO kv_store (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=datetime('now','localtime')",
+            (key, json.dumps(value, ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_watch_points() -> list[str]:
+    """L3 观察窗价格点检测：现价 ≤ 价格点 → WATCH_ALERT(mode=eval) + 移除价格点（触发即失效）。
+
+    价格点由组合审查/分析 agent 用 taskbus watchpoint add 写入 kv_store('watch_points')。
+    """
+    if not in_trade_hours() or not os.path.exists(TASKS_DB):
+        return []
+    points = _kv_get("watch_points")
+    if not points:
+        return []
+    pool = {name: code for name, code in pool_stocks()}
+    alerts = []
+    changed = False
+    for entity, pts in list(points.items()):
+        code = pool.get(entity)
+        if not code:
+            continue  # 未在池（L3 已移除等），跳过
+        price = fetch_price(code)
+        if price is None:
+            continue
+        for p in pts:
+            if price <= p["price"]:
+                note = p.get("note", "L3观察")
+                if _write_alert(entity, code, "eval", 0, f"L3观察-{note}",
+                                p["price"], price, mode="eval"):
+                    alerts.append(f"📌 {entity}({code}) L3价格点触发: 现价¥{price} ≤ ¥{p['price']} [{note}] → 唤醒评估升级")
+                    points.pop(entity, None)  # 触发即失效
+                    changed = True
+                break
+    if changed:
+        _kv_set("watch_points", points)
+    return alerts
+
+
 def main() -> int:
     lines = []
     tasks = check_tasks()
@@ -418,6 +489,7 @@ def main() -> int:
             lines.append(f"  #{t['id']} [{t['type']}] {t['entity']} p{t['priority']} src={t['source']}")
     lines.extend(atr_sync_daily())
     lines.extend(check_price_triggers())
+    lines.extend(check_watch_points())
     lines.extend(audit_inconsistencies())
     lines.extend(scan_moves())
     if not lines:

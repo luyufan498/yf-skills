@@ -139,6 +139,59 @@ def kv_cmd(
         typer.echo(f"✅ {key} 已写入")
 
 
+@app.command("watchpoint")
+def watchpoint_cmd(
+    action: str = typer.Argument(..., help="add / list / remove"),
+    entity: str = typer.Argument(None, help="股票名（add/remove 需要）"),
+    price: float = typer.Option(None, "--price", help="价格事件点（add 需要）"),
+    note: str = typer.Option("", "--note", help="备注，如'买点下沿-重新评估'（add 可选）"),
+):
+    """L3 观察窗价格事件点管理（存 kv_store 的 watch_points）。
+
+    taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"
+    taskbus watchpoint list
+    taskbus watchpoint remove 光智科技
+
+    心跳 watch_scan 检测这些价格点：现价 ≤ price → 写 WATCH_ALERT(mode=eval)
+    唤醒分析 agent 重新评估是否升级 L2。
+    """
+    from datetime import datetime
+
+    key = "watch_points"
+    points = db.kv_get(key) or {}
+    if not isinstance(points, dict):
+        points = {}
+    if action == "add":
+        if not entity or price is None:
+            typer.echo("❌ add 需要 <股票> --price <价>", err=True)
+            raise typer.Exit(1)
+        pts = points.setdefault(entity, [])
+        pts.append({"price": round(price, 2), "note": note, "added_at": datetime.now().strftime("%m-%d %H:%M")})
+        db.kv_set(key, points)
+        typer.echo(f"✅ {entity} 价格点 ¥{price} 已添加（当前 {len(pts)} 个，现价 ≤ 触发时唤醒评估）")
+    elif action == "list":
+        if not points:
+            typer.echo("(无价格事件点)")
+            return
+        typer.echo(f"📌 L3 观察窗价格点（{len(points)} 只）：")
+        for name, pts in points.items():
+            for p in pts:
+                typer.echo(f"  {name}  ¥{p['price']:<8} {p.get('note','')}  ({p.get('added_at','')})")
+    elif action == "remove":
+        if not entity:
+            typer.echo("❌ remove 需要 <股票>", err=True)
+            raise typer.Exit(1)
+        if entity in points:
+            del points[entity]
+            db.kv_set(key, points)
+            typer.echo(f"✅ {entity} 价格点已移除")
+        else:
+            typer.echo(f"ℹ️ {entity} 无价格点")
+    else:
+        typer.echo("❌ action 应为 add / list / remove", err=True)
+        raise typer.Exit(1)
+
+
 @app.command("ack")
 def ack_events(
     task_ids: list[int] = typer.Argument(..., help="事件 ID 列表（可多个）"),

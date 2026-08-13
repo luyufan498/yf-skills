@@ -40,7 +40,14 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 ## 入库规则（关键）
 
-**搜索工具链（searxng 优先，brave 备用）：**
+**搜索工具链（快讯层 + searxng 优先 + brave 备用）：**
+
+0. **快讯层（每轮扫描先跑，零成本实时电报）**：`ptrade2 fetch-news`（本地命令，不耗搜索配额）：
+   - `ptrade2 fetch-news -s tv -n 20`（TradingView 外媒快讯）
+   - `ptrade2 fetch-news -s sina -n 20`（新浪财经公告/快讯，实时电报级）
+   - 每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）
+   - 财联社 cls 源：接口需 sign/cookie（50101 风控），**暂不可用跳过**（路径已修复 /v1/nodeapi/telegraphList）
+   - 快讯层价值：搜索 API 收录有延迟，快讯立即可拿（A股公告/电报级消息）
 
 1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`
    - 按时效性传 `--time-range`：high（大盘/个股异动）→ `day`；medium（行业/政策）→ `week`；low（财报）→ `month`

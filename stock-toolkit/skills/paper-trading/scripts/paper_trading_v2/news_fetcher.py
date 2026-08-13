@@ -13,8 +13,8 @@ import time
 class APIConfig:
     """API 配置常量"""
 
-    # 财联社
-    CLS_URL = "https://www.cls.cn/nodeapi/telegraphList"
+    # 财联社（2026-08 接口路径加 /v1 前缀；需 sign/cookie，直接请求返回 50101 风控）
+    CLS_URL = "https://www.cls.cn/v1/nodeapi/telegraphList"
     CLS_REFERER = "https://www.cls.cn/"
 
     # 新浪财经

@@ -51,8 +51,24 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 
 - **buy**：现价 ≤ 买点触发价（action 含 建仓/买入/加仓）——消费 agent 评估纪律后执行买入，或纪律否决时**调整买卖点**（移除/重设条件）
 - **sell**：现价 ≤ 止损/止盈触发价（hard 或 action 含 清仓/减仓/止损）——确认破位后执行卖出；hard 条件只升不降
-- **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入
+- **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
+
+### ⚠️ WATCH_ALERT 消费前置校验（防重复触发/重复建仓）
+
+**任何 WATCH_ALERT 事件（含自动与手动补录）在 claim 后、执行买入/卖出前，必须先核验：**
+
+1. **查条件状态**：`ptrade2 conditions "<股票>" --action event-list`（或直接查库），确认 payload 中 `cond_id` 对应条件仍为 **active**。若条件已 `triggered`/`removed`（说明此前已触发并消费过），**不得执行交易**，直接 `taskbus done <id> --note "条件已触发/失效，重复事件，不执行"`。
+2. **查同向历史事件**：`taskbus list` 无 pending/processing 同向事件 + 检查最近 done 的 WATCH_ALERT 是否已对该条件执行过同向操作（`ptrade2 operations <股票> --days 7` 查近7日是否已有对应买入/卖出）。已有 → 不重复执行，标 done。
+3. **查仓位合理性**：`ptrade2 info <股票>` 核对当前持仓。若事件方向为 buy 且仓位已到目标（如区间捕捉已建满），不追加；若 sell 且已清仓，不重复卖出。
+4. **对账告警优先**：`watch_scan.py` 心跳会对账输出 `⚠️ 对账：事件#X ... 已 triggered（非 active）`——这类事件 **默认不执行交易**，核验后标 done 并清理。
+
+**手动补录 WATCH_ALERT 的硬规则**（agent 手工 `taskbus add` 场景）：
+- **必须先确认条件 active** 才允许补录；已 triggered/removed 的条件禁止补录
+- payload 必须带真实 `cond_id`（禁止 0 或伪造）；带真实触发价与现价
+- 补录前查 `_has_pending_event` 等价逻辑（同实体同方向已有 pending/processing → 不补）
+- 补录后立即将该条件标 triggered（或由消费 agent 处理后标记），防止下一 tick 重复触发
+- 怀疑重复时，优先**不补录**，而是人工核验后直接处置（如本次爱司凯事件：旧条件#81 昨已触发建仓，今现价再穿越系重复，直接 done 不执行）
 
 ## 状态机
 

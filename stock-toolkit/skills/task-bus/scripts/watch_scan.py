@@ -166,16 +166,41 @@ def atr_sync_daily() -> list[str]:
 
 
 # ---------- 3. 价格条件触发检测 ----------
-def _has_pending_event(entity: str, direction: str) -> bool:
-    """去重：同实体同方向已有 pending/processing 事件则跳过。"""
+def _has_pending_event(entity: str, direction: str, cond_id: int | None = None) -> bool:
+    """去重：同实体同方向已有 pending/processing 事件则跳过。
+
+    cond_id > 0 时进一步按条件 ID 精确去重（同条件不重复入队），
+    防手动补录与自动触发叠加造成重复事件。
+    """
     if not os.path.exists(TASKS_DB):
         return False
     conn = sqlite3.connect(TASKS_DB)
     try:
+        if cond_id and cond_id > 0:
+            row = conn.execute(
+                "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
+                "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
+                (entity, f"%\"cond_id\": {cond_id}%"),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
+                "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
+                (entity, f"%{direction}%"),
+            ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def _cond_active(cond_id: int) -> bool:
+    """校验条件仍 active（防对已触发/已移除条件补录事件）。"""
+    if not cond_id or cond_id <= 0 or not os.path.exists(POOL_DB):
+        return False
+    conn = sqlite3.connect(POOL_DB)
+    try:
         row = conn.execute(
-            "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
-            "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
-            (entity, f"%{direction}%"),
+            "SELECT 1 FROM conditions WHERE id=? AND status='active'", (cond_id,)
         ).fetchone()
         return row is not None
     finally:
@@ -183,8 +208,18 @@ def _has_pending_event(entity: str, direction: str) -> bool:
 
 
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
-                 cond_name: str, trigger_price: float, current_price: float) -> None:
-    """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。"""
+                 cond_name: str, trigger_price: float, current_price: float,
+                 manual: bool = False) -> bool:
+    """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。
+
+    manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
+    返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
+    """
+    if cond_id and cond_id > 0 and not _cond_active(cond_id):
+        print(f"  ⏭ 跳过补录：条件#{cond_id}[{cond_name}] 已非 active（可能已触发/已移除）", file=sys.stderr)
+        return False
+    if _has_pending_event(entity, direction, cond_id):
+        return False  # 已有同向/同条件待处理事件，去重
     _ensure_task_table()
     conn = sqlite3.connect(TASKS_DB)
     try:
@@ -202,7 +237,7 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
         conn.close()
     # 触发即失效：把该股票该方向的所有 active 条件标记为 triggered
     # （同组区间捕捉的 下沿/中沿/上沿 一并失效，避免事件消费后剩余条件重复触发）
-    if os.path.exists(POOL_DB):
+    if os.path.exists(POOL_DB) and cond_id and cond_id > 0:
         if direction == "buy":
             cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
         else:
@@ -219,6 +254,7 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
             pconn.commit()
         finally:
             pconn.close()
+    return True
 
 
 def check_price_triggers() -> list[str]:
@@ -248,14 +284,56 @@ def check_price_triggers() -> list[str]:
         if not hit:
             continue
         direction = "buy" if is_buy else "sell"
-        if _has_pending_event(r["stock_name"], direction):
-            continue  # 已有同向待处理事件，去重
-        _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
-                     action, r["price"], price)
+        if _has_pending_event(r["stock_name"], direction, r["id"]):
+            continue  # 已有同向/同条件待处理事件，去重
+        if not _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
+                            action, r["price"], price):
+            continue  # 条件已非 active（极端竞态），跳过
         triggers.append(
             f"🔔 {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发: "
             f"现价¥{price:.2f} ≤ 条件¥{r['price']:.2f} [{action}]")
     return triggers
+
+
+def audit_inconsistencies() -> list[str]:
+    """对账：发现已 triggered 条件却仍有 pending/processing 事件的脏数据。
+
+    正常情况下 `_write_alert` 写事件时即原子标记条件 triggered，事件消费完成（done）
+    后条件保持 triggered 不复活。若出现"条件已 triggered + 事件仍挂起"，
+    说明存在手动补录/消费遗漏，需要告警让 agent 处置，避免下一 tick 重复触发。
+    """
+    if not os.path.exists(TASKS_DB) or not os.path.exists(POOL_DB):
+        return []
+    warnings = []
+    conn = sqlite3.connect(TASKS_DB)
+    conn.row_factory = sqlite3.Row
+    pconn = sqlite3.connect(POOL_DB)
+    try:
+        rows = conn.execute(
+            "SELECT id, entity, payload, status FROM task_events "
+            "WHERE type='WATCH_ALERT' AND status IN ('pending','processing')").fetchall()
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            cond_id = payload.get("cond_id") or 0
+            if cond_id <= 0:
+                warnings.append(
+                    f"⚠️ 对账：事件#{r['id']} [{r['entity']}] 无有效 cond_id"
+                    f"（{payload.get('cond_name','')}），可能为无凭证手动补录，消费前需核验")
+                continue
+            cond = pconn.execute(
+                "SELECT status FROM conditions WHERE id=?", (cond_id,)).fetchone()
+            if cond and cond["status"] != "active":
+                warnings.append(
+                    f"⚠️ 对账：事件#{r['id']} [{r['entity']}] 关联条件#{cond_id}"
+                    f"[{payload.get('cond_name','')}] 已 {cond['status']}（非 active），"
+                    f"疑似重复触发，消费时不得执行买入/卖出")
+    finally:
+        conn.close()
+        pconn.close()
+    return warnings
 
 
 # ---------- 4. 动量异动扫描（原有） ----------
@@ -340,6 +418,7 @@ def main() -> int:
             lines.append(f"  #{t['id']} [{t['type']}] {t['entity']} p{t['priority']} src={t['source']}")
     lines.extend(atr_sync_daily())
     lines.extend(check_price_triggers())
+    lines.extend(audit_inconsistencies())
     lines.extend(scan_moves())
     if not lines:
         print("IDLE")

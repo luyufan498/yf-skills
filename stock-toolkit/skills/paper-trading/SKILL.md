@@ -180,6 +180,17 @@ ptrade check-triggers                   # 省略股票名则遍历所有持仓�
 
 > ⚠️ `conditions --template trigger-table` 的"未触发/已触发"只反映**手动标记**，不反映实时破位——止损位设了必须跑 `check-triggers` 才知道有没有被跌破。详见 [交易纪律](references/trading-principles.md) 规则 2.2/2.5。
 
+### ⚠️ 消费 WATCH_ALERT 事件时的交易校验（防重复触发/重复建仓）
+
+当作为交易 agent 消费 taskbus 的 WATCH_ALERT 事件（`taskbus claim <id>` 后、执行 buy/sell 前），**必须核验**：
+
+1. **条件仍 active？** 查 `ptrade conditions "股票" --action event-list`，确认事件 payload 中的 `cond_id` 对应条件状态为 `active`。若已 `triggered`/`removed` → 说明此前已触发并处理过，**不执行交易**，直接 `taskbus done <id> --note "条件已触发/失效，重复事件，不执行"`。
+2. **近7日已执行过同向操作？** `ptrade operations "股票" --days 7` 检查是否已对该条件执行过买入/卖出（如"买点上沿-建仓10%"昨天已建仓）。已有 → 不重复执行，标 done。
+3. **仓位合理？** `ptrade info "股票"` 核对：buy 事件但仓位已达目标（区间捕捉建满）→ 不追加；sell 事件但已空仓 → 不重复卖出。
+4. **手动补录事件（cond_id=0 或无凭证）**：直接按"疑似重复"处理，核验后标 done，不执行交易（详见 task-bus skill「WATCH_ALERT 消费前置校验」）。
+
+> 爱司凯事故复盘（2026-08-13）：旧条件"买点上沿-建仓10%"（¥25.0）8/12 已触发并建仓 1100 股，8/13 现价 24.96 再次穿越被手动补录成新事件——若不校验条件状态会**重复建仓**。已修复：脚本层加 active 校验+对账，协议层加消费前置校验。
+
 ### 分析报告管理
 
 ```bash

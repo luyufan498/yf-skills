@@ -351,6 +351,12 @@ ptrade conditions "<股票名>" --action event-remove --event-id <event_id>
 - soft 条件务必带 `--expiry-days 7`（过期自动失效，心跳不再检测）
 - 已触发/已调整的条件要及时 event-remove，避免下一 tick 重复触发
 
+**⚠️ 设定前查重（防重复触发/重复入库，2026-08-13 修复）**：设新条件前，先检查是否存在同一股票的同价位/同类型 active 条件，以及 taskbus 是否已有同向 pending 事件，避免同一买点被重复设定/重复触发：
+1. **查现有条件**：`ptrade2 conditions "<股票名>" --action event-list` + `--template all`，若已存在同价位同动作的 active 条件 → **不重复设定**，改用 update 调整或直接沿用
+2. **查任务总线**：`taskbus list --status pending --type WATCH_ALERT`（需 `export STOCK_TASKS_DB=.../data/tasks/tasks.db`），若该股票已有同向（buy/sell）pending 事件 → 该买点已被捕获，**不要**再 event-set 相同条件，也不要手动补录 WATCH_ALERT
+3. **手动补录红线**：禁止对已 triggered/removed 的条件补录触发事件（爱司凯事故：旧条件#81 昨已触发建仓，今现价再次穿越系同一旧条件补录，导致重复事件）。确需补录时，必须先确认条件 active + 无同向 pending 事件，payload 带真实 cond_id
+4. **消费侧配合**：交易 agent 处理 WATCH_ALERT 前必须核验条件状态（active 才执行，triggered 直接 done），详见 task-bus skill「WATCH_ALERT 消费前置校验」
+
 **执行后检查**：
 1. 重新执行 `ptrade conditions "<股票名>" --format markdown --template all`
 2. 重新执行 `ptrade conditions "<股票名>" --action event-list`，确认事件条件显示正确（若涉及区间捕捉建仓）

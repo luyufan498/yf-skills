@@ -23,6 +23,24 @@ ptrade2 master-pool-show              # total/free/占用率/活跃段/已实现
 ptrade2 watchlist-list                # 三档名单
 ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
 ptrade2 watchlist-add 股票 --strategy L1 --source manual --reason 人工锁定  # L1 必须 manual
+ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级后移除）
+
+## 名单维护规范（2026-08 组合审查起）
+
+**入池（主动发现）**：组合审查每交易日扫描：
+- 新闻源：`newsdb important --min-importance 4 --days 3` + `newsdb query-market --days 3` 的高重要度 bullish 事件标的
+- 技术初筛：动量 15-25% 甜点区 / 周线收复 10 周均线 / 超跌企稳（`ptrade2 fetch-kline`）
+- 未在名单且双源有依据 → `watchlist-add --strategy L3 --source agent --reason "<事件摘要>; 动量+XX%"`
+- **入池 ≠ allocate**：新入池只进名单，等完整分析/后续验证后才谈资金
+
+**出池（僵尸清理）**：对**无持仓**股票评估（L2/L3）：
+- a. 连续 ≥5 交易日无新事件（`newsdb query-stock <code> --days 5` 无新增/open 事件）
+- b. 动量持续走弱（近 10 日涨幅 < 0 且周线未修复）
+- c. 无近 7 天分析报告支持
+- a+b 或 a+c → `watchlist remove --reason "僵尸名单: 无事件N天+动量弱"`；L2 可先降级 L3 观察再剔
+- L1 永不自动动（人工锁定）
+
+**与其他机制分工**：入池的"事件驱动"路径（taskbus CANDIDATE → 分析）管盘中新题材；组合审查主动扫描管"没上新闻雷达但技术面转好"的兜底 + 僵尸清理。
 
 # 开持仓段（从 free 拨预算建账户）——替代 v1 的 ptrade init
 ptrade2 master-pool-allocate 股票 --amount 200000 --reason 右侧建仓

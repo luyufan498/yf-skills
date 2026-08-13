@@ -458,9 +458,10 @@ def check_watch_points() -> list[str]:
     alerts = []
     changed = False
     for entity, pts in list(points.items()):
-        code = pool.get(entity)
+        pts_code = next((p.get("code") for p in pts if p.get("code")), None)
+        code = pts_code or pool.get(entity)
         if not code:
-            continue  # 未在池（L3 已移除等），跳过
+            continue  # 无 code（未入池且未传 --code），跳过
         price = fetch_price(code)
         if price is None:
             continue

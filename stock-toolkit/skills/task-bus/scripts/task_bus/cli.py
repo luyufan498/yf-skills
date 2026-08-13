@@ -144,6 +144,7 @@ def watchpoint_cmd(
     action: str = typer.Argument(..., help="add / list / remove"),
     entity: str = typer.Argument(None, help="股票名（add/remove 需要）"),
     price: float = typer.Option(None, "--price", help="价格事件点（add 需要）"),
+    code: str = typer.Option(None, "--code", help="股票代码（可选，检测用，缺省从池/账户查）"),
     note: str = typer.Option("", "--note", help="备注，如'买点下沿-重新评估'（add 可选）"),
 ):
     """L3 观察窗价格事件点管理（存 kv_store 的 watch_points）。
@@ -166,7 +167,7 @@ def watchpoint_cmd(
             typer.echo("❌ add 需要 <股票> --price <价>", err=True)
             raise typer.Exit(1)
         pts = points.setdefault(entity, [])
-        pts.append({"price": round(price, 2), "note": note, "added_at": datetime.now().strftime("%m-%d %H:%M")})
+        pts.append({"code": code, "price": round(price, 2), "note": note, "added_at": datetime.now().strftime("%m-%d %H:%M")})
         db.kv_set(key, points)
         typer.echo(f"✅ {entity} 价格点 ¥{price} 已添加（当前 {len(pts)} 个，现价 ≤ 触发时唤醒评估）")
     elif action == "list":

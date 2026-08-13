@@ -346,6 +346,17 @@ ptrade conditions "<股票名>" --action event-remove --event-id <event_id>
 3. **调整价位**：若需调整某个买点价位，目前需要 remove + set 两步（先 `event-remove` 移除原事件，再 `event-set` 设定新价位）。
 4. **`--action-str` 命名规范**：使用 `<触发位置>-建仓<比例>%` 格式（如"买点下沿-建仓40%"），便于步骤 7 审查时识别。
 
+**档位管理与日历回查（2026-08 起）**：每日分析时对每只股票评估档位（L1/L2/L3），时机不对就降级并挂日历事件回查：
+- **维持/升级**：分析通过 + 右侧信号 → 维持 L1/L2（或 L3→L2 升级，`ptrade2 watchlist-add --strategy L2`）
+- **降级观察**：暂时不买（等财报/等催化/时机未到但基本面仍可）→ 降级 L2→L3（`ptrade2 watchlist-add --strategy L3`，L1 永不自动降级）+ **写 CALENDAR 事件**：
+  ```bash
+  taskbus add CALENDAR <股> --source analysis --priority 2 \
+    --payload '{"due":"2026-08-20","event":"中报披露","check":"分析后评估是否升级"}'
+  ```
+  due=回查日期（财报日/催化日/下一期分析日）。watch_scan 每日检测：due ≤ 今天 → 唤醒分析 agent → 重新评估升级 L2 / 继续观察 / 移除
+- **暂时移除**：无价值/僵尸（连续无事件 + 动量弱 + 无报告）→ `ptrade2 watchlist remove <股>`（L1 永不自动动）
+- 每次档位变更自动记 watchlog 审计（`ptrade2 watchlist-log` 可查历史）
+
 **触发价与心跳联动（2026-08 起）**：设定的 add_position / 止损 / 止盈条件会被 `watch_scan.py` 心跳每 30 分钟自动检测（读 conditions active 条件 vs 实时价，穿越即写 WATCH_ALERT 事件驱动交易 agent）。因此：
 - 买点必须落明确价位（现价 ≤ 触发价时触发），不要给模糊区间
 - soft 条件务必带 `--expiry-days 7`（过期自动失效，心跳不再检测）

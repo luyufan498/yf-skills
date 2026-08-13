@@ -444,6 +444,35 @@ def _kv_set(key: str, value: dict):
         conn.close()
 
 
+def check_calendar() -> list[str]:
+    """CALENDAR 事件到期检测：due ≤ 今天 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
+
+    分析 agent 对"暂时不买/等财报/等催化"的股票写 CALENDAR 事件（payload.due 日期），
+    到期时心跳唤醒重新评估（升级 L2 / 继续观察 / 移除）。未到期不输出（安静睡眠）。
+    """
+    if not os.path.exists(TASKS_DB):
+        return []
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        rows = conn.execute(
+            "SELECT id, entity, payload FROM task_events "
+            "WHERE type='CALENDAR' AND status='pending'").fetchall()
+    finally:
+        conn.close()
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = []
+    for rid, entity, payload in rows:
+        try:
+            p = json.loads(payload) if payload else {}
+        except (ValueError, TypeError):
+            continue
+        due = (p.get("due") or "")[:10]
+        if due and due <= today:
+            out.append(f"📅 CALENDAR 到期 #{rid} {entity} due={due} [{p.get('event', '')}]")
+    return out
+
+
 def check_watch_points() -> list[str]:
     """L3 观察窗价格点检测：现价 ≤ 价格点 → WATCH_ALERT(mode=eval) + 移除价格点（触发即失效）。
 
@@ -491,6 +520,7 @@ def main() -> int:
     lines.extend(atr_sync_daily())
     lines.extend(check_price_triggers())
     lines.extend(check_watch_points())
+    lines.extend(check_calendar())
     lines.extend(audit_inconsistencies())
     lines.extend(scan_moves())
     if not lines:

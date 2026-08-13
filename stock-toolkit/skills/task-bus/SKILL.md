@@ -38,7 +38,21 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
 | `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
 | `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
-| `CALENDAR` | 财报/解禁/除权日历 | 日历检查 | 分析/交易 |
+| `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
+
+### CALENDAR 日历回查（2026-08 起，档位管理配套）
+
+分析 agent 对"暂时不买/等财报/等催化"的股票降级 L3 时写日历事件，到期自动回查升级：
+
+```bash
+taskbus add CALENDAR <股> --source analysis --priority 2 \
+  --payload '{"due":"2026-08-20","event":"中报披露","check":"分析后评估是否升级"}'
+```
+
+- `due`：回查日期（ISO，watch_scan 每日检测 due ≤ 今天 → 唤醒）
+- `event`：回查原因（财报/解禁/催化日）
+- `check`：回查动作（评估升级 L2 / 继续观察 / 移除）
+- 消费：心跳 agent delegate 分析 subagent → 重新评估 → 升级 L2 / 延期重挂 / 移除
 
 ### WATCH_ALERT 价格条件触发（watch_scan 自动写入）
 

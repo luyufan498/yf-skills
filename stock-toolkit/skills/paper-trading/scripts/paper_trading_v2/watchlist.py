@@ -82,6 +82,23 @@ class Watchlist:
         finally:
             conn.close()
 
+    def log(self, stock=None, days=30, limit=50):
+        """名单变更审计日志（入池/出池/升降级历史），按时间倒序。"""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        conn = self._conn()
+        try:
+            q = "SELECT * FROM watchlog WHERE timestamp >= ?"
+            params = [cutoff]
+            if stock:
+                q += " AND stock=?"
+                params.append(stock)
+            q += " ORDER BY id DESC LIMIT ?"
+            params.append(str(limit))
+            return [dict(r) for r in conn.execute(q, params).fetchall()]
+        finally:
+            conn.close()
+
     def get(self, stock):
         conn = self._conn()
         try:

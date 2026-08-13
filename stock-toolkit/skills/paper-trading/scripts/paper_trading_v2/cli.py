@@ -146,6 +146,25 @@ def watchlist_add(
         raise typer.Exit(1)
 
 
+@app.command("watchlist-log")
+def watchlist_log(
+    stock: Optional[str] = typer.Option(None, "--stock", help="只看某只股票"),
+    days: int = typer.Option(30, "--days", help="最近 N 天"),
+    limit: int = typer.Option(50, "--limit"),
+):
+    """名单变更审计日志（入池/出池/升降级历史，含原因与来源）。"""
+    from paper_trading_v2.watchlist import Watchlist
+    w = Watchlist()
+    rows = w.log(stock=stock, days=days, limit=limit)
+    if not rows:
+        typer.echo("(无记录)")
+        return
+    for r in rows:
+        flow = f"{r['strategy_from'] or ''}→{r['strategy_to'] or ''}"
+        typer.echo(f"{r['timestamp'][:16]}  {r['action']:<12} {r['stock']:<8} {flow:<6} "
+                   f"[{r['source']}] {r['reason'] or ''}")
+
+
 @app.command("watchlist-remove")
 def watchlist_remove(
     stock: str = typer.Argument(...),

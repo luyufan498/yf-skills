@@ -29,6 +29,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 1. `newsdb refresh-requests --status pending` 读异动请求——**优先处理这些**，用 signal 做搜索词。
 2. `newsdb scan-list` 列出**所有应扫描的 scope**（从库拉取：stocks 表 watchlist 优先 + industries 表 + market/global + policy/global）。**新加股票/行业自动出现在清单里。**
+   > L3 观察窗实体由组合审查负责 `newsdb track --watchlist 1` 标记，标记后自动进入本扫描清单——观察窗股票与正式池（L1/L2）一样每日采集新闻。
 3. 对每个 scope 判断是否到期（见 scan_rules.md）：
    - `newsdb scan-status get <scope_type> <scope_id>` 查上次扫描
    - high（market/stock 异动）→ 上次扫描距今 > 8 小时就扫

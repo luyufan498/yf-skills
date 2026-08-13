@@ -45,12 +45,12 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 `watch_scan.py` 每 tick 读 `conditions` 表 active 条件 vs 实时价，穿越触发时自动写事件，payload 规范：
 
 ```json
-{"direction": "buy", "cond_id": 44, "cond_name": "买点下沿-建仓30%",
+{"mode": "trade", "direction": "buy", "cond_id": 44, "cond_name": "买点下沿-建仓30%",
  "trigger_price": 30.0, "current_price": 25.14}
 ```
 
-- **buy**：现价 ≤ 买点触发价（action 含 建仓/买入/加仓）——消费 agent 评估纪律后执行买入，或纪律否决时**调整买卖点**（移除/重设条件）
-- **sell**：现价 ≤ 止损/止盈触发价（hard 或 action 含 清仓/减仓/止损）——确认破位后执行卖出；hard 条件只升不降
+- **mode=trade（L1/L2 条件触发）**：buy（现价 ≤ 买点）→ 消费 agent 评估纪律后执行买入，或纪律否决时调整买卖点；sell（现价 ≤ 止损/止盈）→ 确认破位后执行卖出，hard 条件只升不降
+- **mode=eval（L3 观察窗价格点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价）→ 唤醒**分析 agent 重新评估**（判定升级 L2 / 重设价格点 / 移除），**不直接交易**。触发后价格点自动移除（触发即失效）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
 

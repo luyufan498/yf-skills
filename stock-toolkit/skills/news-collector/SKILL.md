@@ -45,8 +45,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 0. **快讯层（每轮扫描先跑，零成本实时电报）**：`ptrade2 fetch-news`（本地命令，不耗搜索配额）：
    - `ptrade2 fetch-news -s tv -n 20`（TradingView 外媒快讯）
    - `ptrade2 fetch-news -s sina -n 20`（新浪财经公告/快讯，实时电报级）
-   - 每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）
-   - 财联社 cls 源：接口需 sign/cookie（50101 风控），**暂不可用跳过**（路径已修复 /v1/nodeapi/telegraphList）
+   - **财联社 cls（CDP 方式）**：`python3 ~/.agent-browser/cls_cdp.py --limit 20`（Chrome 9222 打开电报页提取，绕过 API sign 风控；依赖 Chrome 常驻 + websocket-client）。每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）
    - 快讯层价值：搜索 API 收录有延迟，快讯立即可拿（A股公告/电报级消息）
 
 1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`

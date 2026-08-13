@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS pool (
     pool_status TEXT NOT NULL,   -- active / removed
     refresh_cadence TEXT,        -- daily / weekly / event
     entered_at TEXT,
-    exit_reason TEXT
+    exit_reason TEXT,
+    pin INTEGER DEFAULT 0        -- pin=1: 允许降级但禁止删除（名单保护，独立于档位）
 );
 
 CREATE TABLE IF NOT EXISTS position (
@@ -208,4 +209,13 @@ def migrate_db(conn: sqlite3.Connection):
         # v4: 重新 allocate 前归档旧段操作（operations_archive）
         conn.executescript(V4_DDL)
         conn.execute("UPDATE schema_meta SET version=4")
+        conn.commit()
+    if current < 5:
+        # v5: pool 表加 pin 字段（名单保护：允许降级、禁止删除，独立于档位）
+        try:
+            conn.execute("ALTER TABLE pool ADD COLUMN pin INTEGER DEFAULT 0")
+        except sqlite3.OperationalError as e:
+            if 'duplicate column' not in str(e).lower():
+                raise
+        conn.execute("UPDATE schema_meta SET version=5")
         conn.commit()

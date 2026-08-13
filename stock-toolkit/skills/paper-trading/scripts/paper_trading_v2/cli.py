@@ -133,14 +133,15 @@ def watchlist_add(
     strategy: str = typer.Option("L2", "--strategy", help="L1/L2/L3"),
     source: str = typer.Option("agent", "--source", help="agent/manual"),
     reason: str = typer.Option("", "--reason"),
+    pin: Optional[bool] = typer.Option(None, "--pin/--no-pin", help="设置/清除名单保护（pin=1 禁删除可降级）"),
 ):
-    """入池"""
+    """入池/调整档位（--pin 设置名单保护）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
-        w.add(stock, code, strategy, source, reason)
-        typer.echo(f"✅ 入池 {stock} ({strategy})")
+        w.add(stock, code, strategy, source, reason, pin)
+        typer.echo(f"✅ 入池 {stock} ({strategy})" + (" 🔒pin" if pin else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)

@@ -19,30 +19,29 @@ class Watchlist:
         migrate_db(conn)
         return conn
 
-    def add(self, stock, code=None, strategy="L2", source="agent", reason=""):
-        """入池。L1 只能由人工添加。"""
+    def add(self, stock, code=None, strategy="L2", source="agent", reason="", pin=None):
+        """入池/调整档位。档位可自由设置（L1=持仓段由 allocate 联动，也可手动指定）；
+        pin 为独立保护标记（pin=1 禁止删除但允许降级）。"""
         if strategy not in STRATEGIES:
             raise ValueError(f"strategy 必须是 {STRATEGIES}")
-        if strategy == "L1" and source != "manual":
-            raise ValueError("L1 只能由人工添加（source=manual）")
         conn = self._conn()
         try:
             with conn:
                 existing = conn.execute("SELECT * FROM pool WHERE stock=?", (stock,)).fetchone()
                 if existing:
-                    if existing['strategy'] == 'L1' and source != 'manual':
-                        raise ValueError("L1 锁定股的任何变更需人工确认（source=manual）")
                     conn.execute("UPDATE pool SET code=COALESCE(?,code), strategy=?, pool_status='active', "
                                  "entered_at=COALESCE(entered_at, ?) WHERE stock=?",
                                  (code, strategy, datetime.now().isoformat(), stock))
+                    if pin is not None:
+                        conn.execute("UPDATE pool SET pin=? WHERE stock=?", (1 if pin else 0, stock))
                     action = "set_strategy"
                     from_str = existing['strategy']
                 else:
                     conn.execute("INSERT INTO pool (stock, code, strategy, pool_status, "
-                                 "refresh_cadence, entered_at) VALUES (?,?,?,'active',?,?)",
+                                 "refresh_cadence, entered_at, pin) VALUES (?,?,?,'active',?,?,?)",
                                  (stock, code, strategy,
-                                  'daily' if strategy != 'L1' else 'manual',
-                                  datetime.now().isoformat()))
+                                  'daily' if strategy != 'L3' else 'event',
+                                  datetime.now().isoformat(), 1 if pin else 0))
                     action = "add"
                     from_str = None
                 conn.execute("INSERT INTO watchlog (timestamp, action, stock, strategy_from, "
@@ -53,15 +52,35 @@ class Watchlist:
         finally:
             conn.close()
 
-    def remove(self, stock, source="agent", reason=""):
-        """移出池。L1 需人工。"""
+    def set_pin(self, stock, pin: bool, source="agent", reason=""):
+        """设置/取消 pin 保护（独立于档位：pin 只禁止删除，不限制升降级）。"""
         conn = self._conn()
         try:
-            row = conn.execute("SELECT strategy FROM pool WHERE stock=?", (stock,)).fetchone()
+            row = conn.execute("SELECT strategy, pin FROM pool WHERE stock=?", (stock,)).fetchone()
             if not row:
                 raise ValueError(f"{stock} 不在池中")
-            if row['strategy'] == 'L1' and source != 'manual':
-                raise ValueError("L1 锁定股不能由 agent 移除，需人工确认")
+            if not pin and row['pin'] and source == 'agent':
+                # 取消 pin 需人工确认（防 agent 误删保护）
+                raise ValueError("取消 pin 需人工确认（source=manual）")
+            with conn:
+                conn.execute("UPDATE pool SET pin=? WHERE stock=?", (1 if pin else 0, stock))
+                conn.execute("INSERT INTO watchlog (timestamp, action, stock, strategy_from, "
+                             "strategy_to, reason, source) VALUES (?,?,?,?,?,?,?)",
+                             (datetime.now().isoformat(), 'set_pin', stock, row['strategy'],
+                              None, reason, source))
+            return True
+        finally:
+            conn.close()
+
+    def remove(self, stock, source="agent", reason=""):
+        """移出池。pin=1 的股票禁止删除（可降级但不可移除）。"""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT strategy, pin FROM pool WHERE stock=?", (stock,)).fetchone()
+            if not row:
+                raise ValueError(f"{stock} 不在池中")
+            if row['pin']:
+                raise ValueError(f"{stock} 有 pin 保护（名单锁定），禁止删除；可降级到 L3 观察")
             with conn:
                 conn.execute("UPDATE pool SET pool_status='removed', exit_reason=? WHERE stock=?",
                              (reason, stock))

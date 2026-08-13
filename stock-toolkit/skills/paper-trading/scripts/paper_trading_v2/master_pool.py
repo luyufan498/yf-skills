@@ -85,8 +85,6 @@ class MasterPoolManager:
             strat, pool_code = self._get_strategy(conn, stock)
             if code is None:
                 code = pool_code
-            if strat == 'L1' and source != 'manual':
-                raise ValueError("L1 锁定股需人工 allocate（source=manual）")
             if strat != 'L1':
                 cool = conn.execute(
                     "SELECT cooldown_until FROM position WHERE stock=? ORDER BY id DESC LIMIT 1",
@@ -144,6 +142,9 @@ class MasterPoolManager:
                 conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
                              "note) VALUES (?,0,'init',?,?,'初始化资金池')",
                              (aid, amount, now))
+                # 分配预算 → 档位自动升 L1（L1=持仓段）
+                conn.execute("UPDATE pool SET strategy='L1' WHERE stock=? AND pool_status='active'",
+                             (stock,))
             return True
         finally:
             conn.close()
@@ -188,15 +189,13 @@ class MasterPoolManager:
             conn.close()
 
     def release(self, stock, reason, source="agent"):
-        """关持仓段：空仓后把现值回 free，段归档，7 日 cooldown。L1 需人工。"""
+        """关持仓段：空仓后把现值回 free，段归档，7 日 cooldown，档位自动降回 L2。"""
         conn = self._conn()
         try:
             seg = conn.execute("SELECT * FROM position WHERE stock=? AND status='open'",
                                (stock,)).fetchone()
             if not seg:
                 raise ValueError(f"{stock} 没有 open 段")
-            if seg['strategy'] == 'L1' and source != 'manual':
-                raise ValueError("L1 锁定股不能由 agent release，需人工确认")
             # 读账户（可能触发写回）在池写事务前完成，避免同库写锁冲突
             from paper_trading_v2.trading import PaperTrader
             trader = PaperTrader()
@@ -221,6 +220,9 @@ class MasterPoolManager:
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'release', stock, value, free, new_free, reason, source))
+                # 空仓段释放 → 档位自动降回 L2（agent 可再决定降 L3 观察）
+                conn.execute("UPDATE pool SET strategy='L2' WHERE stock=? AND pool_status='active'",
+                             (stock,))
             return True
         finally:
             conn.close()

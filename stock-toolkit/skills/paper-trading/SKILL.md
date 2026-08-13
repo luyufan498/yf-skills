@@ -25,13 +25,13 @@ ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
 ptrade2 watchlist-add 股票 --strategy L1 --source manual --reason 人工锁定  # L1 必须 manual
 ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级后移除）
 
-## 三档语义（2026-08 重定义：L3=观察窗）
+## 三档语义（2026-08 重构：L1=持仓段 / pin=名单保护）
 
-- **L1 核心锁定**：正式运作范围（**每日分析 + 买卖正常处理**）——唯一区别：**永不自动降级/移除**（名单锁定，人工才能动）。池容量人工管理
-- **L2 正式**：正式运作范围——每日分析 + 买卖正常处理。空仓留池等买点，组合审查可降级/僵尸清理
+- **L1 持仓段**：被 allocate 分配预算的股票（`master-pool-allocate` **自动升 L1**）。段预算内自由买卖（建仓/加仓/减仓/清仓）。`release` 释放空仓段后**自动降回 L2**
+- **L2 正式候选**：准备建仓的股票。建仓流程：`master-pool-allocate <股> <预算> --reason ...`（分配预算 → 自动升 L1）→ `ptrade2 buy` 建仓。无持仓 + 短期不打算买入 → agent 降级 L2→L3（watchlist-add --strategy L3）
 - **L3 观察窗**：只观察不买卖——新闻跟踪（newsdb track）+ 价格点等待（taskbus watchpoint）+ 异动监测。进入即触发一次分析（CANDIDATE），评估后：值得入场 → 升级 L2；有价值但时机未到 → 留 L3 设价格点；无价值 → 移除
-
-> 说明：L1/L2 的差异**只在名单管理**（L1 永不降级/移除，L2 可降级可清理），**分析/买卖行为完全相同**（都在正式运作范围）。
+- **pin 名单保护（独立字段，与档位正交）**：`watchlist-add --pin` 设置。pin=1 的股票：**允许自由升降级（L1↔L2↔L3）但禁止删除**（`watchlist remove` 被拒绝，可降级到 L3 观察）。取消 pin 需人工确认（source=manual）
+- 入池默认 L3（观察），`--strategy` 可指定 L1/L2/L3
 
 ## L3 观察窗管理
 

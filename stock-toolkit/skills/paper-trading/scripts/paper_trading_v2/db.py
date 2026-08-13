@@ -219,3 +219,20 @@ def migrate_db(conn: sqlite3.Connection):
                 raise
         conn.execute("UPDATE schema_meta SET version=5")
         conn.commit()
+    if current < 6:
+        # v6: reports 表（每日分析报告数据库缓存，文件仍为源）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                title TEXT,
+                summary TEXT,
+                content TEXT,
+                file_path TEXT,
+                created_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_stock_date ON reports(stock, report_date)")
+        conn.execute("UPDATE schema_meta SET version=6")
+        conn.commit()

@@ -4,12 +4,19 @@
 """
 
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 from paper_trading_v2.config import get_workspace_config
 from paper_trading_v2.models import AnalysisRecord
 from paper_trading_v2.code_searcher import StockCodeSearcher, validate_stock_name
+
+
+def _reports_db_path() -> str:
+    """master_pool.db 路径（报告缓存表所在库）。"""
+    cfg = get_workspace_config()
+    return str(Path(cfg['workspace_root']) / 'master_pool.db')
 
 
 class AnalysisManager:
@@ -141,6 +148,12 @@ class AnalysisManager:
         # 创建软链接指向最新分析
         self._create_latest_symlink(stock_dir, filepath)
 
+        # 同步写入数据库缓存（reports 表：结构化查询用，文件仍为源）
+        try:
+            self._cache_to_db(stock_name, stock_code, content, filename, str(filepath), timestamp)
+        except Exception as e:  # 缓存失败不影响文件保存
+            print(f"⚠️ 报告数据库缓存失败（不影响文件保存）：{e}")
+
         return AnalysisRecord(
             stock_name=stock_name,
             stock_code=stock_code,
@@ -148,6 +161,49 @@ class AnalysisManager:
             timestamp=timestamp.isoformat() if timestamp else datetime.now().isoformat(),
             file_path=str(filepath)
         )
+
+    def _cache_to_db(self, stock_name, stock_code, content, filename, file_path, timestamp):
+        """写入 reports 表（幂等：同股票同日同文件名覆盖）。"""
+        ts = timestamp or datetime.now()
+        report_date = ts.strftime("%Y-%m-%d")
+        title = ""
+        summary = ""
+        # 从报告内容提取标题和关注焦点作为摘要
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("# ") and not title:
+                title = line[2:].strip()
+            if "关注焦点" in line and not summary:
+                summary = line.split(":", 1)[-1].strip()[:200]
+        db = sqlite3.connect(_reports_db_path())
+        try:
+            db.execute(
+                "INSERT INTO reports (stock, report_date, title, summary, content, file_path, created_at) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT DO NOTHING",
+                (stock_name, report_date, title, summary, content, file_path, ts.isoformat()))
+            db.commit()
+        finally:
+            db.close()
+
+    @staticmethod
+    def query_db_reports(stock: str = None, days: int = 30, limit: int = 20) -> List[dict]:
+        """从数据库查报告（网页/审计用）。"""
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        db = sqlite3.connect(_reports_db_path())
+        db.row_factory = sqlite3.Row
+        try:
+            q = "SELECT id, stock, report_date, title, summary, created_at, file_path FROM reports WHERE created_at >= ?"
+            params = [cutoff]
+            if stock:
+                q += " AND stock=?"
+                params.append(stock)
+            q += " ORDER BY report_date DESC, id DESC LIMIT ?"
+            params.append(str(limit))
+            return [dict(r) for r in db.execute(q, params).fetchall()]
+        finally:
+            db.close()
 
     def read_analysis(self, stock_name: str, filename: str = None) -> Optional[AnalysisRecord]:
         """

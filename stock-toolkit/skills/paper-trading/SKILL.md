@@ -25,6 +25,30 @@ ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
 ptrade2 watchlist-add 股票 --strategy L1 --source manual --reason 人工锁定  # L1 必须 manual
 ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级后移除）
 
+## 三档语义（2026-08 重定义：L3=观察窗）
+
+- **L1 锁定**：人工锁定，agent 永不自动动（分析只读、不买卖）
+- **L2 正式**：正式运作范围——**每日分析 + 买卖只考虑 L1/L2**。空仓留池等买点，释放需三重条件
+- **L3 观察窗**：只观察不买卖——新闻跟踪（newsdb track）+ 价格点等待（taskbus watchpoint）+ 异动监测。进入即触发一次分析（CANDIDATE），评估后：值得入场 → 升级 L2；有价值但时机未到 → 留 L3 设价格点；无价值 → 移除
+
+## L3 观察窗管理
+
+```bash
+# 进观察窗（组合审查入池扫描 / 新闻驱动）
+ptrade2 watchlist-add 股票 --strategy L3 --source agent --reason "依据"
+taskbus add CANDIDATE 股票 --source portfolio-review --priority 2 --payload '{"evidence":"..."}'
+
+# 观察中：设价格事件点（心跳 watch_scan 检测 现价≤价 → WATCH_ALERT(mode=eval) → 唤醒分析评估升级）
+taskbus watchpoint add 股票 --price 24.5 --note "买点下沿-重新评估"
+taskbus watchpoint list
+taskbus watchpoint remove 股票
+
+# 评估结论：值得入场 → 升级 L2（进入正式运作范围）
+ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason "分析通过+右侧信号"
+# 或：无价值 → 移出观察窗
+ptrade2 watchlist remove 股票 --reason "观察窗评估无价值"
+```
+
 ## 名单维护规范（2026-08 组合审查起）
 
 **入池（主动发现）**：组合审查每交易日扫描：

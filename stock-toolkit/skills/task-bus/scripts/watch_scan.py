@@ -119,6 +119,7 @@ def _ensure_task_table():
 
 # ---------- 1. 任务事件检查 ----------
 def check_tasks() -> list[dict]:
+    """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。"""
     if not os.path.exists(TASKS_DB):
         return []
     _ensure_task_table()
@@ -135,7 +136,8 @@ def check_tasks() -> list[dict]:
         conn.commit()
         return [dict(r) for r in conn.execute(
             "SELECT id, type, entity, priority, source FROM task_events "
-            "WHERE status='pending' ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
+            "WHERE status='pending' AND type != 'CALENDAR' "
+            "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()
 

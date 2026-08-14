@@ -209,12 +209,13 @@ def _cond_active(cond_id: int) -> bool:
 
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                  cond_name: str, trigger_price: float, current_price: float,
-                 manual: bool = False, mode: str = "trade") -> bool:
+                 manual: bool = False, mode: str = "trade", budget: float | None = None) -> bool:
     """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。
 
     manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
     mode="eval"（L3 观察窗价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
+    mode="buy"（L2 建仓点）：同 eval 不碰 conditions，额外带 budget（建仓预算）供消费方 allocate。
     """
     if cond_id and cond_id > 0 and not _cond_active(cond_id):
         print(f"  ⏭ 跳过补录：条件#{cond_id}[{cond_name}] 已非 active（可能已触发/已移除）", file=sys.stderr)
@@ -227,6 +228,7 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
         payload = json.dumps({
             "mode": mode, "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
             "trigger_price": trigger_price, "current_price": current_price,
+            "budget": budget,
         }, ensure_ascii=False)
         conn.execute(
             "INSERT INTO task_events (type, entity, source, priority, payload) "
@@ -474,9 +476,11 @@ def check_calendar() -> list[str]:
 
 
 def check_watch_points() -> list[str]:
-    """L3 观察窗价格点检测：现价 ≤ 价格点 → WATCH_ALERT(mode=eval) + 移除价格点（触发即失效）。
+    """价格点检测：现价 ≤ 价格点 → WATCH_ALERT + 移除价格点（触发即失效）。
 
     价格点由组合审查/分析 agent 用 taskbus watchpoint add 写入 kv_store('watch_points')。
+    - mode=eval（L3 观察窗）→ WATCH_ALERT(mode=eval) 唤醒分析 agent 评估升级
+    - mode=buy（L2 建仓点）→ WATCH_ALERT(mode=buy, budget=金额) 唤醒核验 → allocate → buy
     """
     if not in_trade_hours() or not os.path.exists(TASKS_DB):
         return []
@@ -496,12 +500,26 @@ def check_watch_points() -> list[str]:
             continue
         for p in pts:
             if price <= p["price"]:
-                note = p.get("note", "L3观察")
-                if _write_alert(entity, code, "eval", 0, f"L3观察-{note}",
-                                p["price"], price, mode="eval"):
-                    alerts.append(f"📌 {entity}({code}) L3价格点触发: 现价¥{price} ≤ ¥{p['price']} [{note}] → 唤醒评估升级")
-                    points.pop(entity, None)  # 触发即失效
-                    changed = True
+                note = p.get("note", "")
+                mode = p.get("mode", "eval")
+                if mode == "buy":
+                    cond_name = f"建仓点-{note}" if note else "建仓点"
+                    budget = p.get("amount")
+                    if _write_alert(entity, code, "buy", 0, cond_name, p["price"], price,
+                                    mode="buy", budget=budget):
+                        budget_txt = f" 预算¥{budget:,.0f}" if budget else "（⚠️无预算）"
+                        alerts.append(f"🛒 {entity}({code}) L2建仓点触发: 现价¥{price} ≤ ¥{p['price']} "
+                                      f"[{note}]{budget_txt} → 唤醒核验建仓")
+                        points.pop(entity, None)  # 触发即失效
+                        changed = True
+                else:
+                    cond_name = f"L3观察-{note}" if note else "L3观察"
+                    if _write_alert(entity, code, "eval", 0, cond_name, p["price"], price,
+                                    mode="eval"):
+                        alerts.append(f"📌 {entity}({code}) L3价格点触发: 现价¥{price} ≤ ¥{p['price']} "
+                                      f"[{note}] → 唤醒评估升级")
+                        points.pop(entity, None)  # 触发即失效
+                        changed = True
                 break
     if changed:
         _kv_set("watch_points", points)

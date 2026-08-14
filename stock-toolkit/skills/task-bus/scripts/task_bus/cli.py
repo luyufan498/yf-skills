@@ -146,15 +146,19 @@ def watchpoint_cmd(
     price: float = typer.Option(None, "--price", help="价格事件点（add 需要）"),
     code: str = typer.Option(None, "--code", help="股票代码（可选，检测用，缺省从池/账户查）"),
     note: str = typer.Option("", "--note", help="备注，如'买点下沿-重新评估'（add 可选）"),
+    mode: str = typer.Option("eval", "--mode", help="触发语义: eval=L3观察评估(默认) / buy=L2建仓执行"),
+    amount: Optional[float] = typer.Option(None, "--amount", help="建仓预算（mode=buy 时声明，触发后 allocate 金额，缺省则消费时拒绝执行）"),
 ):
-    """L3 观察窗价格事件点管理（存 kv_store 的 watch_points）。
+    """价格事件点管理（存 kv_store 的 watch_points）。
 
-    taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"
+    taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"          # L3 观察
+    taskbus watchpoint add 赛力斯 --price 24.5 --mode buy --amount 200000 --note "建仓10%"  # L2 建仓点
     taskbus watchpoint list
     taskbus watchpoint remove 光智科技
 
-    心跳 watch_scan 检测这些价格点：现价 ≤ price → 写 WATCH_ALERT(mode=eval)
-    唤醒分析 agent 重新评估是否升级 L2。
+    心跳 watch_scan 检测这些价格点：现价 ≤ price → 写 WATCH_ALERT
+    - mode=eval（L3 观察窗）→ 唤醒分析 agent 重新评估是否升级 L2，不交易
+    - mode=buy（L2 建仓点）→ 唤醒 agent 核验 → master-pool-allocate（budget）→ buy
     """
     from datetime import datetime
 
@@ -166,18 +170,33 @@ def watchpoint_cmd(
         if not entity or price is None:
             typer.echo("❌ add 需要 <股票> --price <价>", err=True)
             raise typer.Exit(1)
+        if mode not in ("eval", "buy"):
+            typer.echo("❌ --mode 应为 eval / buy", err=True)
+            raise typer.Exit(1)
+        if mode == "buy" and amount is None:
+            typer.echo("⚠️ mode=buy 未传 --amount：触发后消费端将因预算缺失拒绝执行（请补 --amount 声明预算）", err=True)
         pts = points.setdefault(entity, [])
-        pts.append({"code": code, "price": round(price, 2), "note": note, "added_at": datetime.now().strftime("%m-%d %H:%M")})
+        pts.append({
+            "code": code, "price": round(price, 2), "note": note,
+            "mode": mode, "amount": amount,
+            "added_at": datetime.now().strftime("%m-%d %H:%M"),
+        })
         db.kv_set(key, points)
-        typer.echo(f"✅ {entity} 价格点 ¥{price} 已添加（当前 {len(pts)} 个，现价 ≤ 触发时唤醒评估）")
+        kind = "L2建仓" if mode == "buy" else "L3观察"
+        act = "唤醒核验建仓(allocate+buy)" if mode == "buy" else "唤醒评估"
+        budget_txt = f"，预算 ¥{amount:,.0f}" if amount else ""
+        typer.echo(f"✅ {entity} {kind}价格点 ¥{price} 已添加（当前 {len(pts)} 个，现价 ≤ 触发时{act}{budget_txt}）")
     elif action == "list":
         if not points:
             typer.echo("(无价格事件点)")
             return
-        typer.echo(f"📌 L3 观察窗价格点（{len(points)} 只）：")
+        typer.echo(f"📌 价格点（{len(points)} 只）：")
         for name, pts in points.items():
             for p in pts:
-                typer.echo(f"  {name}  ¥{p['price']:<8} {p.get('note','')}  ({p.get('added_at','')})")
+                m = p.get("mode", "eval")
+                tag = "🛒买" if m == "buy" else "👀观"
+                budget_txt = f" 预算¥{p.get('amount'):,.0f}" if p.get("amount") else ""
+                typer.echo(f"  {tag} {name}  ¥{p['price']:<8} {p.get('note','')} ({m}){budget_txt}  ({p.get('added_at','')})")
     elif action == "remove":
         if not entity:
             typer.echo("❌ remove 需要 <股票>", err=True)

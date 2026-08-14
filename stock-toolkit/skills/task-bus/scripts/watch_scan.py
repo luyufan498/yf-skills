@@ -313,6 +313,7 @@ def audit_inconsistencies() -> list[str]:
     conn = sqlite3.connect(TASKS_DB)
     conn.row_factory = sqlite3.Row
     pconn = sqlite3.connect(POOL_DB)
+    pconn.row_factory = sqlite3.Row  # 必须设，否则 fetchone 返回 tuple 无法按列名取 status
     try:
         rows = conn.execute(
             "SELECT id, entity, payload, status FROM task_events "

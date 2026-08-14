@@ -53,6 +53,7 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 - `event`：回查原因（财报/解禁/催化日）
 - `check`：回查动作（评估升级 L2 / 继续观察 / 移除）
 - 消费：心跳 agent delegate 分析 subagent → 重新评估 → 升级 L2 / 延期重挂 / 移除
+- **⚠️ 未到期不唤醒（2026-08-14 修复）**：CALENDAR 长期 pending 是常态（挂起等 due），**不是待消费任务**——`check_tasks` 已排除 CALENDAR，未到期**不**出现在 [EVENT] 列表、不触发心跳；只有 `check_calendar` 对 `due ≤ 今天` 输出 📅 提醒唤醒。改 watch_scan 时勿把 CALENDAR 加回 check_tasks（否则 9 个未到期回查点会每 tick 白唤醒）
 
 ### WATCH_ALERT 价格条件触发（watch_scan 自动写入）
 

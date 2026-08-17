@@ -50,15 +50,24 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`
    - 按时效性传 `--time-range`：high（大盘/个股异动）→ `day`；medium（行业/政策）→ `week`；low（财报）→ `month`
-2. **brave-search（备用，遇验证码/限流/无结果时切换）**：已配 API key（`BRAVE_SEARCH_API_KEY`），月 1000 次调用，用 `brave-search-skills:news-search`
-   - 新闻搜索 curl 示例：
+2. **brave-search（备用，遇验证码/限流/无结果时切换）**：已配 API key（`BRAVE_SEARCH_API_KEY`），月 1000 次调用。
+   - **优先用 Hermes 内置 web_search（首选，2026-08 起）**：`web_search` 工具走 brave-free provider 自动读 .env 的 key，无需手动提取——省去 shell 变量坑。直接 `web_search(query="...", limit=8)` 即可，结果带标题/URL/描述。
+   - **需要 curl 直连新闻接口时**（web_search 只有网页结果，新闻接口更贴近电报），**必须用验证过的提取命令**（防止把 `KEY=*** 整行塞进变量）：
      ```bash
+     # ⚠️ 从 .env 提取 key（cron 子进程不继承 gateway 环境变量；以下三种写法等价，均已验证）
+     # 方法1（推荐）：cut 取 = 号后全部
+     export BRAVE_SEARCH_API_KEY=$(grep '^BRAVE_SEARCH_API_KEY=' ~/.hermes/.env | cut -d= -f2-)
+     # 方法2：sed 去前缀   方法3：awk -F=
+     # export BRAVE_SEARCH_API_KEY=$(grep '^BRAVE_SEARCH_API_KEY=' ~/.hermes/.env | sed 's/^[^=]*=//')
+     # export BRAVE_SEARCH_API_KEY=$(awk -F= '/^BRAVE_SEARCH_API_KEY=/{print $2}' ~/.hermes/.env)
+     # 自检：echo ${#BRAVE_SEARCH_API_KEY} 必须输出 31（真实 key 长度），若 >31 说明提取错了
      curl -s "https://api.search.brave.com/res/v1/news/search" \
        -H "Accept: application/json" -H "X-Subscription-Token: ${BRAVE_SEARCH_API_KEY}" \
        -G --data-urlencode "q=赛力斯" --data-urlencode "freshness=pd" --data-urlencode "count=20"
      ```
    - `freshness` 按时效性映射：high → `pd`（过去24h）；medium → `pw`（本周）；low → `pm`（本月）
    - 也可用 skill 方式调用：`Skill brave-search-skills:news-search -q "<查询>"`
+   - **curl 返回 401/422 时**：先自检 `echo ${#BRAVE_SEARCH_API_KEY}`——长度应为 31；若为 52 说明变量里混入了 `BRAVE_SEARCH_API_KEY=*** 前缀，重新用上面的方法提取，不要直接判定"key 失效"（2026-08-17 事故：grep -P 误提取整行导致 422 误报 key 失效）
 3. **甄别**：返回结果仍可能混旧闻——数字与库中矛盾 / 日期不在窗口 / 同公告重复 → 跳过或归属已有事件
 
 **每条新闻，用 newsdb 命令按以下步骤处理：**

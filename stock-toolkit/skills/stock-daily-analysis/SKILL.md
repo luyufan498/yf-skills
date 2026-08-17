@@ -123,7 +123,7 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
    - 库中该股过去 24 小时已有新增 → 不再搜索，直接用库
    - 库中 24 小时无新增 → 轻量搜索兜底（≤3轮，用 searxng/brave + time-range）
    - 重大异动无解释 → newsdb request-refresh 推给新闻 agent
-4. 若需搜索，优先 searxng-search-skill（免费），遇验证码切 brave-search
+4. 若需搜索，优先 searxng-search-skill（免费），遇验证码切 brave-search（**优先用 Hermes 内置 `web_search`**，自动读 key；确需 curl 直连时按 news-collector skill 的提取规范从 `~/.hermes/.env` 提取，勿用 `grep -P '^KEY=\K'`——会把整行塞进变量导致 422 误报 key 失效）
 5. **保存搜索报告**到 temp-data（`ptrade temp-data --action save --category deep-search`），数据来自库 + 补漏搜索
 
 ### 步骤 4: 获取广发证券专业数据

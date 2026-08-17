@@ -1,6 +1,6 @@
 # 交易原则与策略详解
 
-> ⚠️ **ptrade2（V2）资金模型已变**：本文的仓位分配/资金池示例基于 v1"独立资金池"（`ptrade init --capital`）。V2 用弹性组合总池：`ptrade2 master-pool-allocate`（单股 ≤30%×total）、topup 累计 ≤30%、段位 ≤8、free ≥20% 现金底线、7 日冷却。纪律详见 [elastic-master-pool.md](elastic-master-pool.md) 第五节与交易纪律"总池资金纪律"。本文的交易原则（止盈止损/趋势门/动量等）与 V2 完全通用，仅"分配资金"示例需替换为 allocate。
+> ⚠️ **ptrade2（V2）资金模型已变**：本文的仓位分配/资金池示例基于 v1"独立资金池"（`ptrade init --capital`）。V2 用弹性组合总池：`ptrade2 master-pool-allocate`（单股 ≤30%×total）、topup 累计 ≤30%、总持仓段 ≤20、free ≥20% 现金底线、7 日冷却。纪律详见 [elastic-master-pool.md](elastic-master-pool.md) 第五节与交易纪律"总池资金纪律"。本文的交易原则（止盈止损/趋势门/动量等）与 V2 完全通用，仅"分配资金"示例需替换为 allocate。
 
 本指南详细说明 paper-trading 的交易原则、纪律和策略，帮助科学决策、控制风险。
 

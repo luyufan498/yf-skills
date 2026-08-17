@@ -38,12 +38,12 @@ class PoolManager:
             conn.close()
 
     def is_agent_slot_available(self):
-        """agent 段位上限 8（L1 不计）"""
+        """总持仓段位上限 20（有持仓= L1，全部计入）"""
         conn = self._conn()
         try:
             count = conn.execute(
-                "SELECT COUNT(*) c FROM position WHERE status='open' AND strategy != 'L1'"
+                "SELECT COUNT(*) c FROM position WHERE status='open'"
             ).fetchone()['c']
-            return count < 8
+            return count < 20
         finally:
             conn.close()

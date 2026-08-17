@@ -92,17 +92,17 @@ class MasterPoolManager:
                 if cool and cool[0] and datetime.now() < datetime.fromisoformat(cool[0]):
                     raise ValueError(f"{stock} 在冷却期内（至 {cool[0]}），禁止 allocate")
                 open_count = conn.execute(
-                    "SELECT COUNT(*) c FROM position WHERE status='open' AND strategy!='L1'"
+                    "SELECT COUNT(*) c FROM position WHERE status='open'"
                 ).fetchone()['c']
-                if open_count >= 8:
-                    raise ValueError(f"持仓段已满（{open_count}/8），需先 release 再开新段")
+                if open_count >= 20:
+                    raise ValueError(f"持仓段已满（{open_count}/20），需先 release 再开新段")
             with conn:
                 new_free = free - amount
                 conn.execute("UPDATE pool_ledger SET free=?, updated_at=? WHERE id=1",
                              (new_free, now))
                 conn.execute("INSERT INTO position (stock, code, strategy, status, budget, "
-                             "topup_total, opened_at) VALUES (?,?,?,'open',?,0,?)",
-                             (stock, code, strat, amount, now))
+                             "topup_total, opened_at) VALUES (?,?,'L1','open',?,0,?)",
+                             (stock, code, amount, now))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'allocate', stock, amount, free, new_free, reason, source))

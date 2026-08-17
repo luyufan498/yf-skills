@@ -144,7 +144,11 @@ def check_tasks() -> list[dict]:
 
 # ---------- 2. atr-sync 每日维护 ----------
 def atr_sync_daily() -> list[str]:
-    """交易时段首次 tick：对持仓股（position open）跑 atr-sync 更新止损位。"""
+    """交易时段首次 tick：对持仓股（position open）跑 atr-sync 更新止损位。
+
+    例行维护静默：成功不输出（monitor 判定无变化 → 不唤醒 agent），
+    仅失败输出告警（止损位未同步是需要 agent 关注的异常）。
+    """
     if not in_trade_hours() or not os.path.exists(POOL_DB):
         return []
     st = load_state()
@@ -158,13 +162,14 @@ def atr_sync_daily() -> list[str]:
         conn.close()
     if not stocks:
         return []
-    done = []
+    alerts = []
     for s in stocks:
         out = ptrade2("atr-sync", s, timeout=60)
-        done.append(f"📐 {s} atr-sync {'✓' if out else '✗'}")
+        if not out:
+            alerts.append(f"⚠️ {s} atr-sync 失败（止损位未同步，需人工核验）")
     st["last_atr_date"] = today
     save_state(st)
-    return done
+    return alerts
 
 
 # ---------- 3. 价格条件触发检测 ----------

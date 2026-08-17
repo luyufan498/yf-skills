@@ -11,7 +11,9 @@ DIVE_SCRIPTS=/home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/news-d
 
 ```bash
 # 1) 推荐流扫描：For you 首页(已关注账号+算法推荐) + Explore 趋势(全球热点)
-python3 "$DIVE_SCRIPTS/x_scan.py" --both
+# 注意：脚本实际参数为 --home / --explore（无 --both），需分两次跑
+python3 "$DIVE_SCRIPTS/x_scan.py" --home
+python3 "$DIVE_SCRIPTS/x_scan.py" --explore
 # 2) 定向搜索：AI/芯片/HBM/大模型/具体事件
 python3 "$DIVE_SCRIPTS/x_search.py" "AI chip" --f live --since 2026-08-09 --min-faves 50
 ```
@@ -53,7 +55,7 @@ HBM / DRAM / memory chip
 chip unlock / GPU unlock        # 170HX 解锁这类"第三方发现新用法"
 ```
 
-扫描流程：先 `x_scan.py --both` 看推荐流，再对每个词 `x_search.py "<词>" --f live --since 近3天 --min-faves 30`，合并去重 → 甄别 → 入库。
+扫描流程：先 `x_scan.py --home` + `--explore`（分两次）看推荐流，再对每个词 `x_search.py "<词>" --f live --since 近3天 --min-faves 30`，合并去重 → 甄别 → 入库。
 
 ## 甄别提醒
 

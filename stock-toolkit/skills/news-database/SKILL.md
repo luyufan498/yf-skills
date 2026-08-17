@@ -71,6 +71,7 @@ uv tool install --editable .
 - 行业支持别名归一化：`upsert_industry` 先查别名再新建，入库用任意别名不分裂行业。`save --industry` 支持逗号分隔多行业。
 - `save --message-type <type>` 标内容类型（10 类：financial_report 财报业绩 / announcement 公告 / news 新闻资讯 / research 研报 / community 社区舆情 / industry_change 行业变化 / capital_flow 资金异动 / price_action 股价走势 / policy 政策 / other 其他），与 `--source-type`（谁说的）正交。采集 agent 入库时都应带。
 - **预期信号标注（2026-08 新增）**：`save --signal-direction <bullish/bearish/event>` 标消息的**预期方向**（知情方对未来走势的预期），`--signal-type <buyback/reduction/earnings_preview/win_bid/...>` 标信号类型（与 direction 正交）。**缺省时按标题/摘要关键词自动识别**；只有需要修正时才显式传。语义：
+  - **strong-signal 消费方（2026-08）**：`importance≥4 + signal-direction bullish + confidence≥3`（官方/媒体）的事件会被分析 agent 识别为"强消息"，可能触发**消息仓 5% 提前入场**（豁免趋势门的小仓位试探，详见 stock-daily-analysis 纪律文档 3.4 节）。采集时对这类事件**务必**标对 importance/signal-direction/confidence，并保留 source_type 可追溯。
   - bullish 偏多（回购/增持/中标/定增/调研…）；bearish 偏空（减持/质押/业绩暴雷/评级下调/解禁…）；event 事件驱动（预约披露日/分红除权，中性到点复核）；none 无预期。
   - **股价走势（price_action）与 market 类事件不标预期**——它们是已发生的市场描述（"美股重挫"里出现"签署MOU"不应误标 bullish）。`signal-backfill` 同样跳过这两类。
   - 目的：把"预期/先导类信号"结构化，配合技术指标做双层确认（新闻定区域、指标定时点），支撑后续"预期信号→未来5-10日收益"的统计验证。现在只积累，不下结论。

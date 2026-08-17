@@ -236,6 +236,33 @@ ptrade check-triggers                   # 省略股票名则遍历所有持仓�
 
 > 爱司凯事故复盘（2026-08-13）：旧条件"买点上沿-建仓10%"（¥25.0）8/12 已触发并建仓 1100 股，8/13 现价 24.96 再次穿越被手动补录成新事件——若不校验条件状态会**重复建仓**。已修复：脚本层加 active 校验+对账，协议层加消费前置校验。
 
+### 💡 消息仓建仓执行（strong-signal，2026-08 加入）
+
+当分析 agent 判定某标的存在已证实强消息（newsdb 重要度≥4 + bullish + confidence≥3）且建议"消息仓 5%"时，交易 agent 执行：
+
+```bash
+# 1. 从总池分配 5% 预算（初始资金池 5%）
+ptrade2 master-pool-allocate "股票" --amount <池总资金×5%> --reason "消息仓-strong-signal"
+
+# 2. 一次性建仓（现价买入，不设区间）
+ptrade2 buy "股票" --amount <预算金额>
+
+# 3. 入场即设保护：成本保护（-5% 或 2×ATR 取严者）+ 移动止损（peak−2.5×ATR）
+ptrade2 conditions "股票" --action set --type cost_protection --price <成本×0.95> --action-str "消息仓成本保护" --category hard
+ptrade2 atr-sync "股票"
+
+# 4. 记录消息仓标记（挂 CALENDAR 事件跟踪升级/到期）
+taskbus add CALENDAR "股票" --source message-position --priority 2 \
+  --payload '{"due":"<10个交易日后>","event":"消息仓到期评估","check":"趋势门通过+动量15-25%则升级正式仓,否则平仓/降观察"}'
+```
+
+**纪律要点**（详细见 stock-daily-analysis 纪律文档 3.4 节）：
+- 首仓 **5%**，一次性建仓，不设区间；**绝不追高**（10日动量 >25% 禁止）
+- 同标的消息仓**只开一次**；单日新开消息仓**最多 1 只**
+- 消息被证伪/业绩不及预期 → **无条件退出**，不扛单
+- 持有上限 10 个交易日，到期未升级 → 平仓或降回观察
+- 升级正式仓需趋势门通过 + 动量 15~25%（走 3.4.3 加仓路径）
+
 ### 分析报告管理
 
 ```bash

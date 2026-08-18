@@ -49,7 +49,7 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
   --payload '{"due":"2026-08-20","event":"中报披露","check":"分析后评估是否升级"}'
 ```
 
-- `due`：回查日期（ISO，watch_scan 每日检测 due ≤ 今天 → 唤醒）
+- `due`：回查日期/时刻（ISO；**纯日期=当天 15:30 收盘后触发**，带时间=精确时刻触发，见下方到期时刻语义）
 - `event`：回查原因（财报/解禁/催化日）
 - `check`：回查动作（评估升级 L2 / 继续观察 / 移除）
 - 消费：心跳 agent delegate 分析 subagent → 重新评估 → 升级 L2 / 延期重挂 / 移除

@@ -257,7 +257,7 @@ ptrade2 buy "股票" --amount <段预算×试探比例>
 ptrade2 conditions "股票" --action set --type cost_protection --price <成本×0.95> --action-str "消息仓成本保护" --category hard
 ptrade2 atr-sync "股票"
 
-# 4. 挂 CALENDAR 跟踪升级/到期（10 个交易日后评估）
+# 4. 挂 CALENDAR 跟踪升级/到期（10 个交易日后评估；due 纯日期=当天 15:30 收盘后触发）
 taskbus add CALENDAR "股票" --source message-position --priority 2 \
   --payload '{"due":"<10个交易日后>","event":"消息试探仓评估","check":"趋势门通过+动量15-25%则段内加仓/升级正式仓,否则减仓或降观察"}'
 ```

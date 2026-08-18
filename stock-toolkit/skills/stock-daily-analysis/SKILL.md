@@ -366,7 +366,7 @@ ptrade conditions "<股票名>" --action event-remove --event-id <event_id>
   taskbus add CALENDAR <股> --source analysis --priority 2 \
     --payload '{"due":"2026-08-20","event":"中报披露","check":"分析后评估是否升级"}'
   ```
-  due=回查日期（财报日/催化日/下一期分析日）。watch_scan 每日检测：due ≤ 今天 → 唤醒分析 agent → 重新评估升级 L2 / 继续观察 / 移除
+  due=回查日期（财报日/催化日/下一期分析日，**纯日期=当天 15:30 收盘后触发**；需盘中/盘前触发才写时间如 `2026-08-20T10:00`）。watch_scan 时刻级检测：到期时刻 ≤ now → 唤醒分析 agent → 重新评估升级 L2 / 继续观察 / 移除
 - **暂时移除**：无价值/僵尸（连续无事件 + 动量弱 + 无报告）→ `ptrade2 watchlist remove <股>`（L1 永不自动动）
 - 每次档位变更自动记 watchlog 审计（`ptrade2 watchlist-log` 可查历史）
 

@@ -455,10 +455,15 @@ def _kv_set(key: str, value: dict):
 
 
 def check_calendar() -> list[str]:
-    """CALENDAR 事件到期检测：due ≤ 今天 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
+    """CALENDAR 事件到期检测：到期时刻 ≤ now 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
 
-    分析 agent 对"暂时不买/等财报/等催化"的股票写 CALENDAR 事件（payload.due 日期），
+    分析 agent 对"暂时不买/等财报/等催化"的股票写 CALENDAR 事件（payload.due），
     到期时心跳唤醒重新评估（升级 L2 / 继续观察 / 移除）。未到期不输出（安静睡眠）。
+
+    到期时刻语义（2026-08-18 修复，防凌晨空触发）：
+    - 纯日期 "2026-08-20" → 视为当天 **15:30（收盘后）** 到期——等财报/等公告的事件
+      不会被当天凌晨唤醒（那时报告还没出），收盘后数据/公告才齐。
+    - 带时间 "2026-08-20T10:00"（或含空格）→ 精确到该时刻触发（紧急事项显式写时间）。
     """
     if not os.path.exists(TASKS_DB):
         return []
@@ -470,16 +475,27 @@ def check_calendar() -> list[str]:
             "WHERE type='CALENDAR' AND status='pending'").fetchall()
     finally:
         conn.close()
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
     out = []
     for rid, entity, payload in rows:
         try:
             p = json.loads(payload) if payload else {}
         except (ValueError, TypeError):
             continue
-        due = (p.get("due") or "")[:10]
-        if due and due <= today:
-            out.append(f"📅 CALENDAR 到期 #{rid} {entity} due={due} [{p.get('event', '')}]")
+        due_raw = str(p.get("due") or "")
+        due_str = due_raw[:10]
+        if not due_str:
+            continue
+        # 解析到期时刻：带时间 → 原样；纯日期 → 当天 15:30
+        try:
+            if "T" in due_raw or " " in due_raw:
+                due_dt = datetime.fromisoformat(due_raw[:19].replace(" ", "T"))
+            else:
+                due_dt = datetime.strptime(due_str, "%Y-%m-%d").replace(hour=15, minute=30)
+        except ValueError:
+            continue  # due 格式非法 → 跳过该事件（不触发也不崩溃）
+        if due_dt <= now:
+            out.append(f"📅 CALENDAR 到期 #{rid} {entity} due={due_dt:%Y-%m-%d %H:%M} [{p.get('event', '')}]")
     return out
 
 

@@ -347,7 +347,73 @@ def audit_inconsistencies() -> list[str]:
     return warnings
 
 
-# ---------- 4. 动量异动扫描（原有） ----------
+# ---------- 4. 大盘异动检测（MARKET_SHOCK）----------
+MARKET_INDICES = {
+    "sh000001": "上证指数",
+    "sz399001": "深证成指",
+    "sz399006": "创业板指",
+    "sh000688": "科创50",
+}
+# 触发阈值（单日跌幅%）：任一指数跌破即触发
+MARKET_SHOCK_THRESHOLDS = {"sh000001": 2.0, "sz399001": 3.5, "sz399006": 4.0, "sh000688": 5.0}
+# 同交易日去重：一天最多触发 1 次深度研究（避免盘中反复唤醒）
+MARKET_SHOCK_STATE_KEY = "market_shock_last"
+
+
+def fetch_index_day_chg(code: str) -> float | None:
+    """拉指数单日涨跌幅（%）。用 fetch-price 返回的涨跌幅字段。"""
+    out = ptrade2("fetch-price", code)
+    m = re.search(r"涨跌幅:\s*([+-]?[\d.]+)%", out)
+    return float(m.group(1)) if m else None
+
+
+def check_market_shock() -> list[str]:
+    """大盘指数异动检测：任一指数单日跌幅超阈值 → 写 MARKET_SHOCK 事件。
+
+    触发后 agent 做深度研究（新闻收集 + 社区声音 + 逻辑链条整理）。
+    同交易日只触发一次（kv_store 记录日期），防盘中反复唤醒。
+    时间窗口：09:30-16:00（收盘后 1 小时宽限，覆盖尾盘大跌）。
+    """
+    hhmm = now_hhmm()
+    if not (TRADE_START <= hhmm <= "16:00") or not os.path.exists(TASKS_DB):
+        return []
+    st = load_state()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if st.get(MARKET_SHOCK_STATE_KEY) == today:
+        return []  # 今天已触发过
+    shocks = []
+    for code, name in MARKET_INDICES.items():
+        chg = fetch_index_day_chg(code)
+        if chg is None:
+            continue
+        thr = MARKET_SHOCK_THRESHOLDS.get(code, 5.0)
+        if chg <= -thr:
+            shocks.append({"index": name, "code": code, "chg": round(chg, 2), "threshold": thr})
+    if not shocks:
+        return []
+    # 写 MARKET_SHOCK 事件（一天一次）
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        payload = json.dumps({
+            "indices": shocks, "date": today,
+            "research": "深度研究：新闻收集+社区声音+逻辑链条整理+组合影响评估",
+        }, ensure_ascii=False)
+        conn.execute(
+            "INSERT INTO task_events (type, entity, source, priority, payload) "
+            "VALUES ('MARKET_SHOCK', '大盘', 'heartbeat-scan', 1, ?)",
+            (payload,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    st[MARKET_SHOCK_STATE_KEY] = today
+    save_state(st)
+    names = "、".join(f"{s['index']}{s['chg']:+.2f}%" for s in shocks)
+    return [f"📉 大盘异动: {names} 触发 MARKET_SHOCK 深度研究"]
+
+
+# ---------- 5. 动量异动扫描（原有） ----------
 def pool_stocks() -> list[tuple[str, str]]:
     """池内 active 股票 (名称, code)。code 缺失时从 accounts 表兜底（pool.code 可能为 NULL）。"""
     if not os.path.exists(POOL_DB):
@@ -564,6 +630,7 @@ def main() -> int:
     lines.extend(check_watch_points())
     lines.extend(check_calendar())
     lines.extend(audit_inconsistencies())
+    lines.extend(check_market_shock())
     lines.extend(scan_moves())
     if not lines:
         print("IDLE")

@@ -39,6 +39,7 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
 | `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
+| `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
 
 ### CALENDAR 日历回查（2026-08 起，档位管理配套）
 
@@ -70,6 +71,21 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 - **mode=buy（L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → 建仓**（见下方消费约定）。L2 已过分析确认买入意愿，到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
+
+### 📉 MARKET_SHOCK 大盘异动深度研究（2026-08-19 加入）
+
+`watch_scan.py` 每 tick 检查四大指数（上证 -2% / 深成 -3.5% / 创业板 -4% / 科创50 -5% 任一跌破即触发），写 `MARKET_SHOCK` 事件（payload 含触发的指数/跌幅/日期，**同交易日只触发 1 次**）。消费 agent 做**逻辑链条深度研究**：
+
+1. **导火索溯源**（news-collector 快讯层 + 搜索）：外盘（美/韩/日半导体、美股期货）→ 亚太传导 → A 股映射板块；用 `ptrade2 fetch-news` + newsdb `query-market --days 2` + searxng/brave 补漏
+2. **社区声音收集**（news-deep-browser，CDP 雪球/知乎/X）：投资者情绪、多空观点、是否恐慌错杀 vs 趋势反转；标注置信度（舆情 <3 仅背景参考）
+3. **逻辑链条整理**：导火索 → 传导路径（板块逐级验证：半导体→算力→液冷→存储→高位股）→ 确认信号（量能/北向/跌停家数）→ 结论（恐慌错杀 / 趋势反转 / 高位退潮）
+4. **组合影响评估**（paper-trading）：
+   - 持仓止损位是否濒临触发 → 预警（`ptrade2 check-triggers` 遍历持仓）
+   - L2 建仓点/价格点是否失效 → 重估（`taskbus watchpoint list` + conditions）
+   - L3 候选是否要重设价格点
+5. **产出**：深度研究报告（存 temp-data `--category deep-search`）+ newsdb 事件 + 飞书摘要（含影响清单）
+
+> **消费优先级**：MARKET_SHOCK 与 WATCH_ALERT 同级（priority=1），先研究后动仓——大盘异动期间不因单股条件触发而盲目操作，先判清市场环境。
 
 ### 🛒 L2 建仓点（watchpoint mode=buy）消费约定
 

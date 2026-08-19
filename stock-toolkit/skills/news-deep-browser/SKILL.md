@@ -52,7 +52,19 @@ python3 "$DIVE_SCRIPTS/zh_cookie_clean.py"
 
 如何判断高关注：看该股是否有 open 事件且 importance 高（`newsdb query-stock <code>` 查事件状态）；异动股看近期涨跌（可用行情数据）。
 
-每轮限量：最多深挖 5 个目标，按 deepdive 请求 > 异动事件 > 高关注股票顺序。
+每轮限量：最多深挖 5 个目标，按 deepdive 请求 > MARKET_SHOCK 大盘异动 > 异动事件 > 高关注股票顺序。
+
+## 📉 MARKET_SHOCK 大盘异动社区声音收集（2026-08-19 加入）
+
+当 taskbus 有 `MARKET_SHOCK` 事件（大盘单日大跌，心跳触发深度研究）时，**本 agent 优先级最高**——收集社区声音补充深度研究的情绪面：
+
+1. **雪球 7×24 + 今日话题**：`cdp_drive.py new "https://xueqiu.com/today#/livenews"` 看实时舆情；今日话题看多空焦点
+2. **雪球个股讨论**：对池内**重挫股**（跌幅榜前 5）跑 `xq_dig.py <代码> --pages 2`——投资者是"恐慌割肉"还是"错杀抄底"？
+3. **知乎搜索**：`zh_search.py "A股 大跌 原因"` / `"半导体 暴跌"`——找逻辑分析/前瞻帖
+4. **X/外网**：美股期货、亚太市场关联帖（`x_scan` 词表命中）
+5. **甄别标注**：舆情 confidence <3 仅背景参考，不推动交易结论；区分"恐慌情绪"与"基本面利空"——社区是否在找"错杀标的"往往比找"利空原因"更能指示后续走向
+
+> **与 news-collector 的分工**：news-collector 负责**事实层**（官方/媒体说了什么），本 agent 负责**情绪层**（投资者在想什么）。两者合并 = 深度研究的完整逻辑链条。产出写 newsdb（source_type=community）+ 供消费 agent 汇总。
 
 ## 渠道策略(实测确认)
 

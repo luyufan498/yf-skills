@@ -72,6 +72,10 @@ uv tool install --editable .
 
 - **维护节奏**：初始灌入（脚本/手工）→ 事件驱动补充（行业事件入库时查无/查少 → agent 搜索补录，发现即补）→ 季度审计（组合审查复查）
 - **缺失兜底**：查不到成分股时 agent 现场搜索受益标的，先补录再入队 CANDIDATE，不断链
+- **数据源（2026-08-19 实测定案）**：
+  - ❌ **东财 push2 API 不可用**：服务器 IP 被风控（curl 和浏览器内 fetch 均被 RST 断连）——akshare 的 `stock_board_concept_cons_em` 也用这个域，同样失败
+  - ⚠️ **同花顺概念（CDP 可用但质量差）**：`scripts/ths_cons_cdp.py <板块代码> [名称] [页数]` 抓全量沾边名单（如商业航天含中国电信/南钢股份等泛化股），**核心龙头反而常不在**（航天电子/中国卫星/钢研高纳均不在同花顺"商业航天"概念里）——仅作候选池参考，不作为核心成分依据
+  - ✅ **核心成分以手工知识灌入为准**（准确度高），agent 事件驱动补漏时优先补充行业龙头而非概念沾边股；板块代码查询：`python3 scripts/ths_cons_cdp.py list`
 
 **`relations` 表（上下游产业链传导）**：`industry→industry`，rel_type=upstream/downstream/related，strength=0-100
 - 行业事件传导时沿 relations 扩散到上下游行业 → 查其成分股 → 核心入队 CANDIDATE（strength>=60 才传导）

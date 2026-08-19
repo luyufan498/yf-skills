@@ -83,7 +83,21 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
    - 持仓止损位是否濒临触发 → 预警（`ptrade2 check-triggers` 遍历持仓）
    - L2 建仓点/价格点是否失效 → 重估（`taskbus watchpoint list` + conditions）
    - L3 候选是否要重设价格点
-5. **产出**：深度研究报告（存 temp-data `--category deep-search`）+ newsdb 事件 + 飞书摘要（含影响清单）
+5. **产出**：
+   - **深度研究结论单独建 research 事件**（2026-08-19 起，与日常记录分离）：
+     ```bash
+     newsdb save --new-event --title "<日期>大盘深度研究：<定性结论>" \
+       --summary "<逻辑链+定性+置信度+组合影响>" \
+       --entity-type market --info-type analysis \
+       --tags "market-shock,panic-selloff,rate-shock" \
+       --importance 5 --message-type research --sensitivity high
+     ```
+     - `--info-type`：analysis/news/fact/rumor（**analysis=深度研究**，需置信度+verdict）
+     - `--tags`：弹性标签 N 个任意组合（如 panic-selloff / trend-reversal / rate-shock / semiconductor / high-confidence）
+     - 日常收盘综述/快讯保持 `--info-type news`，不混淆
+   - 完整报告存 temp-data `--category deep-search` + reports/*.md
+   - 飞书摘要（含影响清单）
+   - 事后验证：挂 CALENDAR 事件（due=3-5 交易日后）对比实际走势与定性判断 → 更新事件 latest_summary
 
 > **消费优先级**：MARKET_SHOCK 与 WATCH_ALERT 同级（priority=1），先研究后动仓——大盘异动期间不因单股条件触发而盲目操作，先判清市场环境。
 

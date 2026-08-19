@@ -61,13 +61,25 @@ def get_industry_by_name(conn, name):
 # ---------- 事件 + 消息 ----------
 
 def create_event(conn, title, entity_type="market", entity_id=None,
-                 time_sensitivity="medium", importance=3):
-    """创建事件，返回事件 id。"""
+                 time_sensitivity="medium", importance=3, info_type="news", tags=None):
+    """创建事件，返回事件 id。
+
+    info_type: 信息性质 analysis/news/fact/rumor（2026-08-19 加入）
+    tags: 可选弹性标签列表（写入 event_tags 表，N 个任意组合）
+    """
     cur = conn.execute("""
-        INSERT INTO events (title, entity_type, entity_id, time_sensitivity,
+        INSERT INTO events (title, entity_type, entity_id, info_type, time_sensitivity,
                             importance, status, started_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'open', datetime('now','localtime'), datetime('now','localtime'))
-    """, (title, entity_type, entity_id, time_sensitivity, int(importance)))
+        VALUES (?, ?, ?, ?, ?, ?, 'open', datetime('now','localtime'), datetime('now','localtime'))
+    """, (title, entity_type, entity_id, info_type, time_sensitivity, int(importance)))
+    if tags:
+        for tag in tags:
+            tag = str(tag).strip()
+            if tag:
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_tags (event_id, tag) VALUES (?, ?)",
+                    (cur.lastrowid, tag),
+                )
     conn.commit()
     return cur.lastrowid
 

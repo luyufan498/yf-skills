@@ -62,6 +62,11 @@ def event(event_id: int = typer.Argument(...)):
         typer.echo(f"事件 #{event_id} 不存在")
         raise typer.Exit(code=1)
     typer.echo(f"#{ev['id']} {ev['title']}  [{ev['status']}] 重要度{ev['importance']}")
+    typer.echo(f"  对象: {ev['entity_type']} ｜ 性质: {ev['info_type'] if 'info_type' in ev.keys() else 'news'}")
+    tags = conn.execute(
+        "SELECT tag FROM event_tags WHERE event_id=? ORDER BY tag", (event_id,)).fetchall()
+    if tags:
+        typer.echo(f"  标签: {'、'.join(t['tag'] for t in tags)}")
     if ev["latest_summary"]:
         typer.echo(f"  最新: {ev['latest_summary']}")
     for m in msgs:
@@ -96,6 +101,12 @@ def save(
     signal_type: str = typer.Option(
         None, "--signal-type",
         help="信号类型 buyback/reduction/earnings_preview/win_bid/...（仅与 --signal-direction 搭配使用）"),
+    info_type: str = typer.Option(
+        "news", "--info-type",
+        help="信息性质 analysis/news/fact/rumor（2026-08-19 加入；analysis=深度研究需置信度+verdict）"),
+    tags: str = typer.Option(
+        None, "--tags",
+        help="逗号分隔的弹性标签（如 panic-selloff,rate-shock；2026-08-19 加入 event_tags 表）"),
 ):
     """结构化写入一条 agent 整理后的消息。要么 --event <id> 归属，要么 --new-event 新建。"""
     if bool(event_id) == bool(new_event):
@@ -114,6 +125,11 @@ def save(
     if confidence is not None and not (1 <= confidence <= 5):
         typer.echo("错误：--confidence 必须在 1-5")
         raise typer.Exit(code=2)
+    VALID_INFO_TYPES = {"analysis", "news", "fact", "rumor"}
+    if info_type not in VALID_INFO_TYPES:
+        typer.echo(f"错误：--info-type 必须是 {'/'.join(sorted(VALID_INFO_TYPES))} 之一")
+        raise typer.Exit(code=2)
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
     # 预期信号标注：显式指定优先；否则按标题/摘要关键词自动识别
     if signal_direction is None:
         from news_database.signal import classify_signal
@@ -128,7 +144,8 @@ def save(
     conn = _open()
     if new_event:
         eid = storage.create_event(conn, title, entity_type=entity_type,
-                                   time_sensitivity=time_sensitivity, importance=importance)
+                                   time_sensitivity=time_sensitivity, importance=importance,
+                                   info_type=info_type, tags=tag_list)
     else:
         eid = event_id
         ev = conn.execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone()
@@ -307,6 +324,30 @@ def important(min_importance: int = typer.Option(4, "--min-importance"),
     conn = _open()
     evs = query.query_important(conn, min_importance=min_importance, days=days,
                                 include_low_confidence=include_low_confidence)
+    _print_events(conn, evs)
+    conn.close()
+
+
+@app.command()
+def research(entity_type: str = typer.Option(None, "--entity-type",
+                                             help="过滤研究对象 stock/industry/policy/market"),
+             tag: str = typer.Option(None, "--tag", help="按标签过滤"),
+             days: int = typer.Option(None, "--days")):
+    """列出深度研究（info_type='analysis'）。可按对象/标签/时间过滤。"""
+    conn = _open()
+    sql = "SELECT e.* FROM events e WHERE e.info_type='analysis'"
+    params = []
+    if entity_type:
+        sql += " AND e.entity_type=?"
+        params.append(entity_type)
+    if tag:
+        sql += " AND EXISTS (SELECT 1 FROM event_tags t WHERE t.event_id=e.id AND t.tag=?)"
+        params.append(tag)
+    if days:
+        sql += " AND e.started_at >= datetime('now','localtime', ?)"
+        params.append(f"-{int(days)} days")
+    sql += " ORDER BY e.id DESC"
+    evs = conn.execute(sql, params).fetchall()
     _print_events(conn, evs)
     conn.close()
 

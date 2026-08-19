@@ -46,8 +46,20 @@ uv tool install --editable .
 | `newsdb query-industry <name> [--days N]` | 该行业相关事件 |
 | `newsdb query-market [--days N]` | 宏观/政策/大盘事件 |
 | `newsdb important [--min-importance 4] [--days N]` | 高重要度事件 |
+| `newsdb research [--entity-type X] [--tag X] [--days N]` | **深度研究列表**（info_type='analysis'，可按对象/标签过滤） |
 | `newsdb search "关键词"` | FTS 全文检索 |
 | `newsdb refresh-requests [--status pending]` | 读异动刷新请求 |
+
+## 信息性质与标签（2026-08-19 加入）
+
+**`--info-type`（信息性质，正交于 entity_type）**：analysis / news / fact / rumor
+- `analysis`=深度研究/分析（逻辑链+判断，需置信度，事后可验证 verdict）
+- `news`=新闻快讯（报道发生了什么）｜`fact`=事实公告（财报/中标/监管）｜`rumor`=流言舆情（未经证实，不推动交易）
+- 默认 `news`；旧库自动迁移补列
+
+**`--tags`（弹性标签，N 个任意组合）**：写入 event_tags 表，随用随加
+- 常用：market-shock / panic-selloff / trend-reversal / rate-shock / semiconductor / high-confidence / oversold-bounce ...
+- 查询：`newsdb research --tag rate-shock`；`newsdb event <id>` 显示标签
 
 ## 协作端命令
 | 命令 | 作用 |

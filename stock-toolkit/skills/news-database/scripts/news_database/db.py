@@ -23,8 +23,9 @@ CREATE TABLE IF NOT EXISTS industries (
 CREATE TABLE IF NOT EXISTS events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     title             TEXT NOT NULL,
-    entity_type       TEXT NOT NULL,              -- stock/industry/policy/market
+    entity_type       TEXT NOT NULL,              -- stock/industry/policy/market（研究对象）
     entity_id         INTEGER,                    -- 预留：行业事件曾计划存 industries.id，现经 event_industry 表关联，此列保留不用
+    info_type         TEXT NOT NULL DEFAULT 'news', -- 信息性质：analysis/news/fact/rumor（2026-08-19 加入）
     time_sensitivity  TEXT NOT NULL DEFAULT 'medium',   -- high/medium/low
     importance        INTEGER NOT NULL DEFAULT 3,       -- 1-5
     status            TEXT NOT NULL DEFAULT 'open',     -- open/resolved/irrelevant
@@ -34,6 +35,13 @@ CREATE TABLE IF NOT EXISTS events (
     resolved_at       TEXT,
     msg_count         INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS event_tags (
+    event_id INTEGER NOT NULL,
+    tag      TEXT NOT NULL,
+    PRIMARY KEY (event_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_event_tags_tag ON event_tags(tag, event_id);
 
 CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,4 +171,17 @@ def init_db(conn):
         conn.execute("ALTER TABLE messages ADD COLUMN signal_type TEXT NOT NULL DEFAULT ''")
     except sqlite3.OperationalError:
         pass  # 列已存在
+    # info_type 列（2026-08-19 加入：信息性质 analysis/news/fact/rumor）
+    try:
+        conn.execute("ALTER TABLE events ADD COLUMN info_type TEXT NOT NULL DEFAULT 'news'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS event_tags (
+            event_id INTEGER NOT NULL,
+            tag      TEXT NOT NULL,
+            PRIMARY KEY (event_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_tags_tag ON event_tags(tag, event_id);
+    """)
     conn.commit()

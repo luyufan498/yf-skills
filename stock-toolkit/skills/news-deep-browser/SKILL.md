@@ -87,6 +87,23 @@ newsdb industry-stocks add --industry <行业名> --stock 600879 --relevance 80 
 - 每轮深挖顺手补录 ≤5 条，不因补录打断主线任务
 - 补录后该股未来行业事件触发时会自动成为 CANDIDATE 候选
 
+## 🆕 新行业探索执行（2026-08-19 加入，消费 industry deepdive）
+
+当 `newsdb deepdive-requests --status pending` 有 `target_type=industry` 的请求（news-collector 判定新行业首现发出）时，**优先级最高**，执行行业初始化：
+
+1. **确认未初始化**：`newsdb industry-stocks list --industry <行业>` 非空 → 已探索过，`newsdb ack-deepdive <id>` 直接完成（不重复探索）
+2. **行业全景**：搜索（searxng/brave/web_search）+ 雪球/知乎分析帖，确认行业产业链分段（上游材料/中游制造/下游应用）
+3. **龙头识别**：每段找 2-3 只核心玩家（社区反复点名 + 搜索验证）→ 补录：
+   ```bash
+   newsdb industry-stocks add --industry <行业> --stock <代码> --relevance 80 --note "<环节>"
+   # 每段 1 只龙头 rel=80，其余 rel=60；总数 6-10 只，避免泛化沾边股
+   ```
+4. **产业链映射**：上下游行业 → relations 登记（`upstream`/`downstream`，strength≥60 才记）
+5. **产出候选**：核心成分（rel≥70）→ CANDIDATE 入队（payload 带 `layer:industry-init`）
+6. **完成**：`newsdb ack-deepdive <id>` + 总结写入 newsdb（新行业初始化报告，entity_type=industry + info_type=analysis + tag=new-industry）
+
+> **探索质量要点**：社区反复点名的真龙头 > 概念板块沾边股（同花顺概念名单泛化严重，如商业航天含中国电信/南钢——这类不录）；只录"行业业务占比高/核心受益"的标的。
+
 ## 渠道策略(实测确认)
 
 | 目标 | 去哪找 | 做法 |

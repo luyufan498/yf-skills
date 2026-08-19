@@ -122,6 +122,29 @@ taskbus add CANDIDATE <代码或行业名> --source news-collector --priority 2 
 
 ### 🚀 行业事件的三层候选触发（2026-08-19 加入，产业链研究链）
 
+### 🆕 新行业探索流程（2026-08-19 加入）
+
+**判定**：行业事件（重要度≥4）入库时，若 `newsdb industry-stocks list --industry <行业>` 返回空 **且** relations 无该行业上下游记录 → **全新行业**（系统对它一无所知）。
+
+**动作**：第 1 层候选照常产出（事件直接关联股），**同时发行业探索请求**：
+
+```bash
+# 发行业探索请求 → 心跳路由给 news-deep-browser 执行
+export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
+newsdb request-deepdive industry <行业名> \
+  --reason "新行业首现（<事件名>）：需摸清产业链结构+龙头识别+成分股初始化" --priority 2
+```
+
+**为什么需要**：新行业首现时三层触发只有第 1 层能做（事件点名公司），第 2/3 层（成分股/产业链）无数据空转。探索完成 = 行业初始化（成分股+relations+候选），**后续同行业事件走正常三层触发**。
+
+**探索产出规范**（news-deep-browser 执行，见其 SKILL「新行业探索」）：
+- 行业全景（上游/中游/下游分段）+ 龙头识别（每段 2-3 只，rel=80）→ `industry-stocks add`
+- 上下游行业关系 → relations add
+- 核心成分 → CANDIDATE 入队
+- **已初始化过的行业不再重复探索**（探索前先查 industry-stocks 是否非空）
+
+**验证案例**：商业航天 8/19 首现时成分股=0（事后手工灌 8 只）——若探索流程在场，当天即可自动完成初始化并产出候选。
+
 **行业级事件（entity_type=industry，重要度≥4 + bullish/event）入库后，必须做三层候选产出**，不是只记行业名：
 
 ```bash

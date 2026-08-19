@@ -142,7 +142,7 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
    - **ETF 榜单**：相关ETF涨幅、资金流入
 3. **保存广发数据汇总**到 temp-data 目录（使用 `ptrade temp-data --action save --category gf-summary` 命令）
 4. **值得关注的注册进 newsdb**：龙虎榜/资金流发现异动、异常资金流（大额净买/净卖）、机构席位异常时，用 newsdb 注册成事件：
-   - `newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity-type stock --sensitivity high --importance 4 --summary "..." --stock <代码>`
+   - `newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity-type stock --info-type fact --sensitivity high --importance 4 --summary "..." --stock <代码>`
    - 入库前 `newsdb lookup "<关键词>"` 查重，避免重复
 
 ### 步骤 5: 获取模拟盘持仓

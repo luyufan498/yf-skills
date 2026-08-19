@@ -89,7 +89,7 @@ newsdb request-refresh <行业名或代码> --signal "行业出现重大变化�
 
 步骤4 抓到的龙虎榜/资金流（广发 API，不占搜索额度），**值得关注的注册进 newsdb**：
 ```bash
-newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity-type stock --sensitivity high --importance 4 --summary "..." --stock <代码>
+newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity-type stock --info-type fact --sensitivity high --importance 4 --summary "..." --stock <代码>
 ```
 判断"值得关注"：异动、异常资金流（大额净买/净卖）、机构席位异常。
 

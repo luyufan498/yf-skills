@@ -352,6 +352,71 @@ def research(entity_type: str = typer.Option(None, "--entity-type",
     conn.close()
 
 
+@app.command("industry-stocks")
+def industry_stocks(
+    action: str = typer.Argument(..., help="add/list/query"),
+    industry: str = typer.Option(None, "--industry", help="行业名（add/list）"),
+    stock: str = typer.Option(None, "--stock", help="股票代码，逗号分隔（add）"),
+    relevance: int = typer.Option(60, "--relevance", help="相关性 80核心/60受益/40边缘（add）"),
+    note: str = typer.Option(None, "--note", help="备注，如'火箭测控'（add）"),
+    code: str = typer.Option(None, "--code", help="查询某股票属于哪些行业（query）"),
+):
+    """行业成分股管理：add 添加成分股 / list 列行业成分 / query 查股票所属行业。"""
+    conn = _open()
+    if action == "add":
+        if not industry or not stock:
+            typer.echo("错误：add 需要 --industry 和 --stock")
+            raise typer.Exit(code=2)
+        ind = conn.execute(
+            "SELECT id FROM industries WHERE name=?", (industry,)).fetchone()
+        if not ind:
+            typer.echo(f"错误：行业 '{industry}' 不存在，先 industry-aliases 或建行业")
+            raise typer.Exit(code=2)
+        codes = [c.strip().lower() for c in stock.split(",") if c.strip()]
+        for c in codes:
+            conn.execute(
+                "INSERT OR REPLACE INTO industry_stocks (industry_id, stock_code, relevance, note) "
+                "VALUES (?, ?, ?, ?)",
+                (ind["id"], c, relevance, note))
+        conn.commit()
+        typer.echo(f"✅ 行业 '{industry}' 添加成分股 {len(codes)} 只")
+    elif action == "list":
+        if not industry:
+            typer.echo("错误：list 需要 --industry")
+            raise typer.Exit(code=2)
+        ind = conn.execute(
+            "SELECT id FROM industries WHERE name=?", (industry,)).fetchone()
+        if not ind:
+            typer.echo(f"行业 '{industry}' 不存在")
+            raise typer.Exit(code=2)
+        rows = conn.execute(
+            "SELECT s.code, s.name, i.stock_code, i.relevance, i.note "
+            "FROM industry_stocks i LEFT JOIN stocks s ON s.code = i.stock_code "
+            "WHERE i.industry_id=? ORDER BY i.relevance DESC, i.stock_code",
+            (ind["id"],)).fetchall()
+        if not rows:
+            typer.echo(f"行业 '{industry}' 暂无成分股（可在行业事件入库时由 agent 搜索补录）")
+        for r in rows:
+            typer.echo(f"  {r['stock_code']} {r['name'] or ''} rel={r['relevance']} {r['note'] or ''}")
+    elif action == "query":
+        if not code:
+            typer.echo("错误：query 需要 --code")
+            raise typer.Exit(code=2)
+        code = code.strip().lower()
+        rows = conn.execute(
+            "SELECT i.name, s.relevance, s.note FROM industry_stocks s "
+            "JOIN industries i ON i.id = s.industry_id WHERE s.stock_code=?",
+            (code,)).fetchall()
+        if not rows:
+            typer.echo(f"{code} 不属于任何已登记行业")
+        for r in rows:
+            typer.echo(f"  {code} → {r['name']} rel={r['relevance']} {r['note'] or ''}")
+    else:
+        typer.echo("错误：action 必须是 add/list/query")
+        raise typer.Exit(code=2)
+    conn.close()
+
+
 @app.command()
 def search(keywords: str = typer.Argument(...), limit: int = typer.Option(10, "--limit")):
     """FTS 全文检索消息。"""

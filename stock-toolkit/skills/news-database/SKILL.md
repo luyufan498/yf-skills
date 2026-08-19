@@ -61,6 +61,22 @@ uv tool install --editable .
 - 常用：market-shock / panic-selloff / trend-reversal / rate-shock / semiconductor / high-confidence / oversold-bounce ...
 - 查询：`newsdb research --tag rate-shock`；`newsdb event <id>` 显示标签
 
+## 行业成分股与产业链（2026-08-19 加入）
+
+**`newsdb industry-stocks`（行业成分股，行业事件→个股候选的映射层）**：
+| 命令 | 作用 |
+|------|------|
+| `newsdb industry-stocks add --industry X --stock 600879,300034 --relevance 80 --note "火箭测控"` | 添加成分股（relevance：80核心/60受益/40边缘） |
+| `newsdb industry-stocks list --industry 商业航天` | 列行业成分股（按相关性排序） |
+| `newsdb industry-stocks query --code 600879` | 查某股票属于哪些行业 |
+
+- **维护节奏**：初始灌入（脚本/手工）→ 事件驱动补充（行业事件入库时查无/查少 → agent 搜索补录，发现即补）→ 季度审计（组合审查复查）
+- **缺失兜底**：查不到成分股时 agent 现场搜索受益标的，先补录再入队 CANDIDATE，不断链
+
+**`relations` 表（上下游产业链传导）**：`industry→industry`，rel_type=upstream/downstream/related，strength=0-100
+- 行业事件传导时沿 relations 扩散到上下游行业 → 查其成分股 → 核心入队 CANDIDATE（strength>=60 才传导）
+- 已灌：商业航天→卫星互联网/钢铁/化工、半导体→设备/消费电子、算力→GPU/服务器/液冷/存储、AI→算力/大模型 等 16 条
+
 ## 协作端命令
 | 命令 | 作用 |
 |------|------|

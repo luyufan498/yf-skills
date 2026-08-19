@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS event_industry (
 );
 CREATE INDEX IF NOT EXISTS idx_event_industry_id ON event_industry(industry_id, event_id);
 
+CREATE TABLE IF NOT EXISTS industry_stocks (
+    industry_id INTEGER NOT NULL,       -- 指向 industries.id
+    stock_code  TEXT NOT NULL,
+    relevance   INTEGER NOT NULL DEFAULT 50,   -- 相关性：80核心/60受益/40边缘
+    note        TEXT,                           -- 备注（如"火箭测控/高温合金"）
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (industry_id, stock_code)
+);
+CREATE INDEX IF NOT EXISTS idx_industry_stocks_code ON industry_stocks(stock_code, industry_id);
+
 CREATE TABLE IF NOT EXISTS industry_aliases (
     industry_id INTEGER NOT NULL,       -- 指向 industries.id
     alias_name  TEXT NOT NULL,
@@ -183,5 +193,16 @@ def init_db(conn):
             PRIMARY KEY (event_id, tag)
         );
         CREATE INDEX IF NOT EXISTS idx_event_tags_tag ON event_tags(tag, event_id);
+    """)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS industry_stocks (
+            industry_id INTEGER NOT NULL,
+            stock_code  TEXT NOT NULL,
+            relevance   INTEGER NOT NULL DEFAULT 50,
+            note        TEXT,
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (industry_id, stock_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_industry_stocks_code ON industry_stocks(stock_code, industry_id);
     """)
     conn.commit()

@@ -119,3 +119,29 @@ taskbus add CANDIDATE <代码或行业名> --source news-collector --priority 2 
 ```
 
 心跳 agent 消费 CANDIDATE → 完整分析 → 评估关注/买入。已在 stocks 跟踪或 watchlist 的标的无需重复入队。
+
+### 🚀 行业事件的三层候选触发（2026-08-19 加入，产业链研究链）
+
+**行业级事件（entity_type=industry，重要度≥4 + bullish/event）入库后，必须做三层候选产出**，不是只记行业名：
+
+```bash
+# 第 1 层：事件直接关联个股（agent 现场判断——事件里点名的公司/直接受益方）
+#   如"朱雀三号回收成功"→ 航天电子(600879 测控)/钢研高纳(300034 高温合金)
+taskbus add CANDIDATE 600879 --source news-collector --priority 2 \
+  --payload '{"evidence":"朱雀三号回收成功-火箭测控","importance":4,"layer":"direct"}'
+
+# 第 2 层：行业成分股（查 industry_stocks 表，核心 rel>=70 优先）
+newsdb industry-stocks list --industry <行业名>   # 列出成分
+#   对核心成分（relevance>=70）各入队一条 CANDIDATE
+
+# 第 3 层：上下游产业链传导（查 relations 表 upstream/downstream）
+#   查该行业的上下游行业 → 再查这些行业的成分股 → 核心入队
+#   （rel_type=upstream 上游材料/设备，downstream 下游应用；strength>=60 才传导）
+```
+
+**三层产出规范**：
+- **第 1 层必做**（事件直接受益方，信息价值最高）；第 2 层查表产出；第 3 层有 relations 才做（无则不强行）
+- 每层入队 1-3 只核心（relevance/strength 排序取前），**总量控制 ≤6 只/事件**，避免候选爆炸
+- payload 带 `"layer":"direct/industry/chain"` 标注来源层，消费 agent 可区分优先级
+- **行业成分股缺失时**（`industry-stocks list` 返回空）：agent 搜索该行业受益标的 → 先 `newsdb industry-stocks add` 补录（发现即补）→ 再入队 CANDIDATE。**查不到成分股 ≠ 不产候选**，agent 现场搜索兜底
+- 已入池/已在 stocks 跟踪的标的跳过（`ptrade2 watchlist-list` / `newsdb scan-list` 查重）

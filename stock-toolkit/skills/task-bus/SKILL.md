@@ -77,13 +77,14 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 `watch_scan.py` 每 tick 检查四大指数（上证 -2% / 深成 -3.5% / 创业板 -4% / 科创50 -5% 任一跌破即触发），写 `MARKET_SHOCK` 事件（payload 含触发的指数/跌幅/日期，**同交易日只触发 1 次**）。消费 agent 做**逻辑链条深度研究**：
 
 1. **导火索溯源**（news-collector 快讯层 + 搜索）：外盘（美/韩/日半导体、美股期货）→ 亚太传导 → A 股映射板块；用 `ptrade2 fetch-news` + newsdb `query-market --days 2` + searxng/brave 补漏
-2. **社区声音收集**（news-deep-browser，CDP 雪球/知乎/X）：投资者情绪、多空观点、是否恐慌错杀 vs 趋势反转；标注置信度（舆情 <3 仅背景参考）
-3. **逻辑链条整理**：导火索 → 传导路径（板块逐级验证：半导体→算力→液冷→存储→高位股）→ 确认信号（量能/北向/跌停家数）→ 结论（恐慌错杀 / 趋势反转 / 高位退潮）
-4. **组合影响评估**（paper-trading）：
+2. **资金面确认**（2026-08-19 加入，用 gf-finance token API 无风控）：谁在被抛/谁在被买——`cd <gf-finance skill 目录> && python3 scripts/lhb_analysis.py outline lhb`（今日龙虎榜概括）+ `python3 scripts/lhb_analysis.py daily <YYYYMMDD> sh/sz`（当日上榜个股）+ `python3 scripts/etf_rank.py fund 1 20`（ETF 主力资金榜，板块级资金流向）——替代同花顺数据中心板块资金流（浏览器登录态/CDP 不稳定）
+3. **社区声音收集**（news-deep-browser，CDP 雪球/知乎/X）：投资者情绪、多空观点、是否恐慌错杀 vs 趋势反转；标注置信度（舆情 <3 仅背景参考）
+4. **逻辑链条整理**：导火索 → 传导路径（板块逐级验证：半导体→算力→液冷→存储→高位股）→ 确认信号（量能/北向/跌停家数）→ 结论（恐慌错杀 / 趋势反转 / 高位退潮）
+5. **组合影响评估**（paper-trading）：
    - 持仓止损位是否濒临触发 → 预警（`ptrade2 check-triggers` 遍历持仓）
    - L2 建仓点/价格点是否失效 → 重估（`taskbus watchpoint list` + conditions）
    - L3 候选是否要重设价格点
-5. **产出**：
+6. **产出**：
    - **深度研究结论单独建 research 事件**（2026-08-19 起，与日常记录分离）：
      ```bash
      newsdb save --new-event --title "<日期>大盘深度研究：<定性结论>" \

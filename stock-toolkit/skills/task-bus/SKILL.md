@@ -95,6 +95,7 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
      - `--info-type`：analysis/news/fact/rumor（**analysis=深度研究**，需置信度+verdict）
      - `--tags`：弹性标签 N 个任意组合（如 panic-selloff / trend-reversal / rate-shock / semiconductor / high-confidence）
      - 日常收盘综述/快讯保持 `--info-type news`，不混淆
+     - **⚠️ 深度研究内容只写入 research 事件，不得改写日常事件**（2026-08-19 事故：先改 #187 收盘综述的 latest_summary 写入完整逻辑链、后又建 #191，导致两条内容重复——已修复：深度研究产物（导火索溯源/社区舆情）全部归 research 事件，日常事件只保留行情记录；导火索溯源等研究产物应 `--event <research_id>` 追加，不写进日常综述事件）
    - 完整报告存 temp-data `--category deep-search` + reports/*.md
    - 飞书摘要（含影响清单）
    - 事后验证：挂 CALENDAR 事件（due=3-5 交易日后）对比实际走势与定性判断 → 更新事件 latest_summary

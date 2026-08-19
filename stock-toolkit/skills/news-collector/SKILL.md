@@ -143,5 +143,6 @@ newsdb industry-stocks list --industry <行业名>   # 列出成分
 - **第 1 层必做**（事件直接受益方，信息价值最高）；第 2 层查表产出；第 3 层有 relations 才做（无则不强行）
 - 每层入队 1-3 只核心（relevance/strength 排序取前），**总量控制 ≤6 只/事件**，避免候选爆炸
 - payload 带 `"layer":"direct/industry/chain"` 标注来源层，消费 agent 可区分优先级
-- **行业成分股缺失时**（`industry-stocks list` 返回空）：agent 搜索该行业受益标的 → 先 `newsdb industry-stocks add` 补录（发现即补）→ 再入队 CANDIDATE。**查不到成分股 ≠ 不产候选**，agent 现场搜索兜底
+- **行业成分股缺失时**（`industry-stocks list` 返回空）：agent 搜索该行业受益标的 → 先 `newsdb industry-stocks add` 补录（发现即补）→ 再入队 CANDIDATE。**查不到成分股 ≠ 不产候选**，agent 现场搜索兜底（searxng/brave/web_search）
 - 已入池/已在 stocks 跟踪的标的跳过（`ptrade2 watchlist-list` / `newsdb scan-list` 查重）
+- **顺手补录**：搜索/快讯中发现行业龙头/潜力股（分析文章点名"XX行业核心受益"）→ `newsdb industry-stocks add` 登记，供后续行业事件触发候选（每轮 ≤5 条）

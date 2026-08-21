@@ -29,7 +29,7 @@
   → 空仓 → release(现值回 free + 段归档 + 7日冷却) → 池去留按策略(L2留/L3剔/L1永不)
 ```
 
-- **allocate**：从 free 拨 budget → 建账户（SQLite 原子事务）。校验：free 足够、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。
+- **allocate**：从 free 拨 budget → 建账户（SQLite 原子事务）。校验：free 足够、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。**初始段默认总池 5%**（策略矩阵见 trading-discipline 3.0.0），历史 3% 段保持现状不迁移。
 - **topup**：段内追加弹药（账户 total/available += amount，free -= amount）。校验累计 ≤30%×total。
 - **release**：空仓后现值回 free → 段 closed + 7 日 cooldown。L1 需 manual。
 - **会计**：`free + Σ open 段现值 = total + 浮动盈亏`；`master-pool-show` 显示 `realized_pnl`。

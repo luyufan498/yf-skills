@@ -29,13 +29,38 @@ RECOVER_STALE_HOURS = 2.0
 TRADE_START, TRADE_END = "09:30", "15:00"
 BUY_WORDS = ("建仓", "买入", "加仓")
 SELL_WORDS = ("清仓", "减仓", "止损", "止盈")
+# A股节假日（休市日）——2026 年已知，后续年份需更新
+MARKET_HOLIDAYS_2026 = {
+    "2026-01-01", "2026-01-02", "2026-02-16", "2026-02-17", "2026-02-18",
+    "2026-02-19", "2026-02-20", "2026-04-06", "2026-05-01", "2026-05-04",
+    "2026-05-05", "2026-06-19", "2026-09-25", "2026-10-01", "2026-10-02",
+    "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08",
+}
 
 
 def now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
 
 
+def is_trading_day(d: datetime | None = None) -> bool:
+    """判断是否 A 股交易日：非周末 + 非节假日。
+
+    周末用 weekday 判断（5=周六,6=周日）；节假日查表（2026）。
+    节假日表可能不完整，用额外的兜底：周末必休；表中日期必休；
+    其余默认交易（补班等极端情况影响小）。
+    """
+    if d is None:
+        d = datetime.now()
+    if d.weekday() >= 5:
+        return False
+    return d.strftime("%Y-%m-%d") not in MARKET_HOLIDAYS_2026
+
+
 def in_trade_hours() -> bool:
+    """交易时段 = 交易日 + 09:30-15:00。非交易日（周末/节假日）返回 False，
+    避免用上一交易日收盘价触发价格条件（伪触发）。"""
+    if not is_trading_day():
+        return False
     return TRADE_START <= now_hhmm() <= TRADE_END
 
 
@@ -623,8 +648,12 @@ def main() -> int:
         latest = tasks[0]
         lines.append(f"[EVENT] pending={len(tasks)} 个 | 最新 #{latest['id']} "
                      f"[{latest['type']}] {latest['entity']} (p{latest['priority']})")
-        for t in tasks:
+        # 控制单次唤醒的事件列举条数（防响应截断，2026-08-22）
+        # 只列前 3 个，其余汇总——agent 消费时按优先级处理，不会丢
+        for t in tasks[:3]:
             lines.append(f"  #{t['id']} [{t['type']}] {t['entity']} p{t['priority']} src={t['source']}")
+        if len(tasks) > 3:
+            lines.append(f"  … 其余 {len(tasks)-3} 个（按优先级逐一 claim 处理，单轮≤3 个防截断）")
     lines.extend(atr_sync_daily())
     lines.extend(check_price_triggers())
     lines.extend(check_watch_points())
@@ -635,6 +664,11 @@ def main() -> int:
     if not lines:
         print("IDLE")
         return 0
+    # 输出总条数上限：Monitor 唤醒信息量过大 → agent 响应易截断
+    # 保留最关键的（价格触发/对账/大盘异动优先），异动扫描类可截断
+    MAX_OUTPUT_LINES = 25
+    if len(lines) > MAX_OUTPUT_LINES:
+        lines = lines[:MAX_OUTPUT_LINES] + [f"… 共 {len(lines)} 条，已截断显示（完整清单见 taskbus list）"]
     print("\n".join(lines))
     return 0
 

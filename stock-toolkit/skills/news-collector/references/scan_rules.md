@@ -79,10 +79,10 @@ curl -s "https://api.search.brave.com/res/v1/news/search" \
 - medium：检查是否 5 天没扫的行业/政策主题（scan-status get 判断）
 - 额外：行业+政策关键词快检（searxng `--time-range day`），发现新动态就入库
 
-**盘中（11:30）**：
+**盘中（12:00）**：
 - high：市场热点、板块轮动、watchlist 个股盘中异动
 
-**收盘（15:30）**：
+**收盘（18:30）**：
 - 当日重要消息汇总、更新事件 latest_summary、标记结束事件 resolved
 
 ## 一次性/临时性事件触发

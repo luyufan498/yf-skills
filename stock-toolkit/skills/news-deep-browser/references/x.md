@@ -2,26 +2,38 @@
 
 > 国际情报渠道（外网消息）。X 是外网信息源，适合搜国际科技 + **所有关注行业**的海外动态：AI/芯片、商业航天/卫星、光通信/CPO、存储、创新药、机器人等。这些不一定直接相关/不一定炒股用，但值得了解。
 
-## 行业词表（按关注行业分组，2026-08-26 扩展——覆盖全部池内行业，不只科技）
+## 行业词表（动态生成，2026-08-26 起——不再固定全搜）
+
+**动态流程（每次扫描先确定当前关注行业，再生成词表）**：
 
 ```bash
-# AI 算力/芯片（原有）
-"AI chip" / "Nvidia" / "inference" / "GPU"
-# 半导体/存储（原有+扩展）
-"HBM" / "DRAM price" / "memory chip" / "TSMC" / "semiconductor"
-# 商业航天/卫星（新增——中国卫星/航天科技/中国卫通/航天电子/华力创通）
-"satellite" / "Starlink" / "space launch" / "commercial space" / "Beidou"
-# 光通信/CPO（新增——中际旭创/光迅/天孚/兆龙互连）
-"optical module" / "CPO" / "1.6T" / "silicon photonics" / "LPO"
-# 创新药（新增——药明康德/恒瑞/康希诺/沃森/凯莱英）
-"biotech" / "FDA approval" / "clinical trial" / "GLP-1" / "ADC"
-# 机器人（新增——宇树科技）
-"humanoid robot" / "robotics" / "Unitree" / "Figure"
-# 其他关注（新增——英维克液冷/赛力斯汽车/工业富联）
-"liquid cooling" / "EV battery" / "connector"
+# 1) 读当前池内 active 股票 → 所属行业（newsdb）
+#    pool 表（master_pool.db）active 股票 → industry_stocks 查 industry_id
+#    → industries.name 得到行业名列表（如：光模块/商业航天/存储芯片/AI算力...）
+# 2) 行业名 → 英文关键词（下方映射表，按行业名匹配）
+# 3) 生成的词表 = 当前命中行业的映射关键词（只搜关注行业，新行业自动覆盖、移除行业自动不搜）
 ```
 
-扫描时按行业分组轮询（每轮每组 1-2 词，可自适应增删）；推荐流（For you/Explore）本身会覆盖"没想到去搜的"。
+**行业名 → 关键词映射表**（覆盖 newsdb 主要行业）：
+
+| 行业名（newsdb） | X 搜索关键词 |
+|---|---|
+| AI算力/算力/AI/AI大模型/云计算/GPU芯片 | `AI chip` `GPU` `Nvidia` `inference` `data center` |
+| 半导体/存储/存储芯片/半导体设备 | `semiconductor` `HBM` `DRAM` `TSMC` `memory chip` |
+| 商业航天/卫星互联网/北斗 | `satellite` `Starlink` `space launch` `Beidou` `commercial space` |
+| 光模块/光通信/通信设备 | `optical module` `CPO` `1.6T` `silicon photonics` `LPO` |
+| 医药/生物医药/CXO/疫苗/医疗器械 | `biotech` `FDA` `clinical trial` `GLP-1` `ADC` `pharma` |
+| 人形机器人/机器人 | `humanoid robot` `robotics` `Unitree` `Figure` |
+| 新能源汽车/锂电池/磷酸铁锂 | `EV` `battery` `BYD` |
+| 磁性材料 | `magnetics` `inductor` `power choke` |
+| PCB | `PCB` |
+| 磷化铟/化合物半导体 | `InP` `indium phosphide` |
+| OLED/消费电子 | `OLED` `display` |
+| 量子计算 | `quantum` |
+| 脑机接口 | `BCI` `brain-computer interface` |
+| 液冷/温控 | `liquid cooling` `data center cooling` |
+
+扫描时按命中行业分组轮询（每轮每组 1-2 词，可自适应增删）；推荐流（For you/Explore）本身会覆盖"没想到去搜的"。行业名匹配不到映射的，用行业名直译或跳过（如实报告）。
 
 脚本路径（先 export）：
 ```bash

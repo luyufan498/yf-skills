@@ -57,11 +57,14 @@ def is_trading_day(d: datetime | None = None) -> bool:
 
 
 def in_trade_hours() -> bool:
-    """交易时段 = 交易日 + 09:30-15:00。非交易日（周末/节假日）返回 False，
-    避免用上一交易日收盘价触发价格条件（伪触发）。"""
+    """交易时段 = 交易日 + 9:30-11:30 / 13:00-15:00（排除午休 11:30-13:00）。
+
+    非交易日（周末/节假日）返回 False，避免用上一交易日收盘价触发价格条件（伪触发）。
+    """
     if not is_trading_day():
         return False
-    return TRADE_START <= now_hhmm() <= TRADE_END
+    hhmm = now_hhmm()
+    return ("09:30" <= hhmm <= "11:30") or ("13:00" <= hhmm <= "15:00")
 
 
 def load_state() -> dict:

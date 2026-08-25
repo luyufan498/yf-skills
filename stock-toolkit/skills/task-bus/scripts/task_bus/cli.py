@@ -174,6 +174,9 @@ def watchpoint_cmd(
         if mode not in ("eval", "buy"):
             typer.echo("❌ --mode 应为 eval / buy", err=True)
             raise typer.Exit(1)
+        if min_price is not None and not (0 < min_price < price):
+            typer.echo("❌ --min 应满足 0 < min < price（否则区间永不触发或无效）", err=True)
+            raise typer.Exit(1)
         if mode == "buy" and amount is None:
             typer.echo("⚠️ mode=buy 未传 --amount：触发后消费端将因预算缺失拒绝执行（请补 --amount 声明预算）", err=True)
         pts = points.setdefault(entity, [])

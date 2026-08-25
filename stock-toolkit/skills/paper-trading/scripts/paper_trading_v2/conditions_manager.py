@@ -633,6 +633,14 @@ class ConditionsManager:
         if abs(condition.price - target_price) < 0.01:
             return record  # 无需更新
 
+        # 宽保护豁免（价值反转仓，2026-08-25 加入）：condition.name 含"宽保护"前缀时，
+        # 保护价只宽不紧（ATR 收紧时保持旧宽保护价，波动放大时允许更宽）——
+        # 防止每日 atr-sync 把 -12% 左侧容忍保护静默收紧回 ATR 值（2×ATR < 12% 即触发）
+        if condition.name and "宽保护" in condition.name and condition.price is not None:
+            if target_price > condition.price:
+                target_price = condition.price
+                reason = f"宽保护豁免（{reason}，不低于旧保护价¥{condition.price}）"
+
         old_price = condition.price
         condition.price = target_price
         condition.modified_at = datetime.now().isoformat()

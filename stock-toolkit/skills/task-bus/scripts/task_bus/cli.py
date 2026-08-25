@@ -143,11 +143,12 @@ def kv_cmd(
 def watchpoint_cmd(
     action: str = typer.Argument(..., help="add / list / remove"),
     entity: str = typer.Argument(None, help="股票名（add/remove 需要）"),
-    price: float = typer.Option(None, "--price", help="价格事件点（add 需要）"),
+    price: float = typer.Option(None, "--price", help="价格事件点上限（add 需要）；现价 ≤ price 触发，配 --min 则区间 [min, price] 触发"),
     code: str = typer.Option(None, "--code", help="股票代码（可选，检测用，缺省从池/账户查）"),
     note: str = typer.Option("", "--note", help="备注，如'买点下沿-重新评估'（add 可选）"),
     mode: str = typer.Option("eval", "--mode", help="触发语义: eval=L3观察评估(默认) / buy=L2建仓执行"),
     amount: Optional[float] = typer.Option(None, "--amount", help="建仓预算（mode=buy 时声明，触发后 allocate 金额，缺省则消费时拒绝执行）"),
+    min_price: Optional[float] = typer.Option(None, "--min", help="价格区间下限（可选）：现价在 [min, price] 区间内才触发（单值不加 --min 行为不变）"),
 ):
     """价格事件点管理（存 kv_store 的 watch_points）。
 
@@ -179,13 +180,15 @@ def watchpoint_cmd(
         pts.append({
             "code": code, "price": round(price, 2), "note": note,
             "mode": mode, "amount": amount,
+            "min": round(min_price, 2) if min_price is not None else None,
             "added_at": datetime.now().strftime("%m-%d %H:%M"),
         })
         db.kv_set(key, points)
         kind = "L2建仓" if mode == "buy" else "L3观察"
         act = "唤醒核验建仓(allocate+buy)" if mode == "buy" else "唤醒评估"
         budget_txt = f"，预算 ¥{amount:,.0f}" if amount else ""
-        typer.echo(f"✅ {entity} {kind}价格点 ¥{price} 已添加（当前 {len(pts)} 个，现价 ≤ 触发时{act}{budget_txt}）")
+        range_txt = f"（区间 ¥{min_price:.2f}~{price:.2f}）" if min_price is not None else ""
+        typer.echo(f"✅ {entity} {kind}价格点 ¥{price} 已添加{range_txt}（当前 {len(pts)} 个，现价 ≤ 触发时{act}{budget_txt}）")
     elif action == "list":
         if not points:
             typer.echo("(无价格事件点)")
@@ -197,6 +200,8 @@ def watchpoint_cmd(
                 tag = "🛒买" if m == "buy" else "👀观"
                 budget_txt = f" 预算¥{p.get('amount'):,.0f}" if p.get("amount") else ""
                 typer.echo(f"  {tag} {name}  ¥{p['price']:<8} {p.get('note','')} ({m}){budget_txt}  ({p.get('added_at','')})")
+                if p.get("min") is not None:
+                    typer.echo(f"      └ 区间触发: ¥{p['min']:.2f} ≤ 现价 ≤ ¥{p['price']:.2f}")
     elif action == "remove":
         if not entity:
             typer.echo("❌ remove 需要 <股票>", err=True)

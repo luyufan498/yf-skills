@@ -67,7 +67,7 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 ```
 
 - **mode=trade（L1 条件触发）**：buy（现价 ≤ 买点）→ 消费 agent 评估纪律后执行买入，或纪律否决时调整买卖点；sell（现价 ≤ 止损/止盈）→ 确认破位后执行卖出，hard 条件只升不降
-- **mode=eval（L3 观察窗价格点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价）→ 唤醒**分析 agent 重新评估**（判定升级 L2 / 重设价格点 / 移除），**不直接交易**。触发后价格点自动移除（触发即失效）
+- **mode=eval（L3 观察窗价格点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 重新评估**（判定升级 L2 / 重设价格点 / 移除），**不直接交易**。触发后价格点自动移除（触发即失效）
 - **mode=buy（L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → 建仓**（见下方消费约定）。L2 已过分析确认买入意愿，到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
@@ -165,6 +165,7 @@ taskbus kv watch_scan_state '{"a":1}'        # 写 KV 状态
 taskbus ack 42 43 44 --note "串行消费完成"     # 批量完成
 taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"          # L3 观察价点
 taskbus watchpoint add 赛力斯 --price 24.5 --mode buy --amount 200000 --code sh601127 --note "建仓10%"  # L2 建仓点
+taskbus watchpoint add 中芯国际 --price 135 --min 130 --mode buy --amount 200000 --code sh688981 --note "区间建仓(130-135)"  # 区间触发（2026-08-25 支持）
 taskbus watchpoint list                        # 查看全部价格点（👀观=eval / 🛒买=buy）
 taskbus watchpoint remove 赛力斯                # 移除价格点
 ```

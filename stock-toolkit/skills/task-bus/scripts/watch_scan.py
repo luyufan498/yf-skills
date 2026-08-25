@@ -614,7 +614,13 @@ def check_watch_points() -> list[str]:
         if price is None:
             continue
         for p in pts:
-            if price <= p["price"]:
+            # 区间触发：配了 min 则现价 ∈ [min, price] 才触发；单值保持 现价 ≤ price
+            min_price = p.get("min")
+            if min_price is not None:
+                hit = min_price <= price <= p["price"]
+            else:
+                hit = price <= p["price"]
+            if hit:
                 note = p.get("note", "")
                 mode = p.get("mode", "eval")
                 if mode == "buy":

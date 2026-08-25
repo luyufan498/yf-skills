@@ -1,6 +1,27 @@
 # X (Twitter) 操作手册
 
-> 国际科技/AI 情报渠道（外网消息）。X 主要是外网信息，适合搜 AI 相关、国际科技消息：芯片涨价小道消息、第三方发现的芯片新用法（如 170HX 解锁致咸鱼二手价疯涨）、存储芯片变化、谷歌论文压缩显存传闻等。这些不一定直接相关/不一定炒股用，但值得了解。
+> 国际情报渠道（外网消息）。X 是外网信息源，适合搜国际科技 + **所有关注行业**的海外动态：AI/芯片、商业航天/卫星、光通信/CPO、存储、创新药、机器人等。这些不一定直接相关/不一定炒股用，但值得了解。
+
+## 行业词表（按关注行业分组，2026-08-26 扩展——覆盖全部池内行业，不只科技）
+
+```bash
+# AI 算力/芯片（原有）
+"AI chip" / "Nvidia" / "inference" / "GPU"
+# 半导体/存储（原有+扩展）
+"HBM" / "DRAM price" / "memory chip" / "TSMC" / "semiconductor"
+# 商业航天/卫星（新增——中国卫星/航天科技/中国卫通/航天电子/华力创通）
+"satellite" / "Starlink" / "space launch" / "commercial space" / "Beidou"
+# 光通信/CPO（新增——中际旭创/光迅/天孚/兆龙互连）
+"optical module" / "CPO" / "1.6T" / "silicon photonics" / "LPO"
+# 创新药（新增——药明康德/恒瑞/康希诺/沃森/凯莱英）
+"biotech" / "FDA approval" / "clinical trial" / "GLP-1" / "ADC"
+# 机器人（新增——宇树科技）
+"humanoid robot" / "robotics" / "Unitree" / "Figure"
+# 其他关注（新增——英维克液冷/赛力斯汽车/工业富联）
+"liquid cooling" / "EV battery" / "connector"
+```
+
+扫描时按行业分组轮询（每轮每组 1-2 词，可自适应增删）；推荐流（For you/Explore）本身会覆盖"没想到去搜的"。
 
 脚本路径（先 export）：
 ```bash

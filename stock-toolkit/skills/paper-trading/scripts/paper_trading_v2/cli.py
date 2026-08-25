@@ -54,13 +54,14 @@ def master_pool_allocate(
     source: str = typer.Option("agent", "--source", help="agent/manual"),
     code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选）"),
 ):
-    """开持仓段（从 free 拨 budget）"""
+    """开持仓段（从 free 拨 budget；--code 缺失时自动查码补全）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
+        code = _ensure_code(stock, code)
         mpm.allocate(stock, amount, reason, source=source, code=code)
-        typer.echo(f"✅ 分配 {stock} ¥{amount:,.0f}")
+        typer.echo(f"✅ 分配 {stock} ¥{amount:,.0f} ({code})")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -126,6 +127,27 @@ def watchlist_list():
         typer.echo(f"  {s['strategy']}  {s['stock']}  {str(s['code'] or '')}")
 
 
+def _ensure_code(stock: str, code: Optional[str]) -> str:
+    """自动查码兜底：--code 缺失时按股票名自动查询补全；查不到才拒绝。
+
+    2026-08-25 加入：堵住"入池/建段不带 code"导致网站代码列空白 + 无法取价的坑。
+    """
+    if code and code.strip():
+        return code.strip()
+    try:
+        from paper_trading_v2.code_searcher import validate_stock_name
+        ok, found = validate_stock_name(stock)
+        if ok and found:
+            typer.echo(f"ℹ️ 自动补全代码：{stock} → {found}")
+            return found
+    except Exception:
+        pass
+    raise ValueError(
+        f"无法自动获取 {stock} 的股票代码（未传 --code 且自动查码失败）。"
+        f"请手动指定 --code <代码>（如 sh600118 / sz300308）"
+    )
+
+
 @app.command("watchlist-add")
 def watchlist_add(
     stock: str = typer.Argument(...),
@@ -135,11 +157,12 @@ def watchlist_add(
     reason: str = typer.Option("", "--reason"),
     pin: Optional[bool] = typer.Option(None, "--pin/--no-pin", help="设置/清除名单保护（pin=1 禁删除可降级）"),
 ):
-    """入池/调整档位（--pin 设置名单保护）"""
+    """入池/调整档位（--pin 设置名单保护；--code 缺失时自动查码补全）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
+        code = _ensure_code(stock, code)
         w.add(stock, code, strategy, source, reason, pin)
         typer.echo(f"✅ 入池 {stock} ({strategy})" + (" 🔒pin" if pin else ""))
     except ValueError as e:

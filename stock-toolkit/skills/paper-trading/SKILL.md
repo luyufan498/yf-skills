@@ -334,9 +334,9 @@ ptrade2 buy "股票" --amount <段预算×试探比例>
 
 # 3. 入场即设保护：成本保护 + 移动止损（peak−2.5×ATR）
 #    常规仓：成本保护 -5% 或 2×ATR 取严者
-#    价值反转仓：-12% 宽保护（name 必须带"宽保护-12%（价值反转）"标记——防 atr-sync 收紧；
-#    反转确认后解除标记恢复 ATR，见纪律文档 3.5）
-ptrade2 conditions "股票" --action set --type cost_protection --price <成本×0.95 或 0.88> --action-str "消息仓成本保护" --category hard
+#    价值反转仓：-12% 宽保护——--name 必须带"宽保护-12%（价值反转）"标记
+#    （sync_cost_protection 识别该标记豁免 ATR 收紧；反转确认后 set 重设即去标记恢复 ATR，见纪律文档 3.5）
+ptrade2 conditions "股票" --action set --type cost_protection --price <成本×0.95 或 0.88> --action-str "消息仓成本保护" --category hard --name "宽保护-12%（价值反转）"
 ptrade2 atr-sync "股票"
 
 # 4. 挂 CALENDAR 跟踪升级/到期（10 个交易日后评估；due 纯日期=当天 15:30 收盘后触发）

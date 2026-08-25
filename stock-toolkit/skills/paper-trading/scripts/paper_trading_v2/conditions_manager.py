@@ -319,7 +319,8 @@ class ConditionsManager:
                       action: str,
                       category: ConditionCategory,
                       expiry_days: int = None,
-                      auto_link_cost: bool = False) -> ConditionsRecord:
+                      auto_link_cost: bool = False,
+                      name: Optional[str] = None) -> ConditionsRecord:
         """设定新条件（初始化用）"""
         record = self.load_conditions(stock_name)
         if not record:
@@ -340,7 +341,7 @@ class ConditionsManager:
 
         condition = Condition(
             type=condition_type,
-            name=type_names.get(condition_type, condition_type.value),
+            name=name or type_names.get(condition_type, condition_type.value),
             price=round(price, 2),
             action=action,
             category=category,
@@ -640,6 +641,8 @@ class ConditionsManager:
             if target_price > condition.price:
                 target_price = condition.price
                 reason = f"宽保护豁免（{reason}，不低于旧保护价¥{condition.price}）"
+                if abs(condition.price - target_price) < 0.01:
+                    return record  # 豁免命中且价格未变 → 跳过写库（避免每日空 history 噪音）
 
         old_price = condition.price
         condition.price = target_price

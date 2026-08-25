@@ -68,6 +68,8 @@ def register(app):
         expiry_days: Optional[int] = typer.Option(None, "--expiry-days", "-e", help="软条件有效期（天）"),
         # --update reason
         reason: Optional[str] = typer.Option(None, "--reason", "-r", help="修改理由（Level 2）"),
+        # --name（2026-08-25 加入：宽保护标记等自定义条件名）
+        cond_name: Optional[str] = typer.Option(None, "--name", help="自定义条件名（如 '宽保护-12%（价值反转）'——sync_cost_protection 识别该标记豁免 ATR 收紧）"),
         # --override params
         override_trigger: Optional[str] = typer.Option(None, "--override-trigger", help="强制复审触发器（逗号分隔）"),
         override_reason: Optional[str] = typer.Option(None, "--override-reason", help="解锁理由（Level 3，不少于20字）"),
@@ -177,12 +179,15 @@ def register(app):
                 category=cc,
                 expiry_days=expiry_days,
                 auto_link_cost=auto_link,
+                name=cond_name,
             )
 
             typer.echo(f"✅ 条件设定成功: {stock_name}")
             typer.echo(f"   类型: {ct.value}")
             typer.echo(f"   价格: ¥{price:.2f}")
             typer.echo(f"   类别: {cc.value}")
+            if cond_name:
+                typer.echo(f"   名称: {cond_name}")
             if cc == ConditionCategory.SOFT and expiry_days:
                 from paper_trading_v2.conditions import calculate_expiry_date
                 typer.echo(f"   失效日期: {calculate_expiry_date(expiry_days)}")
@@ -517,6 +522,10 @@ def register(app):
                 cost_floor_80 = round(avg_cost * 0.80, 2)
                 if expected_cp < cost_floor_80:
                     expected_cp = cost_floor_80
+                # 显示层与豁免逻辑一致：宽保护仓 ATR 收紧时显示保持旧价（防误导）
+                if cp_cond and cp_cond.name and "宽保护" in cp_cond.name and old_cp is not None:
+                    if expected_cp > old_cp:
+                        expected_cp = old_cp
 
                 entry = {
                     "stock": name, "code": account.stock_code, "status": "ok",

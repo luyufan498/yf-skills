@@ -128,12 +128,29 @@ def watchlist_list():
 
 
 def _ensure_code(stock: str, code: Optional[str]) -> str:
-    """自动查码兜底：--code 缺失时按股票名自动查询补全；查不到才拒绝。
+    """自动查码兜底：--code 缺失时先查本地 pool/accounts，再触网查码补全；都查不到才拒绝。
 
     2026-08-25 加入：堵住"入池/建段不带 code"导致网站代码列空白 + 无法取价的坑。
     """
     if code and code.strip():
         return code.strip()
+    # 1) 本地兜底：pool 表 / accounts 表已有该股 code（离线也可靠）
+    try:
+        from paper_trading_v2.db import get_connection
+        from paper_trading_v2.watchlist import Watchlist
+        w = Watchlist()
+        conn = get_connection(w.db_path)
+        row = conn.execute(
+            "SELECT COALESCE((SELECT code FROM pool WHERE stock=? LIMIT 1), "
+            "(SELECT stock_code FROM accounts WHERE stock_name=? LIMIT 1)) AS c",
+            (stock, stock),
+        ).fetchone()
+        conn.close()
+        if row and row["c"]:
+            return row["c"]
+    except Exception:
+        pass
+    # 2) 触网查码（code_searcher 腾讯 sug）
     try:
         from paper_trading_v2.code_searcher import validate_stock_name
         ok, found = validate_stock_name(stock)
@@ -143,7 +160,7 @@ def _ensure_code(stock: str, code: Optional[str]) -> str:
     except Exception:
         pass
     raise ValueError(
-        f"无法自动获取 {stock} 的股票代码（未传 --code 且自动查码失败）。"
+        f"无法自动获取 {stock} 的股票代码（未传 --code 且本地/网络查码均失败）。"
         f"请手动指定 --code <代码>（如 sh600118 / sz300308）"
     )
 

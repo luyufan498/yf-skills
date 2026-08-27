@@ -295,6 +295,36 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     return True
 
 
+def check_naked_conditions() -> list[str]:
+    """裸奔检测（2026-08-27 加，防 8/21 中芯裸奔 6 天教训）：
+    position 表 open 段的持仓，若无任何 active 的 cost_protection/trailing_stop
+    条件 → 告警（agent 需补建保护线）。触发后每日同文案 hash 不变不再重复唤醒。
+    """
+    if not os.path.exists(POOL_DB):
+        return []
+    conn = sqlite3.connect(POOL_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        # open 段的股票（持仓股）
+        open_stocks = [r["stock"] for r in conn.execute(
+            "SELECT stock FROM position WHERE status='open'").fetchall()]
+        if not open_stocks:
+            return []
+        alerts = []
+        for stock in open_stocks:
+            # 该股 active 的保护类条件
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS n FROM conditions c JOIN accounts a ON a.id=c.account_id "
+                "WHERE a.stock_name=? AND c.status='active' "
+                "AND c.type IN ('cost_protection','trailing_stop')", (stock,)
+            ).fetchone()["n"]
+            if cnt == 0:
+                alerts.append(f"[ALERT] 裸奔：{stock} 持仓但无活动成本保护/移动止损（触发后未重建？心跳需补建保护线）")
+        return alerts
+    finally:
+        conn.close()
+
+
 def check_price_triggers() -> list[str]:
     """读 active 条件 vs 实时价，穿越触发 → 写 WATCH_ALERT（去重）。"""
     if not in_trade_hours() or not os.path.exists(POOL_DB):
@@ -683,6 +713,7 @@ def main() -> int:
             lines.append(f"  … 其余 {len(tasks)-3} 个（按优先级逐一 claim 处理，单轮≤3 个防截断）")
     lines.extend(atr_sync_daily())
     lines.extend(check_price_triggers())
+    lines.extend(check_naked_conditions())
     lines.extend(check_watch_points())
     lines.extend(check_calendar())
     lines.extend(audit_inconsistencies())

@@ -312,7 +312,27 @@ class PaperTrader:
         # 同步条件：卖出后更新成本保护或暂停条件
         self._sync_conditions_after_sell(stock_name, account)
 
+        # 2026-08-27 修复：清仓后自动 release（position 标 closed + 资金回 free + 档位降 L2）
+        # 下沉到 CLI 层——避免 agent 漏调 master-pool-release（中芯 8/27 事故根因）
+        remaining_qty, _ = self.get_remaining_position(account)
+        if remaining_qty == 0:
+            self._auto_release_on_clear(stock_name)
+
         return account
+
+    def _auto_release_on_clear(self, stock_name: str):
+        """清仓后自动释放空仓段（池内股票才有段）。
+        非池内股票/无 open 段 → release 抛 ValueError → 静默忽略。
+        卖出已完成，release 失败不阻断（只打印提示）。"""
+        try:
+            from paper_trading_v2.master_pool import MasterPoolManager
+            m = MasterPoolManager()
+            m.release(stock_name, reason="清仓自动释放（CLI 层）")
+            print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
+        except ValueError:
+            pass  # 非池内股票/无 open 段——正常
+        except Exception as e:
+            print(f"[auto-release] {stock_name} 自动释放失败（不影响卖出结果）: {e}")
 
     def _ensure_fifo_pointer(self, account: Account):
         """

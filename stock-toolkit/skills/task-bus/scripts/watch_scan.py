@@ -650,7 +650,25 @@ def check_watch_points() -> list[str]:
     return alerts
 
 
+def cleanup_tabs_auto(max_keep: int = 4, trigger: int = 10):
+    """CDP tab 自动清理（心跳用，2026-08-27 加，防 OOM）：
+    调独立入口 ~/.agent-browser/tab-cleanup.py（--quiet 静默）。
+    页面 tab > trigger 时从最早的开始关，保留最近 max_keep 个。
+    纯副作用：不输出到 monitor 结果（不唤醒 LLM），动作写 /tmp/tab_cleanup.log。
+    """
+    import subprocess
+    try:
+        subprocess.run(
+            ["python3", "/home/catmouse/.agent-browser/tab-cleanup.py",
+             "--keep", str(max_keep), "--trigger", str(trigger), "--quiet"],
+            timeout=15, capture_output=True)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    # CDP tab 自动清理（>10 保留 4，从最早开始关）——纯副作用，不唤醒 LLM
+    cleanup_tabs_auto()
     lines = []
     tasks = check_tasks()
     if tasks:

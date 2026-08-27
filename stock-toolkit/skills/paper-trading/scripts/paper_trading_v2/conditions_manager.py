@@ -630,6 +630,28 @@ class ConditionsManager:
             target_price = fixed_price
             reason = f"自动同步持仓成本（缓冲{fixed_label}，成本¥{avg_cost:.2f}）"
 
+        # 深套仓现价侧保护（2026-08-27 加，中芯 8/27 反复被卖根因修复）：
+        # 现价 < 成本×0.92（深套）时，成本侧保护价（成本−2×ATR）天然高于现价
+        # → atr-sync 同步即触发（8/27 重建 126.08 高位线 → 设置即卖）。
+        # 深套改用 max(现价−2×ATR, 成本×88%) 取宽（ATR 跟随容忍底部波动 + -12% 兜底），
+        # 与 SKILL"深套仓重建保护线"规则一致。
+        current_price = None
+        if klines:
+            try:
+                current_price = float(klines[-1]["close"])
+            except (KeyError, TypeError, ValueError, IndexError):
+                current_price = None
+        if current_price and avg_cost and current_price < avg_cost * 0.92:
+            if atr_val is not None:
+                px_side = round(current_price - kk * atr_val, 2)
+                deep_floor = round(avg_cost * 0.88, 2)
+                target_price = max(px_side, deep_floor)
+                reason = (f"深套仓现价侧保护（现价¥{current_price:.2f}−{kk}×ATR=¥{px_side:.2f}，"
+                          f"成本×88%底线¥{deep_floor:.2f}，取宽¥{target_price:.2f}）")
+            else:
+                target_price = round(avg_cost * 0.88, 2)
+                reason = f"深套仓保护（成本×88%底线，无 ATR）"
+
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:
             return record  # 无需更新

@@ -217,6 +217,11 @@ class MasterPoolManager:
                              "realized_pnl=?, cooldown_until=? WHERE id=?",
                              (now, value, realized,
                               (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
+                # 2026-08-27 修复：段关闭 → accounts 表清零（资金已回 free 池，
+                # 避免详情页残留"段资金 ¥50 万/可用 ¥45 万"双算显示）
+                conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, "
+                             "capital_used=0, updated_at=? WHERE stock_name=?",
+                             (now, stock))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'release', stock, value, free, new_free, reason, source))

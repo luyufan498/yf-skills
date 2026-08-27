@@ -630,27 +630,42 @@ class ConditionsManager:
             target_price = fixed_price
             reason = f"自动同步持仓成本（缓冲{fixed_label}，成本¥{avg_cost:.2f}）"
 
-        # 深套仓现价侧保护（2026-08-27 加，中芯 8/27 反复被卖根因修复）：
-        # 现价 < 成本×0.92（深套）时，成本侧保护价（成本−2×ATR）天然高于现价
-        # → atr-sync 同步即触发（8/27 重建 126.08 高位线 → 设置即卖）。
-        # 深套改用 max(现价−2×ATR, 成本×88%) 取宽（ATR 跟随容忍底部波动 + -12% 兜底），
-        # 与 SKILL"深套仓重建保护线"规则一致。
+        # 深套仓保护线（2026-08-27 加，中芯 8/27 反复被卖根因修复；08-28 升级三段式）：
+        # 成本侧保护价（成本−2×ATR）在深套时天然高于现价 → atr-sync 同步即触发。
+        # 三段式：
+        #   ① 深跌期（现价 < 成本×88%）: max(现价−2×ATR, 成本×88%)——-12% 硬底线兜底
+        #   ② 恢复期（成本×88% ≤ 现价 < 成本）: min(现价×95%, 成本−2×ATR)
+        #      ——现价-5% 跟随现价锁回升；现价涨到 ATR线×1.05 时 min 自动切回 ATR
+        #   ③ 正常期（现价 ≥ 成本）: 成本−2×ATR（原逻辑，走上方 atr_floor）
         current_price = None
         if klines:
             try:
                 current_price = float(klines[-1]["close"])
             except (KeyError, TypeError, ValueError, IndexError):
                 current_price = None
-        if current_price and avg_cost and current_price < avg_cost * 0.92:
-            if atr_val is not None:
-                px_side = round(current_price - kk * atr_val, 2)
-                deep_floor = round(avg_cost * 0.88, 2)
-                target_price = max(px_side, deep_floor)
-                reason = (f"深套仓现价侧保护（现价¥{current_price:.2f}−{kk}×ATR=¥{px_side:.2f}，"
-                          f"成本×88%底线¥{deep_floor:.2f}，取宽¥{target_price:.2f}）")
-            else:
-                target_price = round(avg_cost * 0.88, 2)
-                reason = f"深套仓保护（成本×88%底线，无 ATR）"
+        if current_price and avg_cost:
+            if current_price < avg_cost * 0.88:
+                # ① 深跌期：-12% 硬底线（max 取宽，防 ATR 收敛把保护线顶到现价上方）
+                if atr_val is not None:
+                    px_side = round(current_price - kk * atr_val, 2)
+                    deep_floor = round(avg_cost * 0.88, 2)
+                    target_price = max(px_side, deep_floor)
+                    reason = (f"深套深跌期保护（现价¥{current_price:.2f}−{kk}×ATR=¥{px_side:.2f}，"
+                              f"成本×88%底线¥{deep_floor:.2f}，取宽¥{target_price:.2f}）")
+                else:
+                    target_price = round(avg_cost * 0.88, 2)
+                    reason = f"深套深跌期保护（成本×88%底线，无 ATR）"
+            elif current_price < avg_cost:
+                # ② 恢复期：min(现价×95%, ATR线)——锁回升；现价恢复过 ATR线×1.05 自动切 ATR
+                if atr_val is not None:
+                    px95 = round(current_price * 0.95, 2)
+                    atr_line = round(avg_cost - kk * atr_val, 2)
+                    target_price = min(px95, atr_line)
+                    reason = (f"深套恢复期保护（现价¥{current_price:.2f}×95%=¥{px95:.2f} vs "
+                              f"ATR线¥{atr_line:.2f}，取小¥{target_price:.2f}——恢复后自动切 ATR）")
+                else:
+                    target_price = round(current_price * 0.95, 2)
+                    reason = f"深套恢复期保护（现价×95%，无 ATR）"
 
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:

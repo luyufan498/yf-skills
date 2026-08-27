@@ -320,6 +320,32 @@ def check_naked_conditions() -> list[str]:
             ).fetchone()["n"]
             if cnt == 0:
                 alerts.append(f"[ALERT] 裸奔：{stock} 持仓但无活动成本保护/移动止损（触发后未重建？心跳需补建保护线）")
+                continue
+            # 错位检测（2026-08-27 加，中芯 8/27 真实病态：active 但 price>现价 = 设置即触发）：
+            # active cost_protection 且 price > 现价×1.02 → 告警；排除深跌期补执行
+            # （现价 < 成本×88% 时 88% 底线故意高于现价——语义正确不报）
+            code_row = conn.execute(
+                "SELECT p.code, a.id AS aid FROM position p JOIN accounts a ON a.stock_name=p.stock "
+                "WHERE p.stock=? AND p.status='open'", (stock,)
+            ).fetchone()
+            if code_row:
+                px = fetch_price(code_row["code"])
+                if px:
+                    avg_cost = conn.execute(
+                        "SELECT SUM(CASE WHEN pos.operation='buy' THEN pos.total_cost "
+                        "ELSE -pos.total_cost END)/NULLIF(SUM(CASE WHEN pos.operation='buy' THEN "
+                        "pos.quantity ELSE -pos.quantity END),0) AS c FROM positions pos "
+                        "WHERE pos.account_id=?", (code_row["aid"],)
+                    ).fetchone()["c"]
+                    deep_period = avg_cost is not None and px < avg_cost * 0.88
+                    for c in conn.execute(
+                        "SELECT price FROM conditions c JOIN accounts a ON a.id=c.account_id "
+                        "WHERE a.stock_name=? AND c.status='active' AND c.type='cost_protection'",
+                        (stock,)).fetchall():
+                        if c["price"] and px and c["price"] > px * 1.02 and not deep_period:
+                            alerts.append(
+                                f"[ALERT] 错位：{stock} 成本保护 ¥{c['price']:.2f} > 现价 ¥{px:.2f}×1.02"
+                                f"——设置即触发风险（非深跌补执行期），需检查保护线合理性")
         return alerts
     finally:
         conn.close()

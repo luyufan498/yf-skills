@@ -323,10 +323,26 @@ class PaperTrader:
     def _auto_release_on_clear(self, stock_name: str):
         """清仓后自动释放空仓段（池内股票才有段）。
         非池内股票/无 open 段 → release 抛 ValueError → 静默忽略。
-        卖出已完成，release 失败不阻断（只打印提示）。"""
+        卖出已完成，release 失败不阻断（只打印提示）。
+        2026-08-27 加人工段豁免：纪律 8.3"L1 release/降级一律 --source manual，
+        AI 无权"——人工段（pool.strategy 为人工标记）清仓不自动 release，提示手动。"""
         try:
             from paper_trading_v2.master_pool import MasterPoolManager
             m = MasterPoolManager()
+            # 人工段豁免：pool 表 strategy 含 manual 标记（人工 L1）→ 跳过自动 release
+            try:
+                import sqlite3
+                conn = sqlite3.connect(m.db_path)
+                conn.row_factory = sqlite3.Row
+                pool = conn.execute(
+                    "SELECT strategy FROM pool WHERE stock=?", (stock_name,)
+                ).fetchone()
+                conn.close()
+                if pool is not None and "manual" in str(pool["strategy"] or ""):
+                    print(f"[auto-release] {stock_name} 人工 L1 段——跳过自动 release，需人工确认释放")
+                    return
+            except Exception:
+                pass  # 查不到人工标记则按普通段处理
             m.release(stock_name, reason="清仓自动释放（CLI 层）")
             print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
         except ValueError:

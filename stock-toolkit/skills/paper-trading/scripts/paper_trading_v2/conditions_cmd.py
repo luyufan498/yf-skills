@@ -219,9 +219,28 @@ def register(app):
                 typer.echo(f"❌ 错误: 未知条件类型 '{condition_type}'", err=True)
                 raise typer.Exit(1)
 
-            current_price = _get_current_price() or price
+            current_price = _get_current_price()
             avg_cost = _get_avg_cost() or price
             has_pos = _has_position()
+
+            # 防"设置即触发"（2026-08-27 加，与 set 分支同款——update 路径曾被旁路）：
+            # 保护类条件价格高于现价 = 设置即触发。取不到现价时 fail-closed（拒绝并提示
+            # --force），不用 price 自身当现价（那会让校验永不触发）。
+            if not force and ct in (ConditionType.COST_PROTECTION, ConditionType.TRAILING_STOP):
+                if current_price is None:
+                    typer.echo(
+                        f"❌ 拒绝: 无法获取 {stock_name} 当前价，无法验证保护价合理性。"
+                        f"如确认要设置，请加 --force。",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
+                if price > current_price:
+                    typer.echo(
+                        f"❌ 拒绝: {ct.value} 修改价 ¥{price:.2f} > 当前价 ¥{current_price:.2f}——"
+                        f"设置即触发（价格已在保护价下方）。如需手动补录/立即触发，请加 --force。",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
 
             # ATR：若手动更新 cost_protection 且未传 --atr，自动取K线计算
             atr_for_update = atr_value

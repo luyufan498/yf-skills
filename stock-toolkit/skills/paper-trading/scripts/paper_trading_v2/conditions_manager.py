@@ -657,17 +657,27 @@ class ConditionsManager:
                 else:
                     target_price = round(avg_cost * 0.88, 2)
                     reason = f"深套深跌期保护（成本×88%底线，无 ATR）"
-            elif current_price < avg_cost:
+            elif current_price < (max(avg_cost, round((avg_cost - kk * atr_val) * 1.05, 2))
+                                  if atr_val is not None else avg_cost):
                 # ② 恢复期：min(现价×95%, ATR线)——锁回升；现价恢复过 ATR线×1.05 自动切 ATR
+                # 2026-08-27 补棘轮：target = max(旧保护价, 新算值)——防阴跌时线逐日下移
+                # （无棘轮时价格每天 -1% 线每天 -0.95%，跌到 -12% 都不触发，"锁回升"失效）。
+                # 上界 = max(成本, ATR线×1.05)——防回本处线跳升（ATR 小时②线≈95%成本，
+                # 一过成本③线跳到 96-97%，回调 2% 即洗出刚回本的深套仓）。
                 if atr_val is not None:
                     px95 = round(current_price * 0.95, 2)
                     atr_line = round(avg_cost - kk * atr_val, 2)
-                    target_price = min(px95, atr_line)
+                    new_target = min(px95, atr_line)
+                    old_protect = condition.price if (condition and condition.price) else 0
+                    target_price = max(new_target, round(old_protect, 2))
                     reason = (f"深套恢复期保护（现价¥{current_price:.2f}×95%=¥{px95:.2f} vs "
-                              f"ATR线¥{atr_line:.2f}，取小¥{target_price:.2f}——恢复后自动切 ATR）")
+                              f"ATR线¥{atr_line:.2f}，取小¥{new_target:.2f}；棘轮不低于旧线¥{old_protect:.2f}"
+                              f"→¥{target_price:.2f}）")
                 else:
-                    target_price = round(current_price * 0.95, 2)
-                    reason = f"深套恢复期保护（现价×95%，无 ATR）"
+                    px95 = round(current_price * 0.95, 2)
+                    old_protect = condition.price if (condition and condition.price) else 0
+                    target_price = max(px95, round(old_protect, 2))
+                    reason = f"深套恢复期保护（现价×95%，棘轮不低于旧线，无 ATR）"
 
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:

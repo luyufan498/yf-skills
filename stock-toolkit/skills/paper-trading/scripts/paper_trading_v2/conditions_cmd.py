@@ -80,6 +80,8 @@ def register(app):
         # event condition params
         event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect(利润保护)/loss_protect(亏损保护)/tech_break(技术破位)/target_profit(目标价止盈, 别名 take_profit)/add_position(加仓)/fundamental(基本面)/market_risk(市场风险)"),
         event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
+        # --force（2026-08-27 加：跳过"保护价高于现价=设置即触发"校验）
+        force: bool = typer.Option(False, "--force", help="跳过保护价>现价的设置即触发校验（手动补录/立即触发等特殊场景）"),
     ):
         """条件管理：查看、设定、修改、触发、过期股票交易条件"""
         stock_name = normalize_stock_name(stock_name)
@@ -168,6 +170,19 @@ def register(app):
             if not cc:
                 typer.echo(f"❌ 错误: 未知类别 '{category}'", err=True)
                 raise typer.Exit(1)
+
+            # 防"设置即触发"（2026-08-27 加，中芯 8/27 病态防护）：
+            # 保护类条件（成本保护/移动止损）价格高于现价 = 设置即触发（价格已在保护价下方）。
+            # 默认拒绝，--force 放行（手动补录/故意立即触发等特殊场景）。
+            if not force and ct in (ConditionType.COST_PROTECTION, ConditionType.TRAILING_STOP):
+                cur = _get_current_price()
+                if cur and price > cur:
+                    typer.echo(
+                        f"❌ 拒绝: {ct.value} 设置价 ¥{price:.2f} > 当前价 ¥{cur:.2f}——"
+                        f"设置即触发（价格已在保护价下方）。如需手动补录/立即触发，请加 --force。",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
 
             auto_link = (ct == ConditionType.COST_PROTECTION)
 

@@ -642,8 +642,8 @@ class ConditionsManager:
         current_price = None
         if klines:
             try:
-                current_price = float(klines[-1]["close"])
-            except (KeyError, TypeError, ValueError, IndexError):
+                current_price = float(klines[-1].get("close") or klines[-1].get("CLOSE"))
+            except (KeyError, TypeError, ValueError, IndexError, AttributeError):
                 current_price = None
         if current_price and avg_cost:
             if current_price < avg_cost * 0.88:

@@ -556,6 +556,17 @@ def register(app):
                                                 k=k_trail, init_peak=init_peak,
                                                 reset_peak=reset_peak, current_price=current_price)
                     cond_mgr.sync_cost_protection(name, avg_cost, klines, atr, k_cost=k_cost)
+                    # 显示层对齐实际写入（sync_cost_protection 深套三段式可能与
+                    # 上方 expected_cp 正常逻辑不同——2026-08-27 中芯案例）
+                    rec_after = cond_mgr.load_conditions(name)
+                    cp_after = rec_after.get(ConditionType.COST_PROTECTION) if rec_after else None
+                    if cp_after and cp_after.price is not None:
+                        entry["cost_protection_old"] = old_cp
+                        entry["cost_protection_new"] = cp_after.price
+                    ts_after = rec_after.get(ConditionType.TRAILING_STOP) if rec_after else None
+                    if ts_after and ts_after.price is not None:
+                        entry["trailing_stop_old"] = old_trail
+                        entry["trailing_stop_new"] = ts_after.price
             except Exception as e:
                 results.append({"stock": name, "status": "error", "reason": str(e)})
 

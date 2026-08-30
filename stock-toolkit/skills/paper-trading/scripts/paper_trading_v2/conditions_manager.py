@@ -679,6 +679,26 @@ class ConditionsManager:
                     target_price = max(px95, round(old_protect, 2))
                     reason = f"深套恢复期保护（现价×95%，棘轮不低于旧线，无 ATR）"
 
+        # ── 保本锁（2026-08-30 止盈三件套①，双层审计回测定稿）──
+        # 本轮收盘浮盈 ≥ +15% → 保护线上移至成本（只升不降），剪掉"浮盈变亏损"路径。
+        # 棘轮：一旦锁过（旧保护线 ≥ 成本），浮盈回落也不下移（除非成本被摊低重算）。
+        # 优先级：保本锁可穿透"宽保护豁免"——宽保护仓到 +15% 说明反转已兑现，锁盈优先。
+        from paper_trading_v2.atr import BREAKEVEN_TRIGGER
+        breakeven_applied = False
+        if current_price and avg_cost:
+            old_line = condition.price or 0
+            already_locked = old_line >= avg_cost - 0.005
+            if current_price >= avg_cost * (1 + BREAKEVEN_TRIGGER) or already_locked:
+                # 锁定棘轮：至少抬到成本；旧线已在成本上方（恢复期棘轮/已锁）则不降回成本
+                # （2026-08-30 实测修正：科创新源旧线71.43>成本66.83，be 不得降线）
+                be_price = max(round(avg_cost, 2), old_line)
+                if be_price > target_price:
+                    target_price = be_price
+                    pnl_pct = (current_price / avg_cost - 1) * 100
+                    reason = (f"保本锁（现价¥{current_price:.2f} 浮盈{pnl_pct:+.1f}%≥+{BREAKEVEN_TRIGGER*100:.0f}%"
+                              f" 或已锁定 → 保护线锁至¥{be_price:.2f}（≥成本，只升不降））")
+                    breakeven_applied = True
+
         # 检查是否需要更新
         if abs(condition.price - target_price) < 0.01:
             return record  # 无需更新
@@ -686,7 +706,8 @@ class ConditionsManager:
         # 宽保护豁免（价值反转仓，2026-08-25 加入）：condition.name 含"宽保护"前缀时，
         # 保护价只宽不紧（ATR 收紧时保持旧宽保护价，波动放大时允许更宽）——
         # 防止每日 atr-sync 把 -12% 左侧容忍保护静默收紧回 ATR 值（2×ATR < 12% 即触发）
-        if condition.name and "宽保护" in condition.name and condition.price is not None:
+        # 保本锁穿透豁免（2026-08-30）：breakeven_applied 时不豁免，浮盈≥15% 锁盈优先于宽保护容忍。
+        if condition.name and "宽保护" in condition.name and condition.price is not None and not breakeven_applied:
             if target_price > condition.price:
                 target_price = condition.price
                 reason = f"宽保护豁免（{reason}，不低于旧保护价¥{condition.price}）"
@@ -805,6 +826,56 @@ class ConditionsManager:
         condition.modified_at = datetime.now().isoformat()
 
         self.save_conditions(record)
+        return record
+
+    def sync_take_profit_ladder(self, stock_name: str, avg_cost: float,
+                                current_price: Optional[float] = None) -> Optional[ConditionsRecord]:
+        """分批止盈阶梯自动挂载（2026-08-30 止盈三件套②，双层审计回测定稿）。
+
+        C 方案：+30% → take_profit_1 卖1/3；+50% → take_profit_2 再卖1/3；
+        余仓走 trailing_stop 2.5×ATR 跟随。触发口径=收盘浮盈（atr-sync 盘后跑，
+        触发后次日执行=T+1 合规，ultra 校准参数）。
+
+        hard 类别（持仓周期内有效，不设软条件过期——软条件 7 天到期会让挂载率
+        回到 0 的老病）。幂等：已有同类型 active 条件则跳过；clearance 后由
+        resume_all/suspend_all 管生命周期，重新建仓按新成本重挂（triggered 状态
+        不覆盖——阶梯每轮只触发一次）。
+        """
+        from paper_trading_v2.atr import TP1_TRIGGER, TP2_TRIGGER
+        record = self.load_conditions(stock_name)
+        if not record or not avg_cost or not current_price:
+            return record
+
+        ladder = [
+            (ConditionType.TAKE_PROFIT_1, TP1_TRIGGER, f"分批止盈①+{TP1_TRIGGER*100:.0f}%卖1/3"),
+            (ConditionType.TAKE_PROFIT_2, TP2_TRIGGER, f"分批止盈②+{TP2_TRIGGER*100:.0f}%卖1/3"),
+        ]
+        changed = False
+        now = datetime.now().isoformat()
+        for ctype, trig, label in ladder:
+            trig_price = round(avg_cost * (1 + trig), 2)
+            existing = record.get(ctype)
+            if existing and existing.status in (ConditionStatus.ACTIVE, ConditionStatus.TRIGGERED):
+                continue  # 已挂或本轮已触发过，幂等跳过
+            record.set(Condition(
+                type=ctype,
+                name=label,
+                price=trig_price,
+                action="次日卖出1/3（收盘确认触发）",
+                category=ConditionCategory.HARD,
+                expiry_date=None,
+                peak_price=None,
+                created_at=now,
+                modified_at=now,
+                history=[ConditionChange(
+                    old_price=0, new_price=trig_price,
+                    reason=f"止盈阶梯自动挂载（成本¥{avg_cost:.2f}×{1+trig:.2f}，现价¥{current_price:.2f}）",
+                    level=ConditionLevel.LEVEL_1,
+                )],
+            ))
+            changed = True
+        if changed:
+            self.save_conditions(record)
         return record
 
     def suspend_all(self, stock_name: str) -> Optional[ConditionsRecord]:

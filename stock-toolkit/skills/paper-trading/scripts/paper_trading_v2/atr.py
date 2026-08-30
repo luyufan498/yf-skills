@@ -14,6 +14,13 @@ ATR_K_COST = 2.0       # 成本保护：保护价 = 成本 − k×ATR
 ATR_K_TRAIL = 2.5      # 移动止损：止损价 = peak − k×ATR
 RISK_BUDGET = 0.015    # 风险预算 1.5% 总权益（仓位模块占位，本模块不实现仓位）
 
+# ── 止盈三件套（2026-08-30 双层审计回测定稿，59 笔/20 票/一年）──
+# 依据：ultra 仲裁（C方案 20/20 LOO 折全过、P90 右尾无伤；G方案 P90 -4.13pp 破红线出局）
+BREAKEVEN_TRIGGER = 0.15   # 保本锁：本轮收盘浮盈 ≥ +15% → cost_protection 上移至成本（只升不降）
+TP1_TRIGGER = 0.30         # 分批止盈阶梯1：收盘浮盈 ≥ +30% → 卖 1/3（take_profit_1）
+TP2_TRIGGER = 0.50         # 分批止盈阶梯2：收盘浮盈 ≥ +50% → 再卖 1/3（take_profit_2）
+                           # 余 1/3 走 trailing_stop 2.5×ATR 跟随（肥尾不动，禁止收紧 2.0）
+
 
 def compute_true_range(prev_close: float, high: float, low: float) -> float:
     """单根 True Range = max(high−low, |high−prev_close|, |low−prev_close|)。"""

@@ -556,8 +556,21 @@ def register(app):
                 cost_floor_80 = round(avg_cost * 0.80, 2)
                 if expected_cp < cost_floor_80:
                     expected_cp = cost_floor_80
+                # 显示层与 sync_cost_protection 实际逻辑一致：保本锁（2026-08-30）——
+                # 本轮收盘浮盈≥15% 或已锁定（旧线≥成本）→ 保护线上移至成本
+                from paper_trading_v2.atr import BREAKEVEN_TRIGGER
+                _px = current_price or (klines[-1].get("close") if klines else None)
+                if _px and avg_cost:
+                    _locked = (old_cp or 0) >= avg_cost - 0.005
+                    if _px >= avg_cost * (1 + BREAKEVEN_TRIGGER) or _locked:
+                        # 锁定棘轮：≥成本且不降旧线（与实际写入层一致）
+                        _be = max(round(avg_cost, 2), old_cp or 0)
+                        if expected_cp is None or _be > expected_cp:
+                            expected_cp = _be
                 # 显示层与豁免逻辑一致：宽保护仓 ATR 收紧时显示保持旧价（防误导）
-                if cp_cond and cp_cond.name and "宽保护" in cp_cond.name and old_cp is not None:
+                # 保本锁穿透豁免（2026-08-30）：expected_cp≥成本（锁已生效）时不豁免
+                if cp_cond and cp_cond.name and "宽保护" in cp_cond.name and old_cp is not None \
+                        and not (expected_cp is not None and expected_cp >= avg_cost - 0.005):
                     if expected_cp > old_cp:
                         expected_cp = old_cp
 
@@ -575,6 +588,9 @@ def register(app):
                                                 k=k_trail, init_peak=init_peak,
                                                 reset_peak=reset_peak, current_price=current_price)
                     cond_mgr.sync_cost_protection(name, avg_cost, klines, atr, k_cost=k_cost)
+                    # 止盈阶梯自动挂载（2026-08-30 止盈三件套②：+30%/+50% 各卖1/3）
+                    _px = current_price or (klines[-1].get("close") if klines else None)
+                    cond_mgr.sync_take_profit_ladder(name, avg_cost, _px)
                     # 显示层对齐实际写入（sync_cost_protection 深套三段式可能与
                     # 上方 expected_cp 正常逻辑不同——2026-08-27 中芯案例）
                     rec_after = cond_mgr.load_conditions(name)

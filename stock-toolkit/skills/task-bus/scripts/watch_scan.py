@@ -254,13 +254,17 @@ def _cond_active(cond_id: int) -> bool:
 
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                  cond_name: str, trigger_price: float, current_price: float,
-                 manual: bool = False, mode: str = "trade", budget: float | None = None) -> bool:
+                 manual: bool = False, mode: str = "trade", budget: float | None = None,
+                 tp_only: bool = False) -> bool:
     """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。
 
     manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
     mode="eval"（L3 观察窗价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
     mode="buy"（L2 建仓点）：同 eval 不碰 conditions，额外带 budget（建仓预算）供消费方 allocate。
+    tp_only=True（止盈阶梯，2026-08-30）：**只标记触发的 TP 条件本身**，不做 family 标记——
+      阶梯只卖 1/3、仓位存续，family UPDATE（category='hard'）会连坐清掉
+      cost_protection/trailing_stop，造成余仓裸奔。
     """
     if cond_id and cond_id > 0 and not _cond_active(cond_id):
         print(f"  ⏭ 跳过补录：条件#{cond_id}[{cond_name}] 已非 active（可能已触发/已移除）", file=sys.stderr)
@@ -285,8 +289,11 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
         conn.close()
     # 触发即失效：把该股票该方向的所有 active 条件标记为 triggered
     # （仅 trade 模式；eval 模式的价格点由调用方负责移除）
+    # tp_only（止盈阶梯）：只标记本条件——阶梯卖1/3后仓位存续，禁止连坐保护线（2026-08-30）
     if mode == "trade" and os.path.exists(POOL_DB) and cond_id and cond_id > 0:
-        if direction == "buy":
+        if tp_only:
+            cond_filter = "id=?"
+        elif direction == "buy":
             cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
         else:
             cond_filter = ("(action LIKE '%清仓%' OR action LIKE '%减仓%' OR action LIKE '%止损%' "
@@ -377,25 +384,36 @@ def check_price_triggers() -> list[str]:
     triggers = []
     for r in rows:
         action = r["action"] or ""
-        is_buy = any(w in action for w in BUY_WORDS)
-        is_sell = any(w in action for w in SELL_WORDS) or r["category"] == "hard"
-        if not (is_buy or is_sell):
-            continue
+        ctype = r["type"] or ""
+        # 止盈阶梯（2026-08-30 止盈三件套）：涨破方向，现价 ≥ 触发价才命中
+        # （通用判定是 price <= 条件价，TP 触发价在现价上方会被立即误触发——必须单独分支）
+        is_tp = ctype in ("take_profit_1", "take_profit_2")
         price = fetch_price(r["stock_code"])
         if price is None:
             continue
-        hit = price <= r["price"]
-        if not hit:
-            continue
-        direction = "buy" if is_buy else "sell"
+        if is_tp:
+            hit = price >= r["price"]
+            direction = "sell"
+            if not hit:
+                continue
+        else:
+            is_buy = any(w in action for w in BUY_WORDS)
+            is_sell = any(w in action for w in SELL_WORDS) or r["category"] == "hard"
+            if not (is_buy or is_sell):
+                continue
+            hit = price <= r["price"]
+            if not hit:
+                continue
+            direction = "buy" if is_buy else "sell"
         if _has_pending_event(r["stock_name"], direction, r["id"]):
             continue  # 已有同向/同条件待处理事件，去重
         if not _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
-                            action, r["price"], price):
+                            action, r["price"], price, tp_only=is_tp):
             continue  # 条件已非 active（极端竞态），跳过
+        arrow = "≥" if is_tp else "≤"
         triggers.append(
             f"🔔 {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发: "
-            f"现价¥{price:.2f} ≤ 条件¥{r['price']:.2f} [{action}]")
+            f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f} [{action}]")
     return triggers
 
 

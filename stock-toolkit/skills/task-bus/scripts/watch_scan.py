@@ -37,6 +37,12 @@ MARKET_HOLIDAYS_2026 = {
     "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08",
 }
 
+# 交易日历单一真源：工作区 data/trading_calendar.json（上交所休市安排，2026-08-27 接入）
+STOCK_WS_ROOT = os.environ.get("STOCK_ANALYSIS_WORKSPACE_ROOT",
+                               "/home/catmouse/Github_Project/daily-stock-workspace")
+if STOCK_WS_ROOT not in sys.path:
+    sys.path.insert(0, STOCK_WS_ROOT)
+
 
 def now_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
@@ -45,15 +51,19 @@ def now_hhmm() -> str:
 def is_trading_day(d: datetime | None = None) -> bool:
     """判断是否 A 股交易日：非周末 + 非节假日。
 
-    周末用 weekday 判断（5=周六,6=周日）；节假日查表（2026）。
-    节假日表可能不完整，用额外的兜底：周末必休；表中日期必休；
-    其余默认交易（补班等极端情况影响小）。
+    主路径：工作区 trading_calendar.py（data/trading_calendar.json 单一真源，
+    含周末判断 + 节假日 + 临时休市补丁）。
+    fallback：JSON/模块不可用时退回本文件旧表（周末必休 + 表内必休）。
     """
     if d is None:
         d = datetime.now()
-    if d.weekday() >= 5:
-        return False
-    return d.strftime("%Y-%m-%d") not in MARKET_HOLIDAYS_2026
+    try:
+        from trading_calendar import is_trading_day as _cal_day
+        return _cal_day(d.date())
+    except Exception:
+        if d.weekday() >= 5:
+            return False
+        return d.strftime("%Y-%m-%d") not in MARKET_HOLIDAYS_2026
 
 
 def in_trade_hours() -> bool:

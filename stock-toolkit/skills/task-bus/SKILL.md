@@ -118,7 +118,8 @@ taskbus watchpoint add <股> --price 24.5 --mode buy --amount 200000 --code <代
 2. **防重核验**（复用 WATCH_ALERT 通用前置校验）：`ptrade2 operations <股> --days 7` 近 7 日无同向建仓；无 pending/processing 同向事件（watch_scan 已去重，双保险）
 3. **分析时效**：分析报告仍有效（无重大利空/财报变脸）→ 继续；失效 → done 注明，降 L3 重评
 4. **资金核验**：`ptrade2 master-pool-show` 确认 free ≥ budget；不足 → done 注明"资金不足"，降 L3 或留观
-5. **执行**：`ptrade2 master-pool-allocate <股> --amount <budget> --reason "建仓点触发-<note>"`（自动升 L1）→ `ptrade2 buy <股> --amount <budget>` 建仓 → `taskbus done <id> --note "已建仓..."`
+5. **执行**：`ptrade2 master-pool-allocate <股> --amount <budget> --reason "建仓点触发-<note>"`（自动升 L1）→ `ptrade2 buy <股> --amount <budget> --note "<通道>-<依据>（<关键数据>）"` 建仓 → `taskbus done <id> --note "已建仓..."`
+   ⚠️ **buy 的 --note 必填**（2026-08-28 审计规则）：operations.note 是交易质量唯一审计凭证，禁止留空。内容 = watchpoint 的 note + 判定关键数据（通道名/消息事件ID/imp/动量值/档位），如"通道判定-消息仓 newsdb#231（imp4 bullish，动量+8%，段内8%档）"。8/25-27 有五笔建仓 note 为空的教训（光通信链/存储/北斗等），复盘时无法还原判定依据。
 6. 完成后若原档位是 L2，allocate 已自动升 L1，无需手动调档
 
 ### ⚠️ WATCH_ALERT 消费前置校验（防重复触发/重复建仓）

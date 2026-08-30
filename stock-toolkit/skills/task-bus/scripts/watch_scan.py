@@ -376,7 +376,8 @@ def check_price_triggers() -> list[str]:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT cn.id, a.stock_name, a.stock_code, cn.price, cn.action, cn.category, cn.type "
+            "SELECT cn.id, a.stock_name, a.stock_code, cn.price, cn.action, cn.category, "
+            "cn.type, cn.name, cn.is_event "
             "FROM conditions cn JOIN accounts a ON cn.account_id=a.id "
             "WHERE cn.status='active' AND cn.price IS NOT NULL").fetchall()
     finally:
@@ -385,32 +386,38 @@ def check_price_triggers() -> list[str]:
     for r in rows:
         action = r["action"] or ""
         ctype = r["type"] or ""
-        # 止盈阶梯（2026-08-30 止盈三件套）：涨破方向，现价 ≥ 触发价才命中
-        # （通用判定是 price <= 条件价，TP 触发价在现价上方会被立即误触发——必须单独分支）
-        is_tp = ctype in ("take_profit_1", "take_profit_2")
-        price = fetch_price(r["stock_code"])
-        if price is None:
-            continue
-        if is_tp:
-            hit = price >= r["price"]
-            direction = "sell"
-            if not hit:
-                continue
+        cname = r["name"] or ""
+        # 方向判定与 conditions_manager._condition_direction 同优先级（2026-08-30）：
+        # name 关键字 > type > action 文字（原纯按 action 猜——恒申"成本保护-5%(建仓点
+        # 试探仓)"含"建仓"被误判 buy，跌破保护线会发加仓告警而非清仓告警）。
+        is_up = (ctype in ("take_profit_1", "take_profit_2")
+                 or any(k in cname for k in ("止盈", "目标")))
+        if not is_up and (ctype in ("cost_protection", "trailing_stop")
+                          or any(k in cname for k in ("止损", "保护", "破位"))):
+            direction = "sell"       # 跌破触发（现价 ≤）
+        elif is_up:
+            direction = "sell"       # 涨破触发（现价 ≥）：止盈阶梯/目标类
+        elif r["is_event"]:
+            # 事件条件（type 统一无法按型区分）：action 文字兜底
+            direction = "buy" if any(w in action for w in BUY_WORDS) else "sell"
         else:
             is_buy = any(w in action for w in BUY_WORDS)
             is_sell = any(w in action for w in SELL_WORDS) or r["category"] == "hard"
             if not (is_buy or is_sell):
                 continue
-            hit = price <= r["price"]
-            if not hit:
-                continue
             direction = "buy" if is_buy else "sell"
+        price = fetch_price(r["stock_code"])
+        if price is None:
+            continue
+        hit = price >= r["price"] if is_up else price <= r["price"]
+        if not hit:
+            continue
         if _has_pending_event(r["stock_name"], direction, r["id"]):
             continue  # 已有同向/同条件待处理事件，去重
         if not _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
-                            action, r["price"], price, tp_only=is_tp):
+                            action, r["price"], price, tp_only=is_up):
             continue  # 条件已非 active（极端竞态），跳过
-        arrow = "≥" if is_tp else "≤"
+        arrow = "≥" if is_up else "≤"
         triggers.append(
             f"🔔 {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发: "
             f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f} [{action}]")

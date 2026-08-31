@@ -174,7 +174,7 @@ def check_tasks() -> list[dict]:
         conn.commit()
         return [dict(r) for r in conn.execute(
             "SELECT id, type, entity, priority, source FROM task_events "
-            "WHERE status='pending' AND type != 'CALENDAR' "
+            "WHERE status='pending' AND type NOT IN ('CALENDAR','L3_SNAPSHOT') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()

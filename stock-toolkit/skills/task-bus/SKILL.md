@@ -40,6 +40,7 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
 | `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
+| `L3_SNAPSHOT` | 午间次优候选快照（≤5 只打包，TTL=次日晨审前有效，**不碰钱**，2026-08-31 加入） | stock-l3-scan（13:35） | **仅次日 6:05 组合审查（晨审）消费**（收盘数据验证午间信号）；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义）；积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
 
 ### CALENDAR 日历回查（2026-08 起，档位管理配套）
 
@@ -69,6 +70,7 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 - **mode=trade（L1 条件触发）**：buy（现价 ≤ 买点）→ 消费 agent 评估纪律后执行买入，或纪律否决时调整买卖点；sell（现价 ≤ 止损/保护）→ 确认破位后执行卖出，hard 条件只升不降；**止盈阶梯（cond_name 含"分批止盈"，现价 ≥ 触发价，2026-08-30）**→ 确认当日为收盘确认后**次日**卖出持仓 1/3（T+1），`conditions --action trigger` 标记 + `sell --note "止盈阶梯①/②（成本¥X→现价¥Y 浮盈+Z%）"` 必填；**只标记该 TP 条件，禁止动保护线/移动止损**（余仓 1/3 继续 2.5×ATR 跟随）
 - **mode=eval（L3 观察窗价格点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 重新评估**（判定升级 L2 / 重设价格点 / 移除），**不直接交易**。触发后价格点自动移除（触发即失效）
 - **mode=buy（L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → 建仓**（见下方消费约定）。L2 已过分析确认买入意愿，到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
+- **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday（12:05 收闻）发现 **L1/L2 持仓标的** imp≥4 利空（立案/退市/停牌/暴雷/减持，payload 带 news_event=newsdb事件ID）时写入——补心跳纯价格触发的非价格信号盲区。消费：交易 subagent 查 newsdb 核真实性 → 对照持仓 → 防御评估。**盘中卖出仅限硬利空实锤（停牌/立案类）**；价格类止损仍走收盘确认纪律，普通坏消息不恐慌割肉
 - **⚠️ `--amount` 语义 = 段预算（建段金额），不是首笔买入金额**：初始建段统一 = 总池 5%（1000 万池 → **¥500,000**）；首笔比例是 buy 阶段按策略矩阵（3.0.0）计算（如消息仓 5-20% × 50 万 = 2.5-10 万），**绝不填进 --amount**——填错会把段建小（如沃森生物 8/24 只建了 10 万=1% 池，8/25 修正案例）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发

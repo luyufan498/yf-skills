@@ -291,8 +291,10 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     # （仅 trade 模式；eval 模式的价格点由调用方负责移除）
     # tp_only（止盈阶梯）：只标记本条件——阶梯卖1/3后仓位存续，禁止连坐保护线（2026-08-30）
     if mode == "trade" and os.path.exists(POOL_DB) and cond_id and cond_id > 0:
+        cond_params = ()
         if tp_only:
             cond_filter = "id=?"
+            cond_params = (cond_id,)
         elif direction == "buy":
             cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
         else:
@@ -304,7 +306,7 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                 f"UPDATE conditions SET status='triggered' "
                 f"WHERE account_id=(SELECT account_id FROM conditions WHERE id=?) "
                 f"AND status='active' AND {cond_filter}",
-                (cond_id,),
+                (cond_id,) + cond_params,
             )
             pconn.commit()
         finally:

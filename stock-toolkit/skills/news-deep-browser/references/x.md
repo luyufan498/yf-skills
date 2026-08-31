@@ -28,7 +28,7 @@
 | 磁性材料 | `magnetics` `inductor` `power choke` |
 | PCB | `PCB` |
 | 磷化铟/化合物半导体 | `InP` `indium phosphide` |
-| OLED/消费电子 | `OLED` `display` |
+| OLED/消费电子 | `OLED` `display` `Apple` `iPhone` `consumer electronics`（2026-08-31 审计补：苹果等大厂公司动态属大盘外事件，曾漏 CEO 交接） |
 | 量子计算 | `quantum` |
 | 脑机接口 | `BCI` `brain-computer interface` |
 | 液冷/温控 | `liquid cooling` `data center cooling` |

@@ -17,10 +17,14 @@ class PoolManager:
         migrate_db(conn)
         return conn
 
-    def open_segments(self):
+    def open_segments(self, include_news=False):
+        """主池 open 段（默认排除 sleeve 成员段 strategy='NEWS'——双池互不侵占）。"""
         conn = self._conn()
         try:
-            rows = conn.execute("SELECT * FROM position WHERE status='open' ORDER BY id").fetchall()
+            q = "SELECT * FROM position WHERE status='open'"
+            if not include_news:
+                q += " AND COALESCE(strategy,'') != 'NEWS'"
+            rows = conn.execute(q + " ORDER BY id").fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -38,11 +42,12 @@ class PoolManager:
             conn.close()
 
     def is_agent_slot_available(self):
-        """总持仓段位上限 20（有持仓= L1，全部计入）"""
+        """总持仓段位上限 20（有持仓= L1，全部计入；sleeve 成员段不侵占主池段位）"""
         conn = self._conn()
         try:
             count = conn.execute(
-                "SELECT COUNT(*) c FROM position WHERE status='open'"
+                "SELECT COUNT(*) c FROM position WHERE status='open' "
+                "AND COALESCE(strategy,'') != 'NEWS'"
             ).fetchone()['c']
             return count < 20
         finally:

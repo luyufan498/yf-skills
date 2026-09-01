@@ -1,8 +1,9 @@
-"""Watchlist — 池（关注名单）管理，三档策略 + L1 人工锁"""
+"""Watchlist — 池（关注名单）管理，三档策略 + NEWS 消息组缓冲 + L1 人工锁"""
 from datetime import datetime
 from paper_trading_v2.db import get_connection, migrate_db
 
-STRATEGIES = ("L1", "L2", "L3")
+# NEWS = 消息组 L2 信号缓冲（方案 2.5 组×层模型）：无交易权限，收编扫描/晨审落库
+STRATEGIES = ("L1", "L2", "L3", "NEWS")
 
 
 class Watchlist:
@@ -19,9 +20,13 @@ class Watchlist:
         migrate_db(conn)
         return conn
 
-    def add(self, stock, code=None, strategy="L2", source="agent", reason="", pin=None):
+    def add(self, stock, code=None, strategy="L2", source="agent", reason="", pin=None,
+            event_key=None, news_kind=None):
         """入池/调整档位。档位可自由设置（L1=持仓段由 allocate 联动，也可手动指定）；
-        pin 为独立保护标记（pin=1 禁止删除但允许降级）。"""
+        pin 为独立保护标记（pin=1 禁止删除但允许降级）。
+        event_key/news_kind：消息组收编参数（NEWS 缓冲行落 G3 事件键与六类词表打标，
+        watchlog.event_key 是 G3 归并的键源；pool.event_key 为 stock↔事件权威落点）。
+        """
         if strategy not in STRATEGIES:
             raise ValueError(f"strategy 必须是 {STRATEGIES}")
         conn = self._conn()
@@ -30,24 +35,28 @@ class Watchlist:
                 existing = conn.execute("SELECT * FROM pool WHERE stock=?", (stock,)).fetchone()
                 if existing:
                     conn.execute("UPDATE pool SET code=COALESCE(?,code), strategy=?, pool_status='active', "
-                                 "entered_at=COALESCE(entered_at, ?) WHERE stock=?",
-                                 (code, strategy, datetime.now().isoformat(), stock))
+                                 "entered_at=COALESCE(entered_at, ?), "
+                                 "event_key=COALESCE(?, event_key) WHERE stock=?",
+                                 (code, strategy, datetime.now().isoformat(),
+                                  event_key, stock))
                     if pin is not None:
                         conn.execute("UPDATE pool SET pin=? WHERE stock=?", (1 if pin else 0, stock))
                     action = "set_strategy"
                     from_str = existing['strategy']
                 else:
                     conn.execute("INSERT INTO pool (stock, code, strategy, pool_status, "
-                                 "refresh_cadence, entered_at, pin) VALUES (?,?,?,'active',?,?,?)",
+                                 "refresh_cadence, entered_at, event_key, pin) "
+                                 "VALUES (?,?,?,'active',?,?,?,?)",
                                  (stock, code, strategy,
-                                  'daily' if strategy != 'L3' else 'event',
-                                  datetime.now().isoformat(), 1 if pin else 0))
+                                  'daily' if strategy in ('L1', 'L2') else 'event',
+                                  datetime.now().isoformat(), event_key, 1 if pin else 0))
                     action = "add"
                     from_str = None
                 conn.execute("INSERT INTO watchlog (timestamp, action, stock, strategy_from, "
-                             "strategy_to, reason, source) VALUES (?,?,?,?,?,?,?)",
+                             "strategy_to, reason, source, event_key, news_kind) "
+                             "VALUES (?,?,?,?,?,?,?,?,?)",
                              (datetime.now().isoformat(), action, stock, from_str,
-                              strategy, reason, source))
+                              strategy, reason, source, event_key, news_kind))
             return True
         finally:
             conn.close()
@@ -72,8 +81,13 @@ class Watchlist:
         finally:
             conn.close()
 
-    def remove(self, stock, source="agent", reason=""):
-        """移出池。pin=1 的股票禁止删除（可降级但不可移除）。"""
+    def remove(self, stock, source="agent", reason="", archive=False):
+        """移出池。pin=1 的股票禁止删除（可降级但不可移除）。
+
+        archive=True（sleeve-m1 新增 --archive 路径）：档案化终态——pool_status='archived'
+        + archived_at，不触发旧 removed 语义（清仓不回池，回池要新证据，方案 2.6b）。
+        archive=False（默认）→ 旧行为逐字节不变（pool_status='removed'）。
+        """
         conn = self._conn()
         try:
             row = conn.execute("SELECT strategy, pin FROM pool WHERE stock=?", (stock,)).fetchone()
@@ -82,11 +96,18 @@ class Watchlist:
             if row['pin']:
                 raise ValueError(f"{stock} 有 pin 保护（名单锁定），禁止删除；可降级到 L3 观察")
             with conn:
-                conn.execute("UPDATE pool SET pool_status='removed', exit_reason=? WHERE stock=?",
-                             (reason, stock))
+                if archive:
+                    conn.execute("UPDATE pool SET pool_status='archived', archived_at=?, "
+                                 "exit_reason=? WHERE stock=?",
+                                 (datetime.now().isoformat(), reason, stock))
+                    action = 'archive'
+                else:
+                    conn.execute("UPDATE pool SET pool_status='removed', exit_reason=? WHERE stock=?",
+                                 (reason, stock))
+                    action = 'remove'
                 conn.execute("INSERT INTO watchlog (timestamp, action, stock, strategy_from, "
                              "strategy_to, reason, source) VALUES (?,?,?,?,?,?,?)",
-                             (datetime.now().isoformat(), 'remove', stock, row['strategy'],
+                             (datetime.now().isoformat(), action, stock, row['strategy'],
                               None, reason, source))
             return True
         finally:

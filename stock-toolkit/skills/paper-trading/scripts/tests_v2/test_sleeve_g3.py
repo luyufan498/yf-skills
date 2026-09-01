@@ -1,0 +1,166 @@
+"""G3 归并 / fail-open / 迁移 FIFO 对账 / 加仓锁测试（sleeve-m1）"""
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+import pytest
+from unittest.mock import patch
+
+from paper_trading_v2.gate import GateViolation
+
+
+@pytest.fixture(autouse=True)
+def no_network(ws):
+    with patch('paper_trading_v2.trading.PaperTrader.init_account'), \
+         patch('paper_trading_v2.trading.PaperTrader.get_account') as mg:
+        def _fake_get(stock_name):
+            from paper_trading_v2.storage import SqlStorage
+            return SqlStorage(ws / 'master_pool.db').load_account(stock_name)
+        mg.side_effect = _fake_get
+        yield
+
+
+@pytest.fixture
+def env(ws, monkeypatch):
+    monkeypatch.setenv('STOCK_ANALYSIS_WORKSPACE', str(ws))
+    return ws
+
+
+@pytest.fixture
+def pools(ws):
+    from paper_trading_v2.master_pool import MasterPoolManager
+    m = MasterPoolManager(ws / 'master_pool.db')
+    m.init_pool(10000000)
+    m.init_pool(2000000, pool='sleeve')
+    return m
+
+
+def _opener(ws):
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    return SleeveOpener(ws / 'master_pool.db')
+
+
+def test_g3_merge_into_active_slot_no_new_slot(pools, ws):
+    """G3：同键活跃槽 → 新成员并入，等权重算，不加坑，不重复扣坑。"""
+    r1 = _opener(ws).open_slot(['甲票', '乙票'], budget=300000, event_key='ND#1',
+                               news_kind='policy', code_map={'甲票': 'sh1', '乙票': 'sh2'})
+    assert r1['mode'] == 'open'
+    r2 = _opener(ws).open_slot(['丙票'], budget=100000, event_key='ND#1',
+                               news_kind='policy', code_map={'丙票': 'sh3'})
+    assert r2['mode'] == 'merge'
+    conn = pools._conn()
+    slots = conn.execute("SELECT COUNT(*) FROM event_slots WHERE event_key='ND#1'").fetchone()[0]
+    members = [dict(x) for x in conn.execute(
+        "SELECT stock, weight FROM event_slot_members WHERE event_key='ND#1'")]
+    slot = dict(conn.execute("SELECT budget, status FROM event_slots WHERE event_key='ND#1'"
+                             ).fetchone())
+    shares = {a['stock_name']: a['capital_total'] for a in
+              (dict(x) for x in conn.execute("SELECT stock_name, capital_total FROM accounts"))}
+    conn.close()
+    assert slots == 1                                   # 不加坑
+    assert {m['stock'] for m in members} == {'甲票', '乙票', '丙票'}
+    assert all(abs(m['weight'] - 1 / 3) < 1e-9 for m in members)   # 等权重算
+    assert slot['budget'] == 400000                     # 300k + 100k
+    # 等权补足语义：新成员补足到新份额；已有成员不回收（只补缺口）——
+    # 权重列（1/3）是权威，账户现金 ≥ 份额
+    assert abs(shares['丙票'] - 400000 / 3) < 1e-6
+    assert shares['甲票'] >= 400000 / 3 and shares['乙票'] >= 400000 / 3
+    assert abs(pools.show(pool='sleeve')['free'] - (2000000 - 300000 - 400000 / 3)) < 1
+
+
+def test_g3_second_wave_after_closed_slot_new_key(pools, ws):
+    """G3：键已关闭再遇同催化 → 开新槽（二波新键 #b2），永不并回旧键。"""
+    op = _opener(ws)
+    op.open_slot(['甲票'], budget=100000, event_key='ND#2', news_kind='policy')
+    # 模拟关闭：直接置 archived
+    conn = pools._conn()
+    conn.execute("UPDATE event_slots SET status='archived' WHERE event_key='ND#2'")
+    conn.commit(); conn.close()
+    r2 = op.open_slot(['甲票'], budget=100000, event_key='ND#2', news_kind='policy',
+                      code_map={'甲票': 'sh1'})
+    assert r2['mode'] == 'open' and r2['derived_wave'] == 'ND#2#b2'
+    conn = pools._conn()
+    keys = [x[0] for x in conn.execute("SELECT event_key FROM event_slots ORDER BY event_key")]
+    conn.close()
+    assert 'ND#2' in keys and 'ND#2#b2' in keys
+
+
+def test_g3_fail_open_missing_key(pools, ws):
+    """fail-open：缺键 → 'auto:<首票>:<日期>' 兜底键 + 影子账#9。"""
+    r = _opener(ws).open_slot(['兜底票'], budget=100000, news_kind='other', reason='无键')
+    assert r['key_missing'] is True
+    assert r['event_key'].startswith('auto:兜底票:')
+    conn = pools._conn()
+    n9 = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='event_key_missing'"
+                      ).fetchone()[0]
+    slot = conn.execute("SELECT COUNT(*) FROM event_slots WHERE event_key=?",
+                        (r['event_key'],)).fetchone()[0]
+    conn.close()
+    assert n9 >= 1 and slot == 1
+
+
+def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
+    """sleeve-migrate：主仓 FIFO 成本基准正确（operations/positions 对账）+ 双 ledger 守恒。"""
+    op = _opener(ws)
+    op.open_slot(['迁票'], budget=100000, event_key='ND#3', news_kind='sentiment',
+                 code_map={'迁票': 'sh600100'})
+    op.fill_pending(event_key='ND#3', open_prices={'迁票': 10.0}, skip_conditions=True)
+    # 部分止盈卖 1/3 @ 13（模拟保护链出场）→ 剩余成本基准变化
+    from paper_trading_v2.db import get_connection
+    conn = get_connection(ws / 'master_pool.db')
+    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='迁票' AND grp='news'"
+                       ).fetchone()[0]
+    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM operations WHERE account_id=?",
+                       (aid,)).fetchone()[0]
+    conn.execute("INSERT INTO operations (account_id, seq, type, price, quantity, amount, cost,"
+                 " profit, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                 (aid, seq, 'sell', 13.0, 3333, 43329.0, 33330.0, 9999.0,
+                  '2026-09-01T10:00:00', 'TP1 模拟'))
+    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions WHERE account_id=?",
+                       (aid,)).fetchone()[0]
+    conn.execute("INSERT INTO positions (account_id, seq, operation, quantity, price, "
+                 "total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?)",
+                 (aid, seq, 'sell', 3333, 13.0, 33330.0, '2026-09-01T10:00:00', 'TP1 模拟'))
+    # 卖出所得入账（真实路径由 sell_stock 更新 available；此处对账模拟）
+    conn.execute("UPDATE accounts SET capital_available=capital_available+43329.0 "
+                 "WHERE id=?", (aid,))
+    conn.commit(); conn.close()
+
+    from paper_trading_v2.sleeve_migrate import SleeveMigrator
+    r = SleeveMigrator(ws / 'master_pool.db').migrate('迁票', reason='V11')
+    assert r['qty'] == 6667 and abs(r['avg_cost'] - 10.0) < 1e-6   # FIFO 剩余成本
+    conn = get_connection(ws / 'master_pool.db')
+    aid_t = conn.execute("SELECT id FROM accounts WHERE stock_name='迁票' AND grp='tech'"
+                         ).fetchone()[0]
+    # positions 对账：主仓 BUY 行 qty/price/total_cost
+    pos = dict(conn.execute("SELECT * FROM positions WHERE account_id=? AND operation='buy' "
+                            "ORDER BY seq DESC LIMIT 1", (aid_t,)).fetchone())
+    # operations 对账：迁移成本 BUY 行
+    op_row = dict(conn.execute("SELECT * FROM operations WHERE account_id=? AND type='buy' "
+                               "ORDER BY seq DESC LIMIT 1", (aid_t,)).fetchone())
+    conn.close()
+    assert pos['quantity'] == 6667 and abs(pos['price'] - 10.0) < 1e-6
+    assert abs(pos['total_cost'] - 66670.0) < 1e-6
+    assert abs(op_row['amount'] - 66670.0) < 1e-6
+    assert '迁移成本' in (op_row['note'] or '')
+    # 资金守恒：主池 -66670，消息池 +（现金 43329 + 结转 66670）
+    main_free = pools.show()['free']
+    sleeve_free = pools.show(pool='sleeve')['free']
+    assert abs(main_free - (10000000 - 66670)) < 1
+    assert abs(sleeve_free - (2000000 - 100000 + 43329.0 + 66670.0)) < 1
+
+
+def test_topup_locked_rejects_second_topup_after_migrate(pools, ws):
+    """加仓锁：migrated 槽 → mpm.topup 直接拒绝（闸门 + shadow_log）。"""
+    op = _opener(ws)
+    op.open_slot(['锁票'], budget=100000, event_key='ND#4', news_kind='policy',
+                 code_map={'锁票': 'sh600004'})
+    op.fill_pending(event_key='ND#4', open_prices={'锁票': 10.0}, skip_conditions=True)
+    from paper_trading_v2.sleeve_migrate import SleeveMigrator
+    SleeveMigrator(ws / 'master_pool.db').migrate('锁票', reason='V11')
+    with pytest.raises(GateViolation, match='加仓锁'):
+        pools.topup('锁票', 50000, reason='二次加仓')
+    conn = pools._conn()
+    n = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='gate_violation' "
+                     "AND key='锁票'").fetchone()[0]
+    conn.close()
+    assert n >= 1

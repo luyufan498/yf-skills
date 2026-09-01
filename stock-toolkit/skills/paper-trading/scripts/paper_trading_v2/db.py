@@ -1,9 +1,10 @@
 """SQLite 连接 + schema DDL + 迁移版本"""
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 7  # 与 migrate_db 实际最高版同步（v7: L3 事件 sleeve，2026-09-01）
+SCHEMA_VERSION = 8  # 与 migrate_db 实际最高版同步（v8: sleeve_ledger CHECK(free>=0)，2026-09-01）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -214,7 +215,7 @@ CREATE TABLE IF NOT EXISTS event_slot_members (
 CREATE TABLE IF NOT EXISTS sleeve_ledger (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     total REAL NOT NULL,
-    free REAL NOT NULL,
+    free REAL NOT NULL CHECK (free >= 0),   -- v8: 资金底线（R2/A1，负余额=账本错账即崩）
     updated_at TEXT
 );
 
@@ -241,8 +242,9 @@ CREATE INDEX IF NOT EXISTS idx_pool_event_key ON pool(event_key);
 
 # accounts 重建（v7）：放开 UNIQUE(stock_name) → UNIQUE(stock_name, grp)
 # 同票双组：sleeve 成员账户 grp='news'，主仓 grp='tech'；以 grp 列路由，非名字约定
+# （v8/R3 起按安全重建模式使用：表名即最终名 accounts，重建流程见 _rebuild_accounts_v7）
 ACCOUNTS_V7_DDL = """
-CREATE TABLE accounts_v7 (
+CREATE TABLE accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     stock_name TEXT NOT NULL,
     stock_code TEXT,
@@ -257,6 +259,22 @@ CREATE TABLE accounts_v7 (
     UNIQUE (stock_name, grp)
 );
 """
+
+# v8：sleeve_ledger 加 CHECK(free>=0)（R2/A1 并发双花资金底线——负余额即账本错账，
+# 在写入瞬间崩溃而不是静默污染后续对账）。重建走 R3 安全迁移模式（_rebuild_sleeve_ledger_v8）。
+SLEEVE_LEDGER_V8_DDL = """
+CREATE TABLE sleeve_ledger (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total REAL NOT NULL,
+    free REAL NOT NULL CHECK (free >= 0),
+    updated_at TEXT
+);
+"""
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (name,)).fetchone() is not None
+
 
 def get_connection(db_path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
@@ -362,30 +380,80 @@ def migrate_db(conn: sqlite3.Connection):
                 conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("UPDATE schema_meta SET version=7")
         conn.commit()
+    if current < 8:
+        # v8: sleeve_ledger 加 CHECK(free>=0)（R2/A1 资金底线；R3 安全迁移重建模式首个应用案例）。
+        # 重建与版本号同一事务提交：中途崩溃回滚到 v7 干净态，重跑走恢复分支。
+        _rebuild_sleeve_ledger_v8(conn)
+        conn.execute("UPDATE schema_meta SET version=8")
+        conn.commit()
+
+
+def _rebuild_sleeve_ledger_v8(conn: sqlite3.Connection):
+    """v8：sleeve_ledger 加 CHECK(free>=0)——R3 安全迁移重建模式首个应用案例（F1）。
+
+    模式：RENAME 旧表→建新表→灌数→DROP 旧表；任何时点崩溃，数据都在 *_old 或新表
+    之一，永不双失。重跑入口检测到 <table>_old 残留（上次重建中断）→ 先走恢复分支：
+    半成品新表可弃（权威数据在 *_old），还原后整段重做。禁止函数开头无条件 DROP。
+    （sleeve_ledger 无子表引用，RENAME 不产生 FK 引用悬空，无需 legacy_alter_table。）
+    """
+    old = 'sleeve_ledger_old'
+    if _table_exists(conn, old):
+        # 恢复分支：上次重建中断——半成品新表可弃，权威数据在 *_old
+        conn.execute("DROP TABLE IF EXISTS sleeve_ledger")
+        conn.execute(f"ALTER TABLE {old} RENAME TO sleeve_ledger")
+    if not _table_exists(conn, 'sleeve_ledger'):
+        conn.execute(SLEEVE_LEDGER_V8_DDL)      # 全新库：直接按 v8 定义建
+        return
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                       "AND name='sleeve_ledger'").fetchone()
+    if row and re.search(r"free\s+REAL\s+NOT\s+NULL\s+CHECK", row[0] or '', re.I):
+        return                                   # 已是 v8 定义（幂等）
+    conn.execute("ALTER TABLE sleeve_ledger RENAME TO sleeve_ledger_old")
+    conn.execute(SLEEVE_LEDGER_V8_DDL)
+    conn.execute("INSERT INTO sleeve_ledger (id, total, free, updated_at) "
+                 "SELECT id, total, free, updated_at FROM sleeve_ledger_old")
+    conn.execute("DROP TABLE sleeve_ledger_old")
 
 
 def _rebuild_accounts_v7(conn: sqlite3.Connection):
     """accounts 重建：UNIQUE(stock_name) → UNIQUE(stock_name, grp)，grp 缺省 'tech'。
 
+    R3 安全迁移重建模式（F1）：RENAME 旧表→建新表→灌数→DROP 旧表，重跑入口检测
+    accounts_old 残留先走恢复分支（禁函数开头无条件 DROP tmp）。
+    调用方须已 PRAGMA foreign_keys=OFF + legacy_alter_table=ON（父表重建时子表
+    REFERENCES 不随 RENAME 改写，避免 DROP 旧表后子表引用悬空）。
     老库 accounts 无 grp 列 → 全部按 'tech' 迁入；已有 grp 列（重复迁移）→ 原值保留。
     重建后 sqlite_sequence 随 AUTOINCREMENT 从 max(id) 续号，不会复用已删 id。
     """
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()]
-    if 'grp' in cols:
-        # 已有 grp 列（全新库走 SCHEMA_DDL 新定义，或重复迁移）——确认唯一约束已放开则跳过
-        idx = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'"
-                           ).fetchone()
-        if idx and 'stock_name, grp' in idx[0].replace('`', '').replace('\n', ' '):
+    legacy_was = conn.execute("PRAGMA legacy_alter_table").fetchone()[0]
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        old = 'accounts_old'
+        if _table_exists(conn, old):
+            # 恢复分支：上次重建中断——半成品新表可弃，权威数据在 accounts_old
+            conn.execute("DROP TABLE IF EXISTS accounts")
+            conn.execute("DROP TABLE IF EXISTS accounts_v7")   # 旧实现残留的 tmp 表
+            conn.execute(f"ALTER TABLE {old} RENAME TO accounts")
+        if not _table_exists(conn, 'accounts'):
+            conn.execute(ACCOUNTS_V7_DDL)                       # 全新库
             return
-        grp_expr = "grp"
-    else:
-        grp_expr = "'tech'"
-    conn.execute("DROP TABLE IF EXISTS accounts_v7")
-    conn.executescript(ACCOUNTS_V7_DDL)
-    conn.execute(
-        f"INSERT INTO accounts_v7 (id, stock_name, stock_code, capital_total, capital_available, "
-        f"capital_used, fifo_index, fifo_offset, created_at, updated_at, grp) "
-        f"SELECT id, stock_name, stock_code, capital_total, capital_available, capital_used, "
-        f"fifo_index, fifo_offset, created_at, updated_at, {grp_expr} FROM accounts")
-    conn.execute("DROP TABLE accounts")
-    conn.execute("ALTER TABLE accounts_v7 RENAME TO accounts")
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()]
+        if 'grp' in cols:
+            idx = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                               "AND name='accounts'").fetchone()
+            if idx and 'stock_name, grp' in idx[0].replace('`', '').replace('\n', ' '):
+                return                 # 唯一约束已放开（幂等跳过）
+            grp_expr = "grp"
+        else:
+            grp_expr = "'tech'"
+        conn.execute("ALTER TABLE accounts RENAME TO accounts_old")
+        conn.execute(ACCOUNTS_V7_DDL)
+        conn.execute(
+            f"INSERT INTO accounts (id, stock_name, stock_code, capital_total, "
+            f"capital_available, capital_used, fifo_index, fifo_offset, created_at, "
+            f"updated_at, grp) SELECT id, stock_name, stock_code, capital_total, "
+            f"capital_available, capital_used, fifo_index, fifo_offset, created_at, "
+            f"updated_at, {grp_expr} FROM accounts_old")
+        conn.execute("DROP TABLE accounts_old")
+    finally:
+        conn.execute(f"PRAGMA legacy_alter_table = {1 if legacy_was else 0}")

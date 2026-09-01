@@ -203,8 +203,10 @@ def atr_sync_daily() -> list[str]:
     alerts = []
     for s in stocks:
         out = ptrade2("atr-sync", s, timeout=60)
-        if not out:
-            alerts.append(f"⚠️ {s} atr-sync 失败（止损位未同步，需人工核验）")
+        # 半盲修复（cron-audit 2026-09-02）：ptrade2 报错文本走 stdout 非空，
+        # 旧判据 `if not out` 看不见失败 → 报错关键字并入告警条件
+        if not out or "报错" in out or "❌" in out or "Error" in out:
+            alerts.append(f"⚠️ {s} atr-sync 失败（止损位未同步，需人工核验）: {out[:120]}")
     st["last_atr_date"] = today
     save_state(st)
     return alerts
@@ -324,9 +326,16 @@ def check_naked_conditions() -> list[str]:
     conn = sqlite3.connect(POOL_DB)
     conn.row_factory = sqlite3.Row
     try:
-        # open 段的股票（持仓股）
+        # open 段的股票（持仓股）——只查**有实际持仓**（FIFO 净 qty>0）的段：
+        # v9 段即账户 + M3 开闸后 sleeve-open 建的 NEWS pending 成员段是 open 段但 qty=0，
+        # 保护链三件套由 sleeve-fill 成交时挂载，空槽不是"裸奔"（2026-09-02 误报 6 只实锤）。
+        # L1 同理：清仓未 release 的空段也无需保护线。裸奔=有股份无保护线。
         open_stocks = [r["stock"] for r in conn.execute(
-            "SELECT stock FROM position WHERE status='open'").fetchall()]
+            "SELECT p.stock FROM position p WHERE p.status='open' AND EXISTS ("
+            "  SELECT 1 FROM trades t WHERE t.account_id=p.id"
+            "  GROUP BY t.account_id"
+            "  HAVING SUM(CASE WHEN t.operation='buy' THEN t.quantity"
+            "                  ELSE -t.quantity END) > 0)").fetchall()]
         if not open_stocks:
             return []
         alerts = []
@@ -651,6 +660,39 @@ def _kv_set(key: str, value: dict):
         conn.close()
 
 
+def check_sleeve_pending() -> list[str]:
+    """sleeve 槽状态可见性（cron-audit P0 根修，2026-09-02）：
+    交易日 ≥9:30 且有 pending 槽 → 持久输出 [SLEEVE] 行 → monitor 必唤醒直到成交/弃单。
+    字节稳定（开槽日/预算/留痕计数，无价格）；成交后行消失→确认唤醒。
+    T+1 口径：开槽日=今日的槽只报'禁fill'，隔夜 pending 才是'必跑 sleeve-fill'。"""
+    if not os.path.exists(POOL_DB) or not is_trading_day() or now_hhmm() < "09:30":
+        return []
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        slots = conn.execute(
+            "SELECT event_key,opened_at,budget FROM event_slots "
+            "WHERE fill_status='pending' AND status IN ('open','partial') "
+            "ORDER BY event_key").fetchall()
+        blocked = conn.execute(
+            "SELECT COUNT(*) n FROM shadow_log "
+            "WHERE kind='fill_blocked' AND created_at>=?", (today,)).fetchone()["n"]
+    finally:
+        conn.close()
+    out = []
+    for s in slots:
+        od = str(s["opened_at"])[:10]
+        if od >= today:
+            out.append(f"[SLEEVE] {s['event_key']} 今日开槽→次日(T+1)才可成交，本轮禁fill")
+        else:
+            out.append(f"[SLEEVE] {s['event_key']} 待成交 开槽{od} "
+                       f"预算¥{s['budget']:,.0f} → 本轮必跑 sleeve-fill")
+    if slots and blocked:
+        out.append(f"[SLEEVE] 今日 fill_blocked 留痕 {blocked} 条（R7 拒单，读 shadow_log 核验，禁绕防线）")
+    return out
+
+
 def check_calendar() -> list[str]:
     """CALENDAR 事件到期检测：到期时刻 ≤ now 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
 
@@ -786,6 +828,7 @@ def main() -> int:
         if len(tasks) > 3:
             lines.append(f"  … 其余 {len(tasks)-3} 个（按优先级逐一 claim 处理，单轮≤3 个防截断）")
     lines.extend(atr_sync_daily())
+    lines.extend(check_sleeve_pending())
     lines.extend(check_price_triggers())
     lines.extend(check_naked_conditions())
     lines.extend(check_watch_points())

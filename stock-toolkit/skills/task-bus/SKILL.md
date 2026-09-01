@@ -59,6 +59,10 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 - **⚠️ 未到期不唤醒（2026-08-14 修复）**：CALENDAR 长期 pending 是常态（挂起等 due），**不是待消费任务**——`check_tasks` 已排除 CALENDAR，未到期**不**出现在 [EVENT] 列表、不触发心跳；只有 `check_calendar` 对到期事件输出 📅 提醒唤醒。改 watch_scan 时勿把 CALENDAR 加回 check_tasks（否则 9 个未到期回查点会每 tick 白唤醒）
 - **⏰ 到期时刻语义（2026-08-18 修复，防凌晨空触发）**：`check_calendar` 原按天比较（due ≤ 今天），心跳全天 30 分钟跑 → **due 当天凌晨 00:00 就触发**，但"等中报披露"的事件那时财报还没出（空转）。现改为时刻级：**纯日期 `2026-08-20` → 当天 15:30（收盘后）到期**（等财报/公告/当日行情齐了再唤醒）；**带时间 `2026-08-20T10:00` → 精确到该时刻**（紧急事项显式写时间）。due 格式非法 → 跳过不触发不崩溃。分析 agent 挂 CALENDAR 时按此语义写 due：默认纯日期（收盘后触发），需要盘中/盘前触发才写时间。
 
+### 裸奔告警语义（2026-09-02 修订）
+
+watch_scan `check_naked_conditions` 的 `[ALERT] 裸奔` = **有实际持仓（FIFO 净 qty>0）的 open 段**无任何 active cost_protection/trailing_stop。历史 bug：M3 开闸后 sleeve-open 建的 NEWS pending 成员段是 open 段但 qty=0（保护链三件套由 sleeve-fill 成交时挂载），旧口径按 open 段整体判定误报 6 只裸奔（9/2 实锤，已修：SQL 加净 qty>0 过滤）。消费该告警先核该段净 qty，qty=0 的空槽/pending 段直接忽略，不补线。
+
 ### WATCH_ALERT 价格条件触发（watch_scan 自动写入）
 
 `watch_scan.py` 每 tick 读 `conditions` 表 active 条件 vs 实时价，穿越触发时自动写事件，payload 规范：

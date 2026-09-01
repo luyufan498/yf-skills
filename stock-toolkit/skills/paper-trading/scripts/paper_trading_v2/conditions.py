@@ -45,6 +45,7 @@ class ConditionStatus(str, Enum):
     TRIGGERED = "triggered" # 已触发
     EXPIRED = "expired"     # 已过期
     SUSPENDED = "suspended" # 暂停（空仓时）
+    ARCHIVED = "archived"   # 僵尸归档（M1.6 U7.2：closed 段遗留条件；加载侧兼容，枚举缺位曾致 atr-sync 整股崩溃）
 
 
 # ========== 强制复审触发器 ==========

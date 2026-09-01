@@ -481,6 +481,7 @@ def sleeve_fill(
     atr: Optional[str] = typer.Option(None, "--atr", help="ATR 注入 股票=ATR 或单一标量（缺省触网算）"),
     prev_close: list[str] = typer.Option(None, "--prev-close", help="昨收注入 股票=价格（R7 价差防线参照+影子账#7）"),
     skip_conditions: bool = typer.Option(False, "--skip-conditions", help="跳过挂三件套（不推荐）"),
+    allow_same_day: bool = typer.Option(False, "--allow-same-day", help="豁免 T+1 门：今日开槽今日成交（仅测试/事故补跑）"),
 ):
     """开盘成交分支（心跳 ≥9:30 首扫调用）：pending → 按当日开盘价成交 + 挂三件套
     （R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交留痕 fill_blocked）"""
@@ -496,8 +497,53 @@ def sleeve_fill(
 
     atr_arg = _kv([atr]) if (atr and '=' in atr) else \
         (float(atr) if atr else None)
+    # T+1 硬门（cron-audit 2026-09-02 P1）：开槽日=今日的槽默认拒绝成交（灰度口径=
+    # 开槽次日开盘价成交）。--allow-same-day 供测试/事故补跑显式豁免，执行留痕。
+    def _report(res_list):
+        if not res_list:
+            typer.echo("IDLE（无 pending 待成交单）")
+            return
+        for s in res_list:
+            for f in s['filled']:
+                if 'qty' in f:
+                    typer.echo(f"✅ {s['event_key']} {f['stock']} 买 {f['qty']} 股 @ ¥{f['price']} "
+                               f"= ¥{f['amount']:,.0f}")
+                else:
+                    typer.echo(f"⏭ {s['event_key']} {f['stock']} {f.get('note','')}")
+            for st, why in s['skipped']:
+                typer.echo(f"⏭ {s['event_key']} {st} 未成交：{why}")
+
+    opener = SleeveOpener()
+    if not allow_same_day:
+        from datetime import date as _date
+        _today = _date.today().isoformat()
+        _c = opener._conn()
+        try:
+            pend = _c.execute(
+                "SELECT event_key, opened_at FROM event_slots "
+                "WHERE fill_status='pending' AND status IN ('open','partial') "
+                "ORDER BY event_key").fetchall()
+        finally:
+            _c.close()
+        eligible = [s['event_key'] for s in pend if str(s['opened_at'])[:10] < _today]
+        blocked = [s['event_key'] for s in pend if str(s['opened_at'])[:10] >= _today]
+        if event_key is not None:
+            if event_key in blocked:
+                typer.echo(f"❌ {event_key} 今日开槽，T+1 门拒绝成交（--allow-same-day 可豁免，"
+                           f"仅测试/事故补跑用）", err=True)
+                raise typer.Exit(1)
+        else:
+            for k in blocked:
+                typer.echo(f"⏭ T+1 门跳过 {k}（今日开槽，明日成交）")
+            if not eligible:
+                typer.echo("无隔夜 pending 槽可成交（今日开槽的槽按 T+1 明日成交）")
+                return
+            _report([r for k in eligible for r in opener.fill_pending(
+                event_key=k, open_prices=_kv(price), atr=atr_arg,
+                prev_close_map=_kv(prev_close), skip_conditions=skip_conditions)])
+            return
     try:
-        res = SleeveOpener().fill_pending(event_key=event_key, open_prices=_kv(price),
+        res = opener.fill_pending(event_key=event_key, open_prices=_kv(price),
                                           atr=atr_arg, prev_close_map=_kv(prev_close),
                                           skip_conditions=skip_conditions)
         if not res:

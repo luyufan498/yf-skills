@@ -76,10 +76,12 @@ def test_cli_sleeve_open_fill_close_state_machine(sleeve_ready):
     assert ledger_free == 1800000
 
     # fill（开盘价注入 + ATR 注入，挂三件套）
+    # fill 走 --allow-same-day：同进程"开槽→立即成交"状态机验证需豁免 T+1 门
+    # （T+1 门本身及豁免路径由 test_sleeve_t1_gate 专测锁住）
     with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
                 return_value=[{'date': '2026-08-01', 'open': 10, 'high': 11, 'low': 9,
                                'close': 10, 'volume': 1}] * 30):
-        r = _run(app, 'sleeve-fill', '--price', '成员甲=10.0', '--price', '成员乙=20.0')
+        r = _run(app, 'sleeve-fill', '--allow-same-day', '--price', '成员甲=10.0', '--price', '成员乙=20.0')
     assert r.exit_code == 0, r.output
     assert '成员甲' in r.output and '成员乙' in r.output
     conn = get_connection(_db(sleeve_ready))
@@ -262,3 +264,44 @@ def test_cli_sleeve_cancel_drop_order(sleeve_ready):
     assert slot['status'] == 'archived' and slot['fill_status'] == 'cancelled'
     assert drop == 1
     assert abs(free - 2000000) < 1
+
+
+def test_cli_sleeve_fill_t1_gate(sleeve_ready):
+    """T+1 硬门回归锁（cron-audit 2026-09-02 P1）：
+    今日开槽批量跳过/指定键拒绝/隔夜槽放行成交。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    from unittest.mock import patch as _patch
+    SleeveOpener(_db(sleeve_ready)).open_slot(['T1票'], budget=100000,
+                                              event_key='ND#960', news_kind='policy')
+    kl = [{'date': '2026-08-01', 'open': 10, 'high': 11, 'low': 9,
+           'close': 10, 'volume': 1}] * 30
+    # ① 今日开槽：批量 fill 须跳过（槽保持 pending、不碰钱）
+    with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
+                return_value=kl):
+        r = _run(app, 'sleeve-fill', '--price', 'T1票=10.0')
+    assert r.exit_code == 0 and 'T+1 门跳过 ND#960' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    assert conn.execute("SELECT fill_status FROM event_slots WHERE event_key='ND#960'"
+                        ).fetchone()[0] == 'pending'
+    conn.close()
+    # ② 指定 event-key 打今日槽：拒绝退出码 1
+    r = _run(app, 'sleeve-fill', '--event-key', 'ND#960', '--price', 'T1票=10.0')
+    assert r.exit_code == 1 and 'T+1 门拒绝' in r.output
+    # ③ opened_at 回填为昨日（=隔夜槽）：批量 fill 正常成交（明晨真实路径）。
+    # ATR 显式注入：mock 常量价 K 线 TR=0 → R7 判 ATR 解析失败拒单，与本锁无关
+    conn = get_connection(_db(sleeve_ready))
+    with conn:
+        conn.execute("UPDATE event_slots SET opened_at='2000-01-01T09:00:00' "
+                     "WHERE event_key='ND#960'")
+    conn.close()
+    with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
+                return_value=kl):
+        r = _run(app, 'sleeve-fill', '--price', 'T1票=10.0', '--atr', 'T1票=0.5')
+    assert r.exit_code == 0 and 'T1票' in r.output and '买' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    fs = conn.execute("SELECT fill_status FROM event_slots WHERE event_key='ND#960'"
+                      ).fetchone()[0]
+    conn.close()
+    assert fs == 'filled'

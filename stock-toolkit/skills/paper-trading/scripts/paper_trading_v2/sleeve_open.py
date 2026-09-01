@@ -126,6 +126,15 @@ class SleeveOpener:
                     for s in new_members:
                         self._ensure_member_account(conn, s, code_map.get(s), now,
                                                     reset=False, capital=0)
+                        # 段先建（budget=0），由 _topup_member 与账户同步计入——
+                        # 保证"段预算恒=账户实际占用（不超分）"在 merge 下同样成立
+                        if not conn.execute(
+                            "SELECT 1 FROM position WHERE stock=? AND status='open' "
+                            "AND strategy='NEWS'", (s,)).fetchone():
+                            conn.execute(
+                                "INSERT INTO position (stock, code, strategy, status, budget, "
+                                "topup_total, opened_at) VALUES (?,?,'NEWS','open',0,0,?)",
+                                (s, code_map.get(s), now))
                     # 补足所有成员到新等权份额，实扣 = Σ缺口（等权重算，不加坑）
                     deduct = 0.0
                     if not pure_merge:
@@ -149,15 +158,6 @@ class SleeveOpener:
                         for s in all_members:
                             self._topup_member(conn, s, share, now)
                     for s in new_members:
-                        if not conn.execute(
-                            "SELECT 1 FROM position WHERE stock=? AND status='open' "
-                            "AND strategy='NEWS'", (s,)).fetchone():
-                            # 段预算 0 起步、由 _topup_member 计入——避免 budget 双计
-                            # （纯归并恒 0=账户实际占用，"不超分"不变量在 merge 下同样成立）
-                            conn.execute(
-                                "INSERT INTO position (stock, code, strategy, status, budget, "
-                                "topup_total, opened_at) VALUES (?,?,'NEWS','open',0,0,?)",
-                                (s, code_map.get(s), now))
                         conn.execute(
                             "INSERT OR IGNORE INTO event_slot_members (event_key, stock, weight, "
                             "joined_at) VALUES (?,?,?,?)", (event_key, s, 1.0 / n, now))

@@ -17,9 +17,15 @@ def test_schema_created(ws):
     migrate_db(conn)
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    for t in ['accounts', 'positions', 'operations', 'conditions',
-              'condition_history', 'exright_applied', 'schema_meta']:
-        assert t in tables
+    # v9（M1.6 账户层退役）：positions→trades（positions 仅存为兼容视图）、
+    # accounts 退役为 accounts_old（保留禁 DROP）
+    for t in ['trades', 'operations', 'conditions', 'condition_history',
+              'exright_applied', 'schema_meta', 'position', 'accounts_old']:
+        assert t in tables, f"缺表 {t}"
+    assert 'accounts' not in tables, "accounts 应已退役（仅存 accounts_old）"
+    views = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'").fetchall()]
+    assert 'positions' in views, "positions 兼容视图（INSTEAD OF 触发器垫片）应存在"
     conn.close()
 
 def test_save_load_account_roundtrip(store):
@@ -111,7 +117,9 @@ def test_update_existing_account(store):
                                capital_pool=CapitalPool(total=500000, available=400000, used=100000)))
     loaded = store.load_account('赛力斯')
     assert loaded.capital_pool.available == 400000
-    assert loaded.capital_pool.used == 100000
+    # v9 段即账户：used 不再是存储列（=FIFO 占用成本，从 trades 现算）；
+    # 无流水段 → used=0，段现金（cash）仍是权威存储
+    assert loaded.capital_pool.used == 0
 
 def test_delete_account_cascades(store):
     store.save_account(Account(stock_name='英维克', stock_code='sz000301',
@@ -121,7 +129,7 @@ def test_delete_account_cascades(store):
     store.delete_account('英维克')
     conn = store._conn()
     try:
-        c = conn.execute("SELECT COUNT(*) c FROM positions").fetchone()['c']
+        c = conn.execute("SELECT COUNT(*) c FROM trades").fetchone()['c']
         assert c == 0
     finally:
         conn.close()

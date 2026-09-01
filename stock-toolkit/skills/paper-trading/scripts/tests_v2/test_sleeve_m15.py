@@ -13,6 +13,7 @@ import pytest
 from unittest.mock import patch
 
 from paper_trading_v2.gate import GateViolation
+from tests_v2.v9_helpers import money_label_sum
 
 
 @pytest.fixture(autouse=True)
@@ -53,8 +54,16 @@ def _conn(env):
     return get_connection(env / 'master_pool.db')
 
 
+def _seg_id(env, stock):
+    c = _conn(env)
+    row = c.execute("SELECT id FROM position WHERE stock=? AND status='open' "
+                    "AND strategy='NEWS'", (stock,)).fetchone()
+    c.close()
+    return row[0] if row else None
+
+
 def _identity(conn):
-    """系统资金恒等式：pool_ledger.free + sleeve_ledger.free + Σaccounts.capital_total。"""
+    """系统资金恒等式（v9）：pool_ledger.free + sleeve_ledger.free + Σopen段budget。"""
     pool_free = conn.execute("SELECT free FROM pool_ledger").fetchone()[0]
     sleeve_free = conn.execute("SELECT free FROM sleeve_ledger").fetchone()[0]
     acct = money_label_sum(conn)
@@ -106,8 +115,9 @@ def test_race_concurrent_fill_no_double_buy(pools, env):
     for t in ts:
         t.join()
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='竞成票'").fetchone()[0]
-    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE account_id=? AND "
+    aid = conn.execute("SELECT id FROM position WHERE stock='竞成票' AND status='open'"
+                       ).fetchone()[0]
+    buys = conn.execute("SELECT COUNT(*) FROM trades WHERE account_id=? AND "
                         "operation='buy'", (aid,)).fetchone()[0]
     conn.close()
     assert buys <= 1, f"双买入 {buys} 笔"
@@ -169,9 +179,9 @@ def test_segment_transfer_bridge_e2e_sell_topup_release(pools, env, monkeypatch)
     slot = dict(conn.execute("SELECT * FROM event_slots WHERE event_key='ND#B15'").fetchone())
     assert slot['status'] == 'migrated' and slot['topup_locked'] == 1
     assert slot['fill_status'] == 'filled'          # 不回 pending
-    news_acct = conn.execute("SELECT capital_total FROM accounts WHERE stock_name='桥票' "
-                             "AND grp='news'").fetchone()[0]
-    assert news_acct == 0                            # 历史壳清零
+    news_cash = conn.execute("SELECT cash FROM position WHERE stock='桥票' AND "
+                             "status='open'").fetchone()[0]
+    assert news_cash == 0                            # 段转承接：段现金清零（原现金 A 回消息池）
     inv1, pf1, sf1, _ = _identity(conn)
     assert abs(pf1 - (10000000 - 100000)) < 0.01
     assert abs(sf1 - 2000000) < 0.01
@@ -207,9 +217,10 @@ def test_segment_transfer_bridge_e2e_sell_topup_release(pools, env, monkeypatch)
         acct = trader.sell_stock('桥票', sell_all=True, note='保护链触发')
     assert acct.capital_pool.available == pytest.approx(150000, abs=1)   # 10000股@12 + 承接注资余 30000
     conn = _conn(env)
-    aid_t = conn.execute("SELECT id FROM accounts WHERE stock_name='桥票' AND grp='tech'"
-                         ).fetchone()[0]
-    assert conn.execute("SELECT COUNT(*) FROM positions WHERE account_id=? AND "
+    # v9：清仓自动 release 已关段——段行留存（closed），trades 历史随段
+    aid_t = conn.execute("SELECT id FROM position WHERE stock='桥票' "
+                         "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert conn.execute("SELECT COUNT(*) FROM trades WHERE account_id=? AND "
                         "operation='buy'", (aid_t,)).fetchone()[0] == 1
     # sell 清仓 → 自动 release 链已触发（R5 显式路由 grp='tech' → 主池 release）
     seg = conn.execute("SELECT status, close_value, realized_pnl FROM position WHERE "
@@ -243,7 +254,7 @@ def test_migrated_ticket_name_addressing_resolves_tech(pools, env):
     qty, cost = 0, 0.0
     from paper_trading_v2.sleeve_slots import account_remaining
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='后门票' AND grp='tech'"
+    aid = conn.execute("SELECT id FROM position WHERE stock='后门票' AND status='open'"
                        ).fetchone()[0]
     qty, cost = account_remaining(conn, aid)
     conn.close()
@@ -265,11 +276,10 @@ def test_release_route_dual_group_each_side_settles_own(pools, env):
     trader = PaperTrader()
     # 模拟 news 侧已清仓（真实链路由 sell_stock 完成；此处仅造"账户空仓+现金"态验路由）
     conn = _conn(env)
-    aid_n = conn.execute("SELECT id FROM accounts WHERE stock_name='双组票' AND grp='news'"
-                         ).fetchone()[0]
-    conn.execute("DELETE FROM positions WHERE account_id=?", (aid_n,))
-    conn.execute("UPDATE accounts SET capital_available=52000, capital_used=0 WHERE id=?",
-                 (aid_n,))
+    aid_n = conn.execute("SELECT id FROM position WHERE stock='双组票' AND status='open' "
+                         "AND strategy='NEWS'").fetchone()[0]
+    conn.execute("DELETE FROM trades WHERE account_id=?", (aid_n,))
+    conn.execute("UPDATE position SET cash=52000 WHERE id=?", (aid_n,))
     conn.commit(); conn.close()
     trader._auto_release_on_clear('双组票', grp='news')      # grp 锁定 news 路由
     conn = _conn(env)
@@ -343,8 +353,8 @@ def test_merge_zero_budget_pure_merge_no_funding(pools, env):
     r = op.open_slot(['合B'], budget=0, event_key='ND#Z15', code_map={'合B': 'sh2'})
     assert r['mode'] == 'merge'
     conn = _conn(env)
-    acct_b = conn.execute("SELECT capital_total FROM accounts WHERE stock_name='合B' "
-                          "AND grp='news'").fetchone()[0]
+    acct_b = conn.execute("SELECT budget FROM position WHERE stock='合B' AND status='open' "
+                          "AND strategy='NEWS'").fetchone()[0]
     seg_b = conn.execute("SELECT budget FROM position WHERE stock='合B' AND status='open'"
                          ).fetchone()[0]
     free = conn.execute("SELECT free FROM sleeve_ledger").fetchone()[0]
@@ -375,12 +385,18 @@ def test_segment_invariant_budget_equals_account_allocation(pools, env):
     seg_sum = 0.0
     for r in segs:
         c = _conn(env)
-        acct = c.execute("SELECT capital_total FROM accounts WHERE stock_name=? AND "
-                         "grp='news'", (r['stock'],)).fetchone()
+        # v9 段不变量：budget == 段 cash + FIFO 成本 − realized（段现金恒等式，U5 新增）
+        from paper_trading_v2.sleeve_slots import account_remaining
+        seg_row = c.execute("SELECT cash, realized_pnl FROM position WHERE stock=? AND "
+                            "status='open' AND strategy='NEWS'", (r['stock'],)).fetchone()
         c.close()
-        assert acct is not None
-        assert abs(acct[0] - r['budget']) < 0.01, \
-            f"{r['stock']} 段预算 {r['budget']} ≠ 账户实际 {acct[0]}（超分）"
+        assert seg_row is not None
+        c2 = _conn(env)
+        _, fifo_cost = account_remaining(c2, _seg_id(env, r['stock']))
+        c2.close()
+        ident = (seg_row['cash'] or 0.0) + fifo_cost - (seg_row['realized_pnl'] or 0.0)
+        assert abs(ident - r['budget']) < 0.01, \
+            f"{r['stock']} 段预算 {r['budget']} ≠ 段现金恒等式 {ident}（cash+FIFO−realized，超分）"
         seg_sum += r['budget']
     assert seg_sum > 0
     # 不超分：消息池 free + 全部在槽段预算 == 消息池 total（零盈亏态）
@@ -417,7 +433,7 @@ def test_fill_blocked_when_atr_unresolvable(pools, env):
     assert r[0]['filled'] == []
     assert any('ATR' in w for _, w in r[0]['skipped'])
     conn = _conn(env)
-    n_pos = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    n_pos = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     n_blk = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='fill_blocked' "
                          "AND key='ND#A15'").fetchone()[0]
     slot = dict(conn.execute("SELECT fill_status FROM event_slots WHERE event_key='ND#A15'"
@@ -435,7 +451,7 @@ def test_fill_price_zero_or_negative_rejected(pools, env):
     r1 = op.fill_pending(event_key='ND#P15', open_prices={'脏票': -5.0}, skip_conditions=True)
     assert r0[0]['filled'] == [] and r1[0]['filled'] == []
     conn = _conn(env)
-    n = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    n = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     conn.close()
     assert n == 0
 
@@ -445,7 +461,8 @@ def test_fill_price_zero_or_negative_rejected(pools, env):
 def test_v8_sleeve_ledger_rebuild_crash_recovery(ws):
     """R3/F1：灌完新表后进程死（*_old 残留+版本未升）→ 重跑走恢复分支，数据零丢失。"""
     from paper_trading_v2.db import (get_connection, migrate_db, V7_DDL,
-                                     SLEEVE_LEDGER_V8_DDL, _table_exists)
+                                     SLEEVE_LEDGER_V8_DDL, _table_exists,
+                                     SCHEMA_VERSION)
     db = ws / 'master_pool.db'
     conn = get_connection(db)
     conn.executescript("CREATE TABLE schema_meta (version INTEGER NOT NULL, migrated_at TEXT);"
@@ -468,7 +485,7 @@ def test_v8_sleeve_ledger_rebuild_crash_recovery(ws):
     ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='sleeve_ledger'").fetchone()[0]
     residue = _table_exists(conn, 'sleeve_ledger_old')
     conn.close()
-    assert version == 8
+    assert version == SCHEMA_VERSION                      # 恢复分支后跑满当前版（v9）
     assert tuple(row) == (1, 2000000.0, 1900000.0, 'x')   # 数据零丢失
     assert 'CHECK' in ddl and residue is False
 
@@ -480,15 +497,16 @@ def test_gate_buy_blocked_on_news_pool_row_even_without_account(pools, env):
     op = _opener(env)
     op.open_slot(['待开票'], budget=100000, event_key='ND#G15', code_map={'待开票': 'sh1'})
     conn = _conn(env)
-    assert conn.execute("SELECT COUNT(*) FROM accounts WHERE stock_name='待开票' AND "
-                        "grp='news'").fetchone()[0] >= 1
-    # 制造"无账户"态（先清子表满足 FK）
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='待开票'").fetchone()[0]
+    assert conn.execute("SELECT COUNT(*) FROM position WHERE stock='待开票' AND "
+                        "status='open' AND strategy='NEWS'").fetchone()[0] >= 1
+    # 制造"无段"态（v9 段即账户；先清子行满足 FK，再删段）
+    aid = conn.execute("SELECT id FROM position WHERE stock='待开票'").fetchone()[0]
     conn.execute("DELETE FROM condition_history WHERE condition_id IN "
                  "(SELECT id FROM conditions WHERE account_id=?)", (aid,))
-    for t in ('conditions', 'exright_applied', 'operations', 'positions'):
+    for t in ('conditions', 'exright_applied', 'operations', 'trades'):
         conn.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
-    conn.execute("DELETE FROM accounts WHERE id=?", (aid,))
+    conn.execute("DELETE FROM event_slot_members WHERE stock='待开票'")
+    conn.execute("DELETE FROM position WHERE id=?", (aid,))
     conn.commit()
     n0 = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='gate_violation' "
                       "AND key='待开票'").fetchone()[0]

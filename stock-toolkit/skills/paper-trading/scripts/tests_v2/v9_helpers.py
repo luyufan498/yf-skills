@@ -70,7 +70,7 @@ def make_manual_segment(conn, stock, budget, cash=None, strategy='L1', code='sh1
     """段直建（U5 fixtures 开户模式替代）：manual open 段，budget=标签、cash=段现金。"""
     cur = conn.execute(
         "INSERT INTO position (stock, code, strategy, status, budget, topup_total, "
-        "opened_at, cash, fifo_index, fifo_offset) VALUES (?,?,?,'open',?,0,?,?,?,-1,0)",
+        "opened_at, cash, fifo_index, fifo_offset) VALUES (?,?,?,'open',?,0,?,?,-1,0)",
         (stock, code, strategy, budget, '2026-09-01T09:00:00',
          cash if cash is not None else budget))
     return cur.lastrowid

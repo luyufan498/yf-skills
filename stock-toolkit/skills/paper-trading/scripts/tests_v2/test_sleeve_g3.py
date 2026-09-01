@@ -57,8 +57,10 @@ def test_g3_merge_into_active_slot_no_new_slot(pools, ws):
         "SELECT stock, weight FROM event_slot_members WHERE event_key='ND#1'")]
     slot = dict(conn.execute("SELECT budget, status FROM event_slots WHERE event_key='ND#1'"
                              ).fetchone())
-    shares = {a['stock_name']: a['capital_total'] for a in
-              (dict(x) for x in conn.execute("SELECT stock_name, capital_total FROM accounts"))}
+    # v9 段即账户：等权份额=成员段 cash（资金 0 起步补足后的段现金）
+    shares = {a['stock']: a['cash'] for a in
+              (dict(x) for x in conn.execute("SELECT stock, cash FROM position "
+                                             "WHERE status='open' AND strategy='NEWS'"))}
     conn.close()
     assert slots == 1                                   # 不加坑
     assert {m['stock'] for m in members} == {'甲票', '乙票', '丙票'}
@@ -111,23 +113,22 @@ def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
     # 部分止盈卖 1/3 @ 13（模拟保护链出场）→ 剩余成本基准变化
     from paper_trading_v2.db import get_connection
     conn = get_connection(ws / 'master_pool.db')
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='迁票' AND grp='news'"
-                       ).fetchone()[0]
+    aid = conn.execute("SELECT id FROM position WHERE stock='迁票' AND status='open' "
+                       "AND strategy='NEWS'").fetchone()[0]
     seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM operations WHERE account_id=?",
                        (aid,)).fetchone()[0]
     conn.execute("INSERT INTO operations (account_id, seq, type, price, quantity, amount, cost,"
                  " profit, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?,?)",
                  (aid, seq, 'sell', 13.0, 3333, 43329.0, 33330.0, 9999.0,
                   '2026-09-01T10:00:00', 'TP1 模拟'))
-    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions WHERE account_id=?",
+    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM trades WHERE account_id=?",
                        (aid,)).fetchone()[0]
-    conn.execute("INSERT INTO positions (account_id, seq, operation, quantity, price, "
+    conn.execute("INSERT INTO trades (account_id, seq, operation, quantity, price, "
                  "total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?)",
                  (aid, seq, 'sell', 3333, 13.0, 33330.0, '2026-09-01T10:00:00', 'TP1 模拟'))
-    # 卖出所得入账（真实路径由 sell_stock 更新 available；此处对账模拟）
-    conn.execute("UPDATE accounts SET capital_available=capital_available+43329.0 "
-                 "WHERE id=?", (aid,))
-    n_pos_before = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    # 卖出所得入账（真实路径由 sell_stock 更新段现金；此处对账模拟）
+    conn.execute("UPDATE position SET cash=cash+43329.0 WHERE id=?", (aid,))
+    n_pos_before = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     n_ops_before = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
     conn.commit(); conn.close()
 
@@ -135,15 +136,15 @@ def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
     r = SleeveMigrator(ws / 'master_pool.db').migrate('迁票', reason='V11')
     assert r['qty'] == 6667 and abs(r['avg_cost'] - 10.0) < 1e-6   # FIFO 剩余成本
     conn = get_connection(ws / 'master_pool.db')
-    aid_t = conn.execute("SELECT id FROM accounts WHERE stock_name='迁票' AND grp='tech'"
+    aid_t = conn.execute("SELECT id FROM position WHERE stock='迁票' AND status='open'"
                          ).fetchone()[0]
     # 段转策略：NEWS 段原地转 L1（id 不动），budget=主池实际承接成本
     seg = dict(conn.execute("SELECT * FROM position WHERE stock='迁票' AND status='open'"
                             ).fetchone())
     # FIFO 行随迁（account_id 改挂 tech，不插新行）——迁移前后全库行数不变
-    n_pos_after = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    n_pos_after = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     n_ops_after = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
-    moved_buy = dict(conn.execute("SELECT * FROM positions WHERE account_id=? AND "
+    moved_buy = dict(conn.execute("SELECT * FROM trades WHERE account_id=? AND "
                                   "operation='buy'", (aid_t,)).fetchone())
     assert seg['id'] and seg['strategy'] == 'L1' and abs(seg['budget'] - 66670.0) < 1e-6
     assert n_pos_after == n_pos_before and n_ops_after == n_ops_before   # 零新增行

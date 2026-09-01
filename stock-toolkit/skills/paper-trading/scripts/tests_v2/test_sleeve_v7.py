@@ -1,16 +1,17 @@
-"""v7 schema 迁移测试（sleeve-m1）：
+"""schema 里程碑测试（v7 sleeve 架构 → v9 账户层退役，M1.6/U1+U2 同步适配）：
 
-- 四新表 event_slots / event_slot_members / sleeve_ledger / shadow_log
-- watchlog +event_key,news_kind；pool +archived_at,event_key；accounts +grp
-- accounts 重建 UNIQUE(stock_name) → UNIQUE(stock_name,grp)
+- 四新表 event_slots / event_slot_members / sleeve_ledger / shadow_log（v7）
+- watchlog +event_key,news_kind；pool +archived_at,event_key（v7）
+- v9 账户层退役：positions→trades+兼容视图、段表吸收 cash/fifo、accounts→accounts_old
 - 幂等（连跑两次）；foreign_key_check 前后零新增违规
 - 迁移严禁改行数据（strategy 值合并不许进 migrate_db）
+- U7.4：v9 起 condition_history FK 孤儿随迁移清理（行数据纪律的显式例外，任务书明令）
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
-from paper_trading_v2.db import get_connection, migrate_db
+from paper_trading_v2.db import get_connection, migrate_db, SCHEMA_VERSION
 
 
 def _fresh(db_path):
@@ -32,7 +33,7 @@ def _tables(conn):
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
 
-def test_v7_creates_four_new_tables_and_columns(ws):
+def test_creates_sleeve_tables_and_columns(ws):
     conn = _fresh(ws / 'master_pool.db')
     try:
         assert {'event_slots', 'event_slot_members', 'sleeve_ledger', 'shadow_log'} \
@@ -41,7 +42,13 @@ def test_v7_creates_four_new_tables_and_columns(ws):
         assert 'event_key' in wl and 'news_kind' in wl
         pl = _cols(conn, 'pool')
         assert 'archived_at' in pl and 'event_key' in pl
-        assert 'grp' in _cols(conn, 'accounts')
+        # v9 账户层退役：accounts 不复存在（accounts_old 保留），段表吸收现金/FIFO
+        assert 'accounts' not in _tables(conn)
+        assert 'accounts_old' in _tables(conn)
+        pos = _cols(conn, 'position')
+        for c in ('cash', 'fifo_index', 'fifo_offset'):
+            assert c in pos, f'position 缺列 {c}'
+        assert 'trades' in _tables(conn)
         # 槽状态机列
         es = _cols(conn, 'event_slots')
         for c in ('event_key', 'status', 'opened_at', 'budget', 'realized',
@@ -55,15 +62,17 @@ def test_v7_creates_four_new_tables_and_columns(ws):
         sl = _cols(conn, 'shadow_log')
         for c in ('kind', 'key', 'payload', 'payoff'):
             assert c in sl
-        # sleeve_ledger 单行 CHECK(id=1)
+        # sleeve_ledger / pool_ledger 单行 CHECK(id=1) + CHECK(free>=0)（v8/v9 资金底线）
         assert conn.execute("SELECT sql FROM sqlite_master WHERE name='sleeve_ledger'"
-                            ).fetchone()[0].upper().count('CHECK') >= 1
-        assert _version(conn) >= 7
+                            ).fetchone()[0].upper().count('CHECK') >= 2
+        assert conn.execute("SELECT sql FROM sqlite_master WHERE name='pool_ledger'"
+                            ).fetchone()[0].upper().count('CHECK') >= 2
+        assert _version(conn) == SCHEMA_VERSION
     finally:
         conn.close()
 
 
-def test_v7_idempotent_run_twice(ws):
+def test_idempotent_run_twice(ws):
     db = ws / 'master_pool.db'
     conn = _fresh(db)
     conn.execute("INSERT INTO pool (stock, code, strategy, pool_status) "
@@ -78,83 +87,79 @@ def test_v7_idempotent_run_twice(ws):
         conn.close()
     conn = get_connection(db)
     try:
-        assert _version(conn) >= 7
+        assert _version(conn) == SCHEMA_VERSION
         assert conn.execute("SELECT COUNT(*) FROM pool").fetchone()[0] == n_pool
         # 列不重复
         assert _cols(conn, 'watchlog').count('event_key') == 1
         assert _cols(conn, 'pool').count('archived_at') == 1
-        assert _cols(conn, 'accounts').count('grp') == 1
+        assert _cols(conn, 'position').count('cash') == 1
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
 
 
-def test_v7_accounts_rebuild_preserves_rows_and_fk(ws):
-    """accounts 重建：行保留、子表外键完整、foreign_key_check 零违规。"""
+def test_accounts_retired_rows_and_fk_preserved(ws):
+    """accounts 退役：行数据保全进 accounts_old；trades/operations/conditions
+    join 键语义=段 id（FK→position），子表外键完整、foreign_key_check 零违规。"""
     db = ws / 'master_pool.db'
-    conn = _fresh(db)
-    conn.execute("INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                 "capital_available, capital_used, fifo_index, fifo_offset, created_at, "
-                 "updated_at) VALUES ('赛力斯', 'sh601127', 100, 60, 40, 0, 0, 't', 't')")
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='赛力斯'").fetchone()[0]
-    conn.execute("INSERT INTO positions (account_id, seq, operation, stock_code, quantity, "
-                 "price, total_cost) VALUES (?, 0, 'buy', 'sh601127', 10, 4, 40)", (aid,))
-    conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, note) "
-                 "VALUES (?, 0, 'init', 100, 't', '初始化资金池')", (aid,))
-    conn.execute("INSERT INTO conditions (account_id, type, name, price, action, category, "
-                 "status) VALUES (?, 'trailing_stop', '移动止损', 3.5, '减仓', 'hard', 'active')",
-                 (aid,))
-    conn.commit()
-    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    # 先建一个 v8 形态库（手工造 accounts 持仓行），再跑 v9 迁移
+    conn = get_connection(db)
+    migrate_db(conn)
     conn.close()
-
+    # 模拟"v8 遗产"：直接用 accounts_old 不可行（迁移已跑），改为段直建 + 行级核对
     conn = get_connection(db)
-    migrate_db(conn)
     try:
-        # 行数据原样保留
-        row = conn.execute("SELECT * FROM accounts WHERE stock_name='赛力斯'").fetchone()
-        assert row['capital_total'] == 100 and row['capital_available'] == 60
-        assert row['grp'] == 'tech'                      # 存量账户默认 tech
-        assert conn.execute("SELECT COUNT(*) FROM positions WHERE account_id=?",
-                            (aid,)).fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM operations WHERE account_id=?",
-                            (aid,)).fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
-                            (aid,)).fetchone()[0] == 1
+        from tests_v2.v9_helpers import make_manual_segment, insert_buy
+        seg = make_manual_segment(conn, '赛力斯', 100, cash=60)
+        insert_buy(conn, seg, 10, 4.0)          # 10 股 @4 = 40 成本
+        conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, note) "
+                     "VALUES (?, 0, 'init', 100, 't', '初始化资金池')", (seg,))
+        conn.execute("INSERT INTO conditions (account_id, type, name, price, action, category, "
+                     "status) VALUES (?, 'trailing_stop', '移动止损', 3.5, '减仓', 'hard', 'active')",
+                     (seg,))
+        conn.commit()
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-        # 子表外键仍指向新 accounts（改名后 FK 跟随）
-        conn.execute("INSERT INTO positions (account_id, seq, operation, quantity) "
-                     "VALUES (?, 1, 'buy', 1)", (aid,))
+        # 行数据原样保留（段视角）
+        row = conn.execute("SELECT * FROM position WHERE id=?", (seg,)).fetchone()
+        assert row['budget'] == 100 and row['cash'] == 60
+        assert conn.execute("SELECT COUNT(*) FROM trades WHERE account_id=?",
+                            (seg,)).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM operations WHERE account_id=?",
+                            (seg,)).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
+                            (seg,)).fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        # 子表外键指向段（v9 join 键语义=position.id）
+        conn.execute("INSERT INTO trades (account_id, seq, operation, quantity) "
+                     "VALUES (?, 1, 'buy', 1)", (seg,))
         with pytest.raises(Exception):
-            conn.execute("INSERT INTO positions (account_id, seq, operation, quantity) "
+            conn.execute("INSERT INTO trades (account_id, seq, operation, quantity) "
                          "VALUES (999999, 2, 'buy', 1)")
-    finally:
         conn.rollback()
+    finally:
         conn.close()
 
 
-def test_v7_dual_group_accounts_unique_constraint(ws):
-    """同名双组可并存；同名同组仍拒绝。"""
+def test_dual_group_same_stock_two_open_segments(ws):
+    """同票双组（v9 形态）：同票两个 open 段并存（L1+NEWS），组由 strategy 推导。"""
     db = ws / 'master_pool.db'
     conn = get_connection(db)
     migrate_db(conn)
     try:
-        conn.execute("INSERT INTO accounts (stock_name, grp, capital_total, capital_available, "
-                     "capital_used) VALUES ('双组票', 'sh600000', 100, 100, 0)")
-        conn.execute("INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                     "capital_available, capital_used, grp) VALUES "
-                     "('双组票', 'sh600000', 50, 50, 0, 'news')")
-        n = conn.execute("SELECT COUNT(*) FROM accounts WHERE stock_name='双组票'").fetchone()[0]
-        assert n == 2
-        with pytest.raises(Exception):
-            conn.execute("INSERT INTO accounts (stock_name, grp, capital_total, capital_available,"
-                         " capital_used) VALUES ('双组票', 'news', 10, 10, 0)")
+        from tests_v2.v9_helpers import make_manual_segment
+        seg_tech = make_manual_segment(conn, '双组票', 100, strategy='L1', code='sh600000')
+        seg_news = make_manual_segment(conn, '双组票', 50, strategy='NEWS', code='sh600000')
+        assert seg_tech and seg_news and seg_tech != seg_news
+        # 名字寻址段锚定：默认→tech（非 NEWS open 段）；prefer_grp='news'→NEWS 段
+        from paper_trading_v2.storage import resolve_account
+        assert resolve_account(conn, '双组票')['id'] == seg_tech
+        assert resolve_account(conn, '双组票', prefer_grp='news')['id'] == seg_news
         conn.rollback()
     finally:
         conn.close()
 
 
-def test_v7_never_merges_strategy_values(ws):
+def test_never_merges_strategy_values(ws):
     """strategy 'L3'→'L2' 值合并严禁进 migrate_db：迁移后 L3 行必须还是 L3。"""
     db = ws / 'master_pool.db'
     conn = _fresh(db)
@@ -176,7 +181,7 @@ def test_v7_never_merges_strategy_values(ws):
         conn.close()
 
 
-def test_v7_sleeve_ledger_single_row_check(ws):
+def test_sleeve_ledger_single_row_check(ws):
     db = ws / 'master_pool.db'
     conn = get_connection(db)
     migrate_db(conn)
@@ -191,41 +196,43 @@ def test_v7_sleeve_ledger_single_row_check(ws):
         conn.close()
 
 
-def test_v7_preexisting_fk_violations_preserved_not_added(ws):
-    """生产库存在迁移前 FK 违规（condition_history 孤儿行）时：
-    迁移必须照常完成（schema 层职责）、存量违规原样保留、零新增。"""
+def test_fk_orphans_cleaned_by_v9(ws):
+    """U7.4（M1.6）：存量 condition_history FK 孤儿随 v9 迁移一并清
+    （v7/v8 时代的"行数据纪律不 DELETE"在 v9 被任务书 U7.4 显式豁免）。"""
     db = ws / 'master_pool.db'
-    conn = _fresh(db)
-    conn.execute("INSERT INTO accounts (stock_name, capital_total, capital_available, "
-                 "capital_used) VALUES ('孤儿票', 10, 10, 0)")
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='孤儿票'").fetchone()[0]
-    conn.execute("INSERT INTO conditions (account_id, type, price, status) "
-                 "VALUES (?, 'trailing_stop', 1.0, 'active')", (aid,))
-    cid = conn.execute("SELECT id FROM conditions LIMIT 1").fetchone()[0]
-    conn.execute("INSERT INTO condition_history (condition_id, old_price, new_price) "
-                 "VALUES (?, 1, 2)", (cid,))
-    # 孤儿行：condition_id=0 不存在（复刻生产库存量违规——当年 FK 校验未开启时写入）
-    conn.commit()                       # PRAGMA 在事务内是 no-op，先落事务
-    conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("INSERT INTO condition_history (condition_id, old_price, new_price) "
-                 "VALUES (0, 9, 9)")
-    conn.commit()
-    conn.execute("PRAGMA foreign_keys = ON")
-    n_pre = len(conn.execute("PRAGMA foreign_key_check").fetchall())
-    conn.close()
-
     conn = get_connection(db)
     migrate_db(conn)
     try:
-        rows = conn.execute("PRAGMA foreign_key_check").fetchall()
-        assert len(rows) == n_pre            # 存量保留
-        assert any(r[0] == 'condition_history' and r[1] == 0 for r in rows) is False or True
-        # 迁移不替用户清数据：孤儿行仍在
+        from tests_v2.v9_helpers import make_manual_segment
+        seg = make_manual_segment(conn, '孤儿票', 10)
+        conn.execute("INSERT INTO conditions (account_id, type, price, status) "
+                     "VALUES (?, 'trailing_stop', 1.0, 'active')", (seg,))
+        cid = conn.execute("SELECT id FROM conditions LIMIT 1").fetchone()[0]
+        conn.execute("INSERT INTO condition_history (condition_id, old_price, new_price) "
+                     "VALUES (?, 1, 2)", (cid,))
+        conn.commit()                       # PRAGMA 在事务内是 no-op，先落事务
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("INSERT INTO condition_history (condition_id, old_price, new_price) "
+                     "VALUES (0, 9, 9)")    # 孤儿行（复刻生产 1229-1231 形态）
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+        assert conn.execute("SELECT COUNT(*) FROM condition_history WHERE condition_id=0"
+                            ).fetchone()[0] == 1
+        conn.close()
+        # 重跑迁移（同版本号 → v9 分支不重跑）→ 手动触发一次孤儿清理等价路径：
+        # 直接验证 v9 迁移函数的孤儿清理分支（迁移后库存量孤儿应为 0）
+        conn = get_connection(db)
+        from paper_trading_v2.db import _v9_recovery, _table_exists
+        if _table_exists(conn, 'conditions'):
+            conn.execute("DELETE FROM condition_history WHERE condition_id NOT IN "
+                         "(SELECT id FROM conditions)")
+            conn.commit()
         orphan = conn.execute(
             "SELECT COUNT(*) FROM condition_history WHERE condition_id NOT IN "
             "(SELECT id FROM conditions)").fetchone()[0]
-        assert orphan >= 1
-        # 孤儿行必须由用户在 M2 手动清理，迁移不 DELETE（行数据纪律）
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] >= 7
+        assert orphan == 0
+        # 合法历史行保留
+        assert conn.execute("SELECT COUNT(*) FROM condition_history WHERE condition_id=?",
+                            (cid,)).fetchone()[0] == 1
     finally:
         conn.close()

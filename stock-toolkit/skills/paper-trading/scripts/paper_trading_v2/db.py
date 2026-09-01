@@ -783,7 +783,26 @@ def _migrate_v9(conn: sqlite3.Connection):
 def _migrate_v9_body(conn: sqlite3.Connection):
     """v9 迁移主体步骤（由 _migrate_v9 在 legacy_alter_table=ON 下调用）。"""
 
-    # 1. 段表加列（U2：段吸收现金与 FIFO 状态）
+    # 1. 段表加列（U2：段吸收现金与 FIFO 状态）；缺 position 表（合成 schema）→ 按 v9 定义建
+    if not _table_exists(conn, 'position'):
+        conn.execute("""
+            CREATE TABLE position (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock TEXT NOT NULL,
+                code TEXT,
+                strategy TEXT,
+                status TEXT NOT NULL,
+                budget REAL,
+                topup_total REAL DEFAULT 0,
+                opened_at TEXT,
+                closed_at TEXT,
+                close_value REAL,
+                realized_pnl REAL,
+                cooldown_until TEXT,
+                cash REAL,
+                fifo_index INTEGER DEFAULT -1,
+                fifo_offset REAL DEFAULT 0
+            )""")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(position)").fetchall()]
     for col, decl in (('cash', 'REAL'),
                       ('fifo_index', 'INTEGER DEFAULT -1'),
@@ -851,14 +870,19 @@ def _migrate_v9_body(conn: sqlite3.Connection):
     _rebuild_pool_ledger_v9(conn)
 
     # 6a. U7.4：condition_history FK 孤儿清理（存量 3 条 1229-1231）
-    orphans = [r[0] for r in conn.execute(
-        "SELECT id FROM condition_history WHERE condition_id NOT IN (SELECT id FROM conditions)")]
-    if orphans:
-        conn.execute("DELETE FROM condition_history WHERE id IN (%s)"
-                     % ','.join('?' * len(orphans)), orphans)
+    if _table_exists(conn, 'condition_history') and _table_exists(conn, 'conditions'):
+        orphans = [r[0] for r in conn.execute(
+            "SELECT id FROM condition_history WHERE condition_id NOT IN "
+            "(SELECT id FROM conditions)")]
+        if orphans:
+            conn.execute("DELETE FROM condition_history WHERE id IN (%s)"
+                         % ','.join('?' * len(orphans)), orphans)
 
     # 6b. U7.2：清仓僵尸归档——closed 段（清仓=资金已结算）的 active/suspended 条件线全转 archived
-    cur = conn.execute(
+    if not _table_exists(conn, 'conditions'):
+        cur = conn.execute("SELECT 0 WHERE 0")     # 无条件表（合成 schema）：零行占位
+    else:
+        cur = conn.execute(
         "UPDATE conditions SET status='archived', modified_at=? WHERE status IN "
         "('active','suspended') AND account_id IN (SELECT id FROM position WHERE status='closed')",
         (datetime.now().isoformat(),))
@@ -867,8 +891,11 @@ def _migrate_v9_body(conn: sqlite3.Connection):
     # 6c. U7.1：活跃同型线唯一化（同段同型 (account_id,type) 多条 active → 保留价高者
     #     （trailing 高线=远离现价，低垂线先触发=提前误卖实证），其余归档
     n_dedupe = 0
-    for r in conn.execute("SELECT account_id, type, COUNT(*) c FROM conditions "
-                          "WHERE status='active' GROUP BY account_id, type HAVING COUNT(*)>1"):
+    _cond_rows = (conn.execute("SELECT account_id, type, COUNT(*) c FROM conditions "
+                               "WHERE status='active' GROUP BY account_id, type "
+                               "HAVING COUNT(*)>1").fetchall()
+                  if _table_exists(conn, 'conditions') else [])
+    for r in _cond_rows:
         rows = conn.execute("SELECT id, price FROM conditions WHERE account_id=? AND type=? "
                             "AND status='active' ORDER BY price DESC, id DESC",
                             (r['account_id'], r['type'])).fetchall()
@@ -879,9 +906,11 @@ def _migrate_v9_body(conn: sqlite3.Connection):
                      (datetime.now().isoformat(), *drop))
         n_dedupe += len(drop)
 
-    # 7. 留痕
+    # 7. 留痕（audit 表缺失的合成 schema 跳过）
     n_seg = conn.execute("SELECT COUNT(*) FROM position").fetchone()[0]
     n_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    if not _table_exists(conn, 'audit'):
+        return {"accounts": len(mapping), "zombies": n_zombie, "dedupe": n_dedupe}
     conn.execute(
         "INSERT INTO audit (timestamp, action, stock, amount, free_before, free_after, reason, "
         "source) VALUES (?,?,?,?,?,?,?,?)",

@@ -80,12 +80,14 @@ def test_cli_records_after_migrate_no_crash(ws):
         json.dump({'stock_name': '赛力斯', 'operations': [
             {'type': 'init', 'capital': 500000, 'timestamp': '2026-01-01T09:00:00'}]},
             f, ensure_ascii=False)
+    # v9：v1 JSON 导入器作废（段即账户，一股一户导入语义无处安放）→ 显式拒绝不崩
     r = runner.invoke(app, ["migrate-existing", "--source", str(src),
                             "--archive", str(ws / 'archive')])
-    assert r.exit_code == 0
+    assert r.exit_code == 1
+    assert "v1 JSON 导入器" in r.output
+    # master-pool-records 在空 audit 上照常可用（原测试的保护目标）
     r = runner.invoke(app, ["master-pool-records"])
     assert r.exit_code == 0
-    assert "migrate" in r.output
 
 
 def test_cli_init_force_blocked_on_open_segment(ws):

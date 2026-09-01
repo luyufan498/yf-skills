@@ -493,6 +493,8 @@ def test_migrated_ticket_conditions_readable_and_triggerable(pools, env):
     n_segs = conn.execute("SELECT COUNT(*) FROM position WHERE stock='护票'").fetchone()[0]
     n_conds = conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
                            (aid_tech,)).fetchone()[0]
+    tech_cp = conn.execute("SELECT price FROM conditions WHERE account_id=? AND "
+                           "type='cost_protection'", (aid_tech,)).fetchone()
     conn.close()
     assert tech_cp and abs(tech_cp[0] - 8.8) < 0.01, f"改价未写回承接段: {tech_cp}"
     # v9 等价断言（原"news 壳零条件"）：原地转后恰一个段行、条件全在该段

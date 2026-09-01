@@ -1,5 +1,10 @@
-"""迁移测试：JSON 账户 → SQLite"""
-import sys, os, json, shutil
+"""迁移测试：v1 JSON 导入器在 v9（账户层退役）下的合同
+
+v9（M1.6 账户层退役）起 migrate_existing 显式拒绝：accounts 表退役、段即账户，
+"一股一户"导入语义无处安放；历史导入已于 2026-08-10 在 v8 完成并归档。
+本套件锁定：v9+ 上拒绝、报错可读、零部分写入（先查版本后动库）。
+"""
+import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 from pathlib import Path
@@ -35,142 +40,42 @@ def _make_json_account(tmp_path, name='赛力斯', code='sh603527', available=50
     return d
 
 
-def test_migrate_existing(tmp_path):
+def test_migrate_existing_rejects_v9(tmp_path):
+    """v9 段即账户：v1 一股一户导入语义无处安放 → 显式拒绝（RuntimeError 可读）。"""
     from paper_trading_v2.migrate import migrate_existing
     src = tmp_path / 'tradings'
     src.mkdir(parents=True, exist_ok=True)
     _make_json_account(src, '赛力斯', available=550000.0)  # 盈利 5 万
+    with pytest.raises(RuntimeError, match='v1 JSON 导入器'):
+        migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')
+
+
+def test_migrate_rejection_leaves_no_partial_state(tmp_path):
+    """拒绝发生在动库之前：库可能未建/为空，但绝无半成品账户数据。"""
+    from paper_trading_v2.migrate import migrate_existing
+    from paper_trading_v2.db import get_connection, migrate_db
+    src = tmp_path / 'tradings'
+    src.mkdir(parents=True, exist_ok=True)
+    _make_json_account(src, '英维克', code='sz000301', available=500000.0)
     db = tmp_path / 'master_pool.db'
-    arch = tmp_path / 'archive'
-    result = migrate_existing(src, db, arch)
-    assert result['count'] == 1
-    # SQLite 有账户 + 操作
-    from paper_trading_v2.storage import SqlStorage
-    s = SqlStorage(db)
-    acct = s.load_account('赛力斯')
-    assert acct is not None
-    # 已迁账户为纯历史壳
-    assert acct.capital_pool.total == 0
-    assert acct.capital_pool.available == 0
-    # 操作已归档
-    live_ops = s.load_operations('赛力斯')
-    assert live_ops is None or len(live_ops.operations) == 0
-    conn = s._conn()
+    with pytest.raises(RuntimeError, match='v1 JSON 导入器'):
+        migrate_existing(src, db, tmp_path / 'archive')
+    # 显式建库后核对零残留（无账户壳、无段、无流水）
+    conn = get_connection(db)
+    migrate_db(conn)
     try:
-        archived = conn.execute(
-            "SELECT COUNT(*) c FROM operations_archive WHERE account_id="
-            "(SELECT id FROM accounts WHERE stock_name='赛力斯')").fetchone()['c']
-        assert archived >= 1
-    finally:
-        conn.close()
-    # 条件迁入 SQLite
-    from paper_trading_v2.conditions_manager import ConditionsManager
-    cm = ConditionsManager(storage=s)
-    rec = cm.load_conditions('赛力斯')
-    assert rec is not None
-    assert 'trailing_stop' in rec.conditions
-    assert rec.conditions['trailing_stop'].id == 'abc12345'
-    assert rec.conditions['trailing_stop'].peak_price == 78.0
-    # closed 段落库
-    conn = s._conn()
-    try:
-        seg = conn.execute("SELECT * FROM position WHERE stock='赛力斯'").fetchone()
-        assert seg is not None
-        assert seg['status'] == 'closed'
-        assert seg['close_value'] == 550000
-        assert seg['realized_pnl'] == 50000
-    finally:
-        conn.close()
-    # 源目录已移走
-    assert not (src / '赛力斯').exists()
-    assert (arch / '赛力斯' / 'account.json').exists()
-
-
-def test_migrate_empty_dir(tmp_path):
-    from paper_trading_v2.migrate import migrate_existing
-    src = tmp_path / 'tradings'
-    src.mkdir(parents=True, exist_ok=True)
-    result = migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')
-    assert result['count'] == 0
-
-
-def test_migrate_legacy_operation_and_decision(tmp_path):
-    """v1 旧格式 operation 字段 + decision 记录：归一 + 过滤，不中止整批"""
-    from paper_trading_v2.migrate import migrate_existing
-    from paper_trading_v2.storage import SqlStorage
-    src = tmp_path / 'tradings'
-    src.mkdir(parents=True, exist_ok=True)
-    d = _make_json_account(src, '英维克', code='sz000301', available=500000.0)
-    with open(d / 'operations.json', 'w', encoding='utf-8') as f:
-        json.dump({'stock_name': '英维克', 'operations': [
-            {'operation': 'init', 'capital': 500000, 'timestamp': '2026-01-01T09:00:00'},
-            {'type': 'decision', 'content': 'x', 'timestamp': '2026-01-01T09:05:00'},
-            {'type': 'buy', 'price': 50.0, 'quantity': 1000, 'amount': 50000,
-             'timestamp': '2026-01-02T10:00:00'},
-        ]}, f, ensure_ascii=False)
-    result = migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')
-    assert result['count'] == 1
-    s = SqlStorage(tmp_path / 'master_pool.db')
-    # 操作已归档（init + buy 入库，decision 被过滤）
-    conn = s._conn()
-    try:
-        rows = conn.execute(
-            "SELECT type FROM operations_archive WHERE account_id="
-            "(SELECT id FROM accounts WHERE stock_name='英维克') ORDER BY seq").fetchall()
-        types = [r['type'] for r in rows]
-    finally:
-        conn.close()
-    assert types == ['init', 'buy']
-
-
-def test_migrate_idempotent_reskip(tmp_path):
-    """已迁移账户重跑：跳过，不重复落段"""
-    from paper_trading_v2.migrate import migrate_existing
-    from paper_trading_v2.storage import SqlStorage
-    src = tmp_path / 'tradings'
-    src.mkdir(parents=True, exist_ok=True)
-    db = tmp_path / 'master_pool.db'
-    _make_json_account(src, '赛力斯', available=550000.0)
-    migrate_existing(src, db, tmp_path / 'archive')
-    # 把归档目录复制回来模拟中断后重跑
-    shutil.copytree(tmp_path / 'archive' / '赛力斯', src / '赛力斯')
-    result = migrate_existing(src, db, tmp_path / 'archive2')
-    assert result['count'] == 0  # 已迁移，跳过
-    s = SqlStorage(db)
-    conn = s._conn()
-    try:
-        c = conn.execute("SELECT COUNT(*) c FROM position WHERE stock='赛力斯'").fetchone()['c']
-        assert c == 1  # 只有一段
+        assert conn.execute("SELECT COUNT(*) FROM accounts_old").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM position").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM conditions").fetchone()[0] == 0
     finally:
         conn.close()
 
 
-def test_migrate_salvages_conditions_with_bad_event(tmp_path):
-    """坏 event 不丢整只股票的条件"""
+def test_migrate_empty_dir_rejects_v9(tmp_path):
     from paper_trading_v2.migrate import migrate_existing
-    from paper_trading_v2.storage import SqlStorage
-    from paper_trading_v2.conditions_manager import ConditionsManager
     src = tmp_path / 'tradings'
     src.mkdir(parents=True, exist_ok=True)
-    d = _make_json_account(src, '科创新源', code='sz300731', available=500000.0)
-    with open(d / 'conditions.json', 'w', encoding='utf-8') as f:
-        json.dump({
-            'stock_name': '科创新源',
-            'conditions': {'trailing_stop': {
-                'id': 'abc12345', 'type': 'trailing_stop', 'name': '移动止损',
-                'price': 75.0, 'action': '减仓50%', 'category': 'hard',
-                'expiry_date': None, 'status': 'active', 'auto_link_cost': False,
-                'peak_price': 78.0, 'history': [], 'created_at': '2026-01-01T09:00:00',
-                'modified_at': '2026-01-02T09:00:00'}},
-            'events': [{'id': 'ev1', 'type': 'loss_protect', 'name': '亏损保护',
-                        'price': 70.0, 'action': '清仓', 'category': 'hard',
-                        'status': 'active', 'history': []}],
-        }, f, ensure_ascii=False)
-    result = migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')
-    assert result['count'] == 1
-    s = SqlStorage(tmp_path / 'master_pool.db')
-    cm = ConditionsManager(storage=s)
-    rec = cm.load_conditions('科创新源')
-    assert rec is not None
-    assert 'trailing_stop' in rec.conditions  # 合法条件被保留
-    assert rec.conditions['trailing_stop'].id == 'abc12345'
+    with pytest.raises(RuntimeError, match='v1 JSON 导入器'):
+        migrate_existing(src, tmp_path / 'master_pool.db', tmp_path / 'archive')

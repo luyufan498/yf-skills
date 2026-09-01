@@ -128,8 +128,8 @@ def test_main_pool_accounting_excludes_news_on_release(mpm2, ws):
     """sleeve release 回款进 sleeve_ledger 而非 pool_ledger（资金守恒）。"""
     mpm2.allocate('成员A', 500000, reason='事件', pool='sleeve', grp='news')
     conn = mpm2._conn()
-    conn.execute("UPDATE accounts SET capital_available=600000, capital_total=600000 "
-                 "WHERE stock_name='成员A'")       # 模拟盈利
+    conn.execute("UPDATE position SET cash=600000, budget=600000 "
+                 "WHERE stock='成员A' AND status='open'")       # 模拟盈利
     conn.commit(); conn.close()
     mpm2.release('成员A', reason='清仓', pool='sleeve')
     assert mpm2.show(pool='sleeve')['free'] == 2000000 + 100000

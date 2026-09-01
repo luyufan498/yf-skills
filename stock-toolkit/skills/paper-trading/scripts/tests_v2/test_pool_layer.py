@@ -143,10 +143,17 @@ def test_reallocate_after_release_resets_account(mpm, ws):
     ops = SqlStorage(ws / 'master_pool.db').load_operations('赛力斯')
     assert len(ops.operations) == 1 and ops.operations[0].type == 'init'
     conn = mpm._conn()
-    archived = conn.execute("SELECT COUNT(*) c FROM operations_archive WHERE account_id="
-                            "(SELECT id FROM accounts WHERE stock_name='赛力斯')").fetchone()['c']
+    # v9：旧段（closed）自带历史（段即账户，重入归档机制废除）；
+    # 新 open 段只有自己的 init 流水
+    n_seg_ops = conn.execute(
+        "SELECT o.type FROM operations o JOIN position p ON p.id=o.account_id "
+        "WHERE p.stock='赛力斯' AND p.status='open' ORDER BY o.seq").fetchall()
+    old_seg = conn.execute(
+        "SELECT id FROM position WHERE stock='赛力斯' AND status='closed' "
+        "ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
-    assert archived >= 1
+    assert [r[0] for r in n_seg_ops] == ['init']
+    assert old_seg is not None
 
 
 def test_allocate_blocked_during_cooldown(mpm, ws):
@@ -194,8 +201,8 @@ def test_show_reflects_realized_pnl(mpm, ws):
     mpm.allocate('英维克', 2000000, reason='建仓')
     # 模拟盈利：账户 available 增 50 万（本应通过买卖产生）
     conn = mpm._conn()
-    conn.execute("UPDATE accounts SET capital_available=capital_available+500000, "
-                 "capital_total=capital_total+500000 WHERE stock_name='英维克'")
+    conn.execute("UPDATE position SET cash=cash+500000 WHERE stock='英维克' "
+                 "AND status='open'")
     conn.commit()
     conn.close()
     mpm.release('英维克', reason='盈利释放')

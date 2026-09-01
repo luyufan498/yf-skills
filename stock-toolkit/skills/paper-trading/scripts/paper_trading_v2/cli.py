@@ -118,14 +118,18 @@ def master_pool_topup(
     stock: str = typer.Argument(...),
     amount: float = typer.Option(..., "--amount"),
     reason: str = typer.Option("", "--reason"),
+    source: str = typer.Option("agent", "--source", help="agent/manual；migrate=迁移票承接注资"
+                                                              "（豁免甜点动量检查，资金帽/段位帽/冷却不豁免）"),
 ):
-    """段内注资"""
+    """段内注资（迁移票承接须 --source migrate，宪法 2.6）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
-        mpm.topup(stock, amount, reason)
-        typer.echo(f"✅ 注资 {stock} ¥{amount:,.0f}")
+        mpm.topup(stock, amount, reason, source=source)
+        typer.echo(f"✅ 注资 {stock} ¥{amount:,.0f}"
+                   + ("（迁移承接：甜点动量检查豁免，资金帽/段位帽/冷却不豁免）"
+                      if source == 'migrate' else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -388,9 +392,11 @@ def sleeve_fill(
     event_key: Optional[str] = typer.Option(None, "--event-key", help="只成交该槽（缺省=全部 pending）"),
     price: list[str] = typer.Option(None, "--price", help="开盘价注入 股票=价格（测试/停牌顺延场景）"),
     atr: Optional[str] = typer.Option(None, "--atr", help="ATR 注入 股票=ATR 或单一标量（缺省触网算）"),
+    prev_close: list[str] = typer.Option(None, "--prev-close", help="昨收注入 股票=价格（R7 价差防线参照+影子账#7）"),
     skip_conditions: bool = typer.Option(False, "--skip-conditions", help="跳过挂三件套（不推荐）"),
 ):
-    """开盘成交分支（心跳 ≥9:30 首扫调用）：pending → 按当日开盘价成交 + 挂三件套"""
+    """开盘成交分支（心跳 ≥9:30 首扫调用）：pending → 按当日开盘价成交 + 挂三件套
+    （R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交留痕 fill_blocked）"""
     from paper_trading_v2.sleeve_open import SleeveOpener
 
     def _kv(pairs):
@@ -405,7 +411,8 @@ def sleeve_fill(
         (float(atr) if atr else None)
     try:
         res = SleeveOpener().fill_pending(event_key=event_key, open_prices=_kv(price),
-                                          atr=atr_arg, skip_conditions=skip_conditions)
+                                          atr=atr_arg, prev_close_map=_kv(prev_close),
+                                          skip_conditions=skip_conditions)
         if not res:
             typer.echo("IDLE（无 pending 待成交单）")
             return
@@ -446,15 +453,19 @@ def sleeve_migrate(
     source: str = typer.Option("agent", "--source"),
     code: Optional[str] = typer.Option(None, "--code"),
 ):
-    """移交桥：sleeve 持仓平移主仓（原成本结转+双 ledger 对转+迁移成本 FIFO+加仓锁）"""
+    """移交桥＝段转策略：NEWS 段原地转 L1（段行 id 不动、成本/FIFO 连续，方案 2.3 v4.2）
+    + 资金对转 + 槽 migrated 加仓锁。承接后注资走 master-pool-topup --source migrate"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.sleeve_migrate import SleeveMigrator
     try:
         code = _ensure_code(stock, code)
         r = SleeveMigrator().migrate(stock, reason=reason, source=source, code=code)
-        typer.echo(f"✅ 移交 {stock}：{r['qty']} 股 @ ¥{r['avg_cost']:.2f}（成本 ¥{r['cost']:,.0f}）")
+        typer.echo(f"✅ 段转 {stock}：{r['qty']} 股 @ ¥{r['avg_cost']:.2f}（成本 ¥{r['cost']:,.0f}）"
+                   f"——NEWS 段原地转 L1（id 不动，成本连续）")
         typer.echo(f"   槽 {r['event_key']} → {r['slot_status']}（加仓锁已落）")
         typer.echo(f"   双 ledger 对转：主池承接 ¥{r['cost']:,.0f}，消息池回款 ¥{r['refund_to_sleeve']:,.0f}")
+        typer.echo(f"   承接注资：master-pool-topup {stock} --amount X --source migrate"
+                   f"（豁免甜点动量检查；资金帽/段位帽/冷却不豁免）")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)

@@ -315,59 +315,71 @@ class PaperTrader:
 
         # 2026-08-27 修复：清仓后自动 release（position 标 closed + 资金回 free + 档位降 L2）
         # 下沉到 CLI 层——避免 agent 漏调 master-pool-release（中芯 8/27 事故根因）
+        # R5：传入卖出账户的组（resolve_account 段锚定产物），双组并存时锁定本侧路由
         remaining_qty, _ = self.get_remaining_position(account)
         if remaining_qty == 0:
-            self._auto_release_on_clear(stock_name)
+            self._auto_release_on_clear(stock_name, grp=getattr(account, 'grp', None))
 
         return account
 
-    def _auto_release_on_clear(self, stock_name: str):
-        """清仓后自动释放空仓段（池内股票才有段）。
-        非池内股票/无 open 段 → release 抛 ValueError → 静默忽略。
-        卖出已完成，release 失败不阻断（只打印提示）。
-        2026-08-27 加人工段豁免：纪律 8.3"L1 release/降级一律 --source manual，
-        AI 无权"——人工段（pool.strategy 为人工标记）清仓不自动 release，提示手动。
-        2026-09-01 sleeve-m1 组分支（方案 2.6b）：
-        - 消息组成员（grp=news 账户 + NEWS 段）→ 资金回 sleeve_ledger + 槽对账（资金路由是
-          正确性问题，不受 flag 影响；flag 只控制池/槽的档案化标记）
-        - 技术组 → release 回主池；归档语义挂 SLEEVE_ARCHIVE_ON_CLEAR=1 flag 后面：
-          flag 开 → archived 终态（不再降 L2）；flag 关（默认）→ 旧行为"降回 L2"原样
+    def _auto_release_on_clear(self, stock_name: str, grp: Optional[str] = None):
+        """清仓后自动释放空仓段（R5/B1/F6 去异常化：显式查段路由，禁 try/release 探测身份）。
+
+        路由键 = 该票 open 段 strategy（显式查询，异常只兜执行故障不兜路由判断）：
+        - NEWS 段 → 消息组 sleeve 结算（资金回 sleeve_ledger + 槽对账，资金路由不受 flag 影响）
+        - 非 NEWS 段（L1/L2/人工）→ 主池 release；人工段豁免（纪律 8.3，提示手动）
+        - 无 open 段 → no-op（卖出已完成）
+        grp（卖出账户的组，sell_stock 传入）：同票双组并存时锁定本侧段，防误路由另一组；
+        未传（None）时按任务书原义以 open 段 strategy 为路由键（最新段）。
+        归档语义挂 SLEEVE_ARCHIVE_ON_CLEAR=1 flag 后面（flag 关=默认，旧行为原样）；
+        迁移票（event_key→migrated 槽）清仓在 master_pool.release 侧恒 archived（2.6b v4.2 行）。
         """
         archive_flag = os.environ.get('SLEEVE_ARCHIVE_ON_CLEAR', '') == '1'
         try:
             from paper_trading_v2.master_pool import MasterPoolManager
             m = MasterPoolManager()
-            # ① 消息组成员：sleeve 结算（release(pool='sleeve') 无 NEWS 段会抛 ValueError → 落旧路径）
+            import sqlite3
+            conn = sqlite3.connect(m.db_path)
+            conn.row_factory = sqlite3.Row
             try:
-                m.release(stock_name, reason="清仓自动释放（CLI 层，消息组成员）",
-                          source="sleeve", pool='sleeve', archive=archive_flag)
-                print(f"[auto-release] {stock_name} 消息组成员清仓，资金已回消息池"
-                      + ("，池行/槽已档案化" if archive_flag else
-                         "（SLEEVE_ARCHIVE_ON_CLEAR=0：池/槽档案化标记未启用，建议开启 flag）"))
-                return
-            except ValueError:
-                pass  # 非 sleeve 成员——走主池路径
-            # 人工段豁免：pool 表 strategy 含 manual 标记（人工 L1）→ 跳过自动 release
-            try:
-                import sqlite3
-                conn = sqlite3.connect(m.db_path)
-                conn.row_factory = sqlite3.Row
+                if grp == 'news':
+                    seg = conn.execute(
+                        "SELECT strategy FROM position WHERE stock=? AND status='open' "
+                        "AND strategy='NEWS' ORDER BY id DESC LIMIT 1",
+                        (stock_name,)).fetchone()
+                elif grp == 'tech':
+                    seg = conn.execute(
+                        "SELECT strategy FROM position WHERE stock=? AND status='open' "
+                        "AND COALESCE(strategy,'')!='NEWS' ORDER BY id DESC LIMIT 1",
+                        (stock_name,)).fetchone()
+                else:
+                    seg = conn.execute(
+                        "SELECT strategy FROM position WHERE stock=? AND status='open' "
+                        "ORDER BY id DESC LIMIT 1", (stock_name,)).fetchone()
+                if seg is None:
+                    return                     # 无 open 段 → no-op（卖出已完成）
+                if (seg['strategy'] or '') == 'NEWS':
+                    m.release(stock_name, reason="清仓自动释放（CLI 层，消息组成员）",
+                              source="sleeve", pool='sleeve', archive=archive_flag)
+                    print(f"[auto-release] {stock_name} 消息组成员清仓，资金已回消息池"
+                          + ("，池行/槽已档案化" if archive_flag else
+                             "（SLEEVE_ARCHIVE_ON_CLEAR=0：池/槽档案化标记未启用，建议开启 flag）"))
+                    return
+                # 技术组路径：人工段豁免（pool.strategy 含 manual 标记 → 跳过自动 release）
                 pool = conn.execute(
-                    "SELECT strategy FROM pool WHERE stock=?", (stock_name,)
-                ).fetchone()
-                conn.close()
+                    "SELECT strategy FROM pool WHERE stock=?", (stock_name,)).fetchone()
                 if pool is not None and "manual" in str(pool["strategy"] or ""):
                     print(f"[auto-release] {stock_name} 人工 L1 段——跳过自动 release，需人工确认释放")
                     return
-            except Exception:
-                pass  # 查不到人工标记则按普通段处理
-            m.release(stock_name, reason="清仓自动释放（CLI 层）", archive=archive_flag)
-            if archive_flag:
-                print(f"[auto-release] {stock_name} 清仓完成，空仓段已释放（archived 终态，不降档）")
-            else:
-                print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
+                m.release(stock_name, reason="清仓自动释放（CLI 层）", archive=archive_flag)
+                if archive_flag:
+                    print(f"[auto-release] {stock_name} 清仓完成，空仓段已释放（archived 终态，不降档）")
+                else:
+                    print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
+            finally:
+                conn.close()
         except ValueError:
-            pass  # 非池内股票/无 open 段——正常
+            pass  # release 侧拒绝（如仍持仓）——卖出已完成，不阻断
         except Exception as e:
             print(f"[auto-release] {stock_name} 自动释放失败（不影响卖出结果）: {e}")
 

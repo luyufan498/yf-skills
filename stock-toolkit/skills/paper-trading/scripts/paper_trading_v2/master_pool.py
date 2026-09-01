@@ -152,6 +152,19 @@ class MasterPoolManager:
         conn = self._conn()
         now = datetime.now().isoformat()
         try:
+            # R6/Y4：对侧检查（与 sleeve-open 同款语义：告警不拦截，晨审人工裁决，方案第四.8）——
+            # 技术组 allocate 时该股另有活跃消息组段/槽 → 同票双组暴露
+            if pool == 'main':
+                n_news_seg = conn.execute(
+                    "SELECT COUNT(*) FROM position WHERE stock=? AND status='open' "
+                    "AND strategy='NEWS'", (stock,)).fetchone()[0]
+                n_slot = conn.execute(
+                    "SELECT COUNT(*) FROM event_slots es JOIN event_slot_members m "
+                    "ON m.event_key=es.event_key WHERE m.stock=? AND es.status IN (?,?)",
+                    (stock, 'open', 'partial')).fetchone()[0]
+                if n_news_seg or n_slot:
+                    print(f"⚠️ {stock} 消息组另有活跃事件段/槽（NEWS段×{n_news_seg}，"
+                          f"活跃槽×{n_slot}）——同票双组暴露，晨审人工裁决（第四.8）")
             free = self._get_free(conn, pool)
             if free is None:
                 raise ValueError(f"{self._label(pool)}未初始化，请先 init（pool={pool}）")
@@ -380,8 +393,16 @@ class MasterPoolManager:
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'release', stock, value, free, new_free, reason, source))
-                # 档案化（flag 开）→ archived 终态；旧行为（flag 关）→ 降回 L2
-                if archive:
+                # 档案化：迁移票（event_key→migrated 槽）恒 archived 终态（2.6b v4.2 行：
+                # 不复活 NEWS 旧槽、不降 L2 复活技术组候选）；其余走 flag（开=archived，关=降 L2 旧行为）
+                migrated_ticket = False
+                prow = conn.execute("SELECT event_key FROM pool WHERE stock=?",
+                                    (stock,)).fetchone()
+                if prow and prow['event_key']:
+                    st = conn.execute("SELECT status FROM event_slots WHERE event_key=?",
+                                      (prow['event_key'],)).fetchone()
+                    migrated_ticket = bool(st and st['status'] == 'migrated')
+                if archive or migrated_ticket:
                     conn.execute("UPDATE pool SET pool_status='archived', archived_at=? "
                                  "WHERE stock=?", (now, stock))
                 else:

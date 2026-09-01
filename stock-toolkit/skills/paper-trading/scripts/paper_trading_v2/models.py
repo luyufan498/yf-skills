@@ -151,6 +151,7 @@ class Account(BaseModel):
     fifo_index: int = Field(default=-1, description="FIFO指针：当前成本基准BUY position在positions列表中的索引")
     fifo_offset: float = Field(default=0.0, description="当前fifo_index指向的BUY position中已消耗的股数（除权后可能为小数）")
     exright_applied: List[ExRightAppliedRecord] = Field(default_factory=list, description="已应用的除权记录")
+    grp: Optional[str] = Field(default=None, description="账户组 tech/news（sleeve-m1.5：清仓路由与组闸门寻址用，经 resolve_account 段锚定解析）")
 
     class Config:
         json_schema_extra = {

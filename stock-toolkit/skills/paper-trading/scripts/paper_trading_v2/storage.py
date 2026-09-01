@@ -114,6 +114,7 @@ class SqlStorage(StorageBackend):
                 fifo_index=row['fifo_index'],
                 fifo_offset=row['fifo_offset'],
                 exright_applied=exright,
+                grp=row['grp'] if 'grp' in row.keys() else None,
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
             )

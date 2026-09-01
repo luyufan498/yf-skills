@@ -4,6 +4,7 @@
 """
 
 from typing import Optional
+import os
 from paper_trading_v2.models import (
     Account,
     CapitalPool,
@@ -325,10 +326,27 @@ class PaperTrader:
         非池内股票/无 open 段 → release 抛 ValueError → 静默忽略。
         卖出已完成，release 失败不阻断（只打印提示）。
         2026-08-27 加人工段豁免：纪律 8.3"L1 release/降级一律 --source manual，
-        AI 无权"——人工段（pool.strategy 为人工标记）清仓不自动 release，提示手动。"""
+        AI 无权"——人工段（pool.strategy 为人工标记）清仓不自动 release，提示手动。
+        2026-09-01 sleeve-m1 组分支（方案 2.6b）：
+        - 消息组成员（grp=news 账户 + NEWS 段）→ 资金回 sleeve_ledger + 槽对账（资金路由是
+          正确性问题，不受 flag 影响；flag 只控制池/槽的档案化标记）
+        - 技术组 → release 回主池；归档语义挂 SLEEVE_ARCHIVE_ON_CLEAR=1 flag 后面：
+          flag 开 → archived 终态（不再降 L2）；flag 关（默认）→ 旧行为"降回 L2"原样
+        """
+        archive_flag = os.environ.get('SLEEVE_ARCHIVE_ON_CLEAR', '') == '1'
         try:
             from paper_trading_v2.master_pool import MasterPoolManager
             m = MasterPoolManager()
+            # ① 消息组成员：sleeve 结算（release(pool='sleeve') 无 NEWS 段会抛 ValueError → 落旧路径）
+            try:
+                m.release(stock_name, reason="清仓自动释放（CLI 层，消息组成员）",
+                          source="sleeve", pool='sleeve', archive=archive_flag)
+                print(f"[auto-release] {stock_name} 消息组成员清仓，资金已回消息池"
+                      + ("，池行/槽已档案化" if archive_flag else
+                         "（SLEEVE_ARCHIVE_ON_CLEAR=0：池/槽档案化标记未启用，建议开启 flag）"))
+                return
+            except ValueError:
+                pass  # 非 sleeve 成员——走主池路径
             # 人工段豁免：pool 表 strategy 含 manual 标记（人工 L1）→ 跳过自动 release
             try:
                 import sqlite3
@@ -343,8 +361,11 @@ class PaperTrader:
                     return
             except Exception:
                 pass  # 查不到人工标记则按普通段处理
-            m.release(stock_name, reason="清仓自动释放（CLI 层）")
-            print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
+            m.release(stock_name, reason="清仓自动释放（CLI 层）", archive=archive_flag)
+            if archive_flag:
+                print(f"[auto-release] {stock_name} 清仓完成，空仓段已释放（archived 终态，不降档）")
+            else:
+                print(f"[auto-release] {stock_name} 清仓完成，空仓段已自动释放（降回 L2）")
         except ValueError:
             pass  # 非池内股票/无 open 段——正常
         except Exception as e:

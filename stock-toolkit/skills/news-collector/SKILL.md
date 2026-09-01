@@ -48,7 +48,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
    - **财联社 cls（CDP 方式）**：`python3 ~/.agent-browser/cls_cdp.py --limit 20`（Chrome 9222 打开电报页提取，绕过 API sign 风控；依赖 Chrome 常驻 + websocket-client）。每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）
    - 快讯层价值：搜索 API 收录有延迟，快讯立即可拿（A股公告/电报级消息）
 
-1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`
+1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`。**先 `export SEARXNG_URL=http://192.168.100.2:38080`**——cron 环境不继承该变量，searx-bash 空变量直接 exit 1（2026-09-01 审计确认；服务迁移时改此处）
    - 按时效性传 `--time-range`：high（大盘/个股异动）→ `day`；medium（行业/政策）→ `week`；low（财报）→ `month`
 2. **brave-search（备用，遇验证码/限流/无结果时切换）**：已配 API key（`BRAVE_SEARCH_API_KEY`），月 1000 次调用。
    - **优先用 Hermes 内置 web_search（首选，2026-08 起）**：`web_search` 工具走 brave-free provider 自动读 .env 的 key，无需手动提取——省去 shell 变量坑。直接 `web_search(query="...", limit=8)` 即可，结果带标题/URL/描述。
@@ -71,7 +71,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 3. **甄别**：返回结果仍可能混旧闻——数字与库中矛盾 / 日期不在窗口 / 同公告重复 → 跳过或归属已有事件
 
 **每条新闻，用 newsdb 命令按以下步骤处理：**
-1. `newsdb lookup "<关键词>"` 查重 → 返回已有事件候选
+1. `newsdb lookup "<裸主体名>"` 查重 → 返回已有事件候选。**查询词必须用裸主体名**（公司/机构/人物名，不带主题修饰词）——2026-09-01 实测 `lookup 智谱` 召回全部相关事件而 `lookup "智谱 营收"` 召回 0（FTS 受修饰词稀释）。财报/回购/减持/IPO 类逐个主体名查完再决定新建
    - 有新进展 → `newsdb save --event <id> ...` 追加消息
    - 全新主题 → `newsdb save --new-event ...` 新建事件
    - 无新信息 → 跳过（不新增）

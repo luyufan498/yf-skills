@@ -40,7 +40,8 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `REVIEW` | 组合审查触发 | 定时、事件 | 组合审查 |
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
 | `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
-| `L3_SNAPSHOT` | 午间次优候选快照（≤5 只打包，TTL=次日晨审前有效，**不碰钱**，2026-08-31 加入） | stock-l3-scan（13:35） | **仅次日 6:05 组合审查（晨审）消费**（收盘数据验证午间信号）；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义）；积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
+| `L3_SNAPSHOT` | [退役-M2] 午间次优候选快照（2026-08-31 加入）——M2 起 stock-l3-scan 重写为消息组收编扫描，本类型停用 | stock-l3-scan（13:35，旧行为） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义） |
+| `NEWS_SNAPSHOT` | 消息组收编扫描快照（sleeve-m1 新增；生产者=收编扫描，消费者=仅次日晨审，**不碰钱**；G1-G4 清单闸 + news_kind 打标 + sleeve-open 建槽） | stock-l3-scan（13:35，M2 重写后） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义）；TTL 2 交易日，积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
 
 ### CALENDAR 日历回查（2026-08 起，档位管理配套）
 
@@ -53,8 +54,8 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 
 - `due`：回查日期/时刻（ISO；**纯日期=当天 15:30 收盘后触发**，带时间=精确时刻触发，见下方到期时刻语义）
 - `event`：回查原因（财报/解禁/催化日）
-- `check`：回查动作（评估升级 L2 / 继续观察 / 移除）
-- 消费：心跳 agent delegate 分析 subagent → 重新评估 → 升级 L2 / 延期重挂 / 移除
+- `check`：回查动作（进技术组 L2 待命复检 / 继续观察 / 移除）
+- 消费：心跳 agent delegate 分析 subagent → 重新评估 → 进技术组 L2 待命复检 / 延期重挂 / 移除
 - **⚠️ 未到期不唤醒（2026-08-14 修复）**：CALENDAR 长期 pending 是常态（挂起等 due），**不是待消费任务**——`check_tasks` 已排除 CALENDAR，未到期**不**出现在 [EVENT] 列表、不触发心跳；只有 `check_calendar` 对到期事件输出 📅 提醒唤醒。改 watch_scan 时勿把 CALENDAR 加回 check_tasks（否则 9 个未到期回查点会每 tick 白唤醒）
 - **⏰ 到期时刻语义（2026-08-18 修复，防凌晨空触发）**：`check_calendar` 原按天比较（due ≤ 今天），心跳全天 30 分钟跑 → **due 当天凌晨 00:00 就触发**，但"等中报披露"的事件那时财报还没出（空转）。现改为时刻级：**纯日期 `2026-08-20` → 当天 15:30（收盘后）到期**（等财报/公告/当日行情齐了再唤醒）；**带时间 `2026-08-20T10:00` → 精确到该时刻**（紧急事项显式写时间）。due 格式非法 → 跳过不触发不崩溃。分析 agent 挂 CALENDAR 时按此语义写 due：默认纯日期（收盘后触发），需要盘中/盘前触发才写时间。
 
@@ -68,8 +69,10 @@ taskbus add CALENDAR <股> --source analysis --priority 2 \
 ```
 
 - **mode=trade（L1 条件触发）**：buy（现价 ≤ 买点）→ 消费 agent 评估纪律后执行买入，或纪律否决时调整买卖点；sell（现价 ≤ 止损/保护）→ 确认破位后执行卖出，hard 条件只升不降；**止盈阶梯（cond_name 含"分批止盈"，现价 ≥ 触发价，2026-08-30）**→ 确认当日为收盘确认后**次日**卖出持仓 1/3（T+1），`conditions --action trigger` 标记 + `sell --note "止盈阶梯①/②（成本¥X→现价¥Y 浮盈+Z%）"` 必填；**只标记该 TP 条件，禁止动保护线/移动止损**（余仓 1/3 继续 2.5×ATR 跟随）
-- **mode=eval（L3 观察窗价格点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 重新评估**（判定升级 L2 / 重设价格点 / 移除），**不直接交易**。触发后价格点自动移除（触发即失效）
-- **mode=buy（L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → 建仓**（见下方消费约定）。L2 已过分析确认买入意愿，到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
+- **mode=eval（技术组 L2 待命复检点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 复检**（升 L1 挂 conditions / 重设价格点 / 移除；原"评估升级 L2"——L3 已并入 L2），**不直接交易**。触发后价格点自动移除（触发即失效）
+- **mode=buy（技术组 L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → allocate → buy**（见下方消费约定）。到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
+- **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday 发现 **L1/L2 持仓 + sleeve 持仓**标的 imp≥4 利空时写入——消费：交易 subagent 查 newsdb 核真实性 → 对照持仓（含 grp=news 账户）→ 防御评估；盘中卖出仅限硬利空实锤
+- **sleeve 持仓（grp=news 账户）禁 conditions 全家/禁 buy/禁 topup**（CLI 能力矩阵闸门强制执行，违例=报错+shadow_log gate_violation）
 - **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday（12:05 收闻）发现 **L1/L2 持仓标的** imp≥4 利空（立案/退市/停牌/暴雷/减持，payload 带 news_event=newsdb事件ID）时写入——补心跳纯价格触发的非价格信号盲区。消费：交易 subagent 查 newsdb 核真实性 → 对照持仓 → 防御评估。**盘中卖出仅限硬利空实锤（停牌/立案类）**；价格类止损仍走收盘确认纪律，普通坏消息不恐慌割肉
 - **⚠️ `--amount` 语义 = 段预算（建段金额），不是首笔买入金额**：初始建段统一 = 总池 5%（1000 万池 → **¥500,000**）；首笔比例是 buy 阶段按策略矩阵（3.0.0）计算（如消息仓 5-20% × 50 万 = 2.5-10 万），**绝不填进 --amount**——填错会把段建小（如沃森生物 8/24 只建了 10 万=1% 池，8/25 修正案例）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
@@ -167,7 +170,7 @@ taskbus stats                               # 各状态计数 + 最新事件 ID
 taskbus kv watch_scan_state                  # 读 KV 状态（watch_scan 异动状态/atr 日期）
 taskbus kv watch_scan_state '{"a":1}'        # 写 KV 状态
 taskbus ack 42 43 44 --note "串行消费完成"     # 批量完成
-taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"          # L3 观察价点
+taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"          # L2 待命复检点（eval，原 L3 观察价点）
 taskbus watchpoint add 赛力斯 --price 24.5 --mode buy --amount 200000 --code sh601127 --note "建仓10%"  # L2 建仓点
 taskbus watchpoint add 中芯国际 --price 135 --min 130 --mode buy --amount 200000 --code sh688981 --note "区间建仓(130-135)"  # 区间触发（2026-08-25 支持）
 taskbus watchpoint list                        # 查看全部价格点（👀观=eval / 🛒买=buy）

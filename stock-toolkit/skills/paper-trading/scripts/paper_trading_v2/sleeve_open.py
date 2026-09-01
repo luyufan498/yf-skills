@@ -134,6 +134,10 @@ class SleeveOpener:
                     if not pure_merge:
                         for s in all_members:
                             aid = news_account_id(conn, s)
+                            if aid is None:
+                                # v9：成员已无 open NEWS 段（清仓退出/段已结算）——
+                                # 退出成员不参与等权回补（其资金已随退出结算），仅活跃成员补缺口
+                                continue
                             cur_total = conn.execute(
                                 "SELECT budget FROM position WHERE id=?", (aid,)
                             ).fetchone()[0] or 0.0
@@ -150,7 +154,7 @@ class SleeveOpener:
                                 raise ValueError(f"消息池空闲不足：需 ¥{deduct:,.0f}，"
                                                  f"空闲 ¥{free:,.0f}")
                         for s in all_members:
-                            self._topup_member(conn, s, share, now)
+                            self._topup_member(conn, s, share, now)   # 无段成员内部跳过
                     for s in new_members:
                         conn.execute(
                             "INSERT OR IGNORE INTO event_slot_members (event_key, stock, weight, "
@@ -264,8 +268,12 @@ class SleeveOpener:
         if seg:
             aid = seg[0]
             if reset:
-                conn.execute("UPDATE position SET cash=?, fifo_index=-1, fifo_offset=0, "
-                             "code=COALESCE(?, code) WHERE id=?", (capital or 0.0, code, aid))
+                # 残留段重开=全新分配：budget/topup_total 一并重置（对齐 v8 建户重置语义，
+                # 段现金恒等式 cash+FIFO−realized==budget 从 0 起步成立）
+                conn.execute("UPDATE position SET budget=?, topup_total=0, cash=?, "
+                             "fifo_index=-1, fifo_offset=0, realized_pnl=0, "
+                             "code=COALESCE(?, code) WHERE id=?",
+                             (capital or 0.0, capital or 0.0, code, aid))
                 conn.execute("INSERT INTO operations (account_id, seq, type, capital, "
                              "timestamp, note) VALUES (?,0,'init',?,?,'sleeve 成员初始化（段直建）')",
                              (aid, capital, now))
@@ -280,10 +288,13 @@ class SleeveOpener:
         return aid
 
     def _topup_member(self, conn, stock, target_total, now):
-        """并入时补足成员段到新等权份额（段 cash/budget 同步累计）。返回实补金额。"""
+        """并入时补足成员段到新等权份额（段 cash/budget 同步累计）。返回实补金额。
+
+        v9：成员无 open NEWS 段（清仓退出/段已结算）→ 跳过（返回 0）——
+        退出成员资金已随退出结算，不重新回补（原 v8 报错路径在段即账户下不可达）。"""
         aid = news_account_id(conn, stock)
         if aid is None:
-            raise ValueError(f"并入成员 {stock} 缺 NEWS open 段（数据异常）")
+            return 0.0
         seg = conn.execute("SELECT cash, budget FROM position WHERE id=?", (aid,)).fetchone()
         cur_total = seg['budget'] or 0.0
         cur_cash = seg['cash'] or 0.0

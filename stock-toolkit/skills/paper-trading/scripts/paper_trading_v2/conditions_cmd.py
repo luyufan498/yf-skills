@@ -86,6 +86,16 @@ def register(app):
         """条件管理：查看、设定、修改、触发、过期股票交易条件"""
         stock_name = normalize_stock_name(stock_name)
 
+        # 能力矩阵闸（sleeve-m1，方案 2.5）：消息组（grp=news）账户禁 conditions 全家写操作；
+        # 读操作（show/event-list/check）放行。违例报错 + shadow_log(kind='gate_violation')。
+        from paper_trading_v2.gate import conditions_write_actions, enforce
+        if action in conditions_write_actions():
+            try:
+                enforce(stock_name, 'conditions_write')
+            except ValueError as e:
+                typer.echo(f"❌ {e}", err=True)
+                raise typer.Exit(1)
+
         # 自动除权检查
         try:
             trader = PaperTrader()

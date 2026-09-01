@@ -1,11 +1,52 @@
-"""ptrade2 CLI — master-pool / watchlist / 交易命令组"""
+"""ptrade2 CLI — master-pool / watchlist / sleeve / 交易命令组"""
+import sys
+
 import typer
 from typing import Optional
 
 from paper_trading_v2.helpers import normalize_stock_name, get_stock_name_suggestions, auto_exright_check
 
-app = typer.Typer(help="ptrade2 — SQLite 深迁移 + 弹性组合总池",
+app = typer.Typer(help="ptrade2 — SQLite 深迁移 + 弹性组合总池 + 消息组事件槽",
                   add_completion=False, no_args_is_help=True)
+
+
+def _cli_gate_precheck(argv: list):
+    """能力矩阵前置闸（sleeve-m1，方案 2.5/3.2）：typer callback 里对 conditions 写操作
+    与 buy 做 grp 路由检查；master-pool-allocate/topup 的拦截在 MasterPoolManager 库层。"""
+    import os
+    from paper_trading_v2 import gate as gate_mod
+    from paper_trading_v2.gate import enforce, conditions_write_actions
+
+    args = [a for a in argv[1:] if a != '--']
+    if not args:
+        return
+    cmd = args[0]
+    if cmd == 'conditions':
+        action = None
+        for i, t in enumerate(args[1:], 1):
+            if t in ('--action', '-a') and i + 1 < len(args):
+                action = args[i + 1]
+            elif t.startswith('--action='):
+                action = t.split('=', 1)[1]
+        if action in conditions_write_actions():
+            stock = next((t for t in args[1:] if not t.startswith('-')), None)
+            if stock:
+                enforce(normalize_stock_name(stock), 'conditions_write')
+    elif cmd == 'buy':
+        stock = next((t for t in args[1:] if not t.startswith('-')), None)
+        if stock:
+            enforce(normalize_stock_name(stock), 'buy')
+
+
+@app.callback()
+def _gate_callback(ctx: typer.Context):
+    """全局前置闸：消息组（grp=news）账户能力矩阵（违例报错+shadow_log gate_violation）。"""
+    try:
+        args = list(ctx.args or []) or sys.argv[1:]
+        _cli_gate_precheck(args)
+    except ValueError as e:          # GateViolation
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -33,17 +74,22 @@ def master_pool_init(
 
 
 @app.command("master-pool-show")
-def master_pool_show():
+def master_pool_show(
+    pool: str = typer.Option("main", "--pool", help="main=趋势池 / sleeve=消息池"),
+):
     """总池状态"""
     from paper_trading_v2.master_pool import MasterPoolManager
-    mpm = MasterPoolManager()
+    mpm = MasterPoolManager(pool=pool)
     d = mpm.show()
     if 'error' in d:
         typer.echo(d['error'], err=True)
         raise typer.Exit(1)
-    typer.echo(f"💰 总池：¥{d['total']:,.0f} ｜ 空闲：¥{d['free']:,.0f}")
+    label = '总池' if pool == 'main' else '消息池'
+    typer.echo(f"💰 {label}：¥{d['total']:,.0f} ｜ 空闲：¥{d['free']:,.0f}")
     typer.echo(f"   已分配（open段）：¥{d['occupied']:,.0f} ({d['usage_rate']*100:.0f}%)")
     typer.echo(f"   已实现盈亏（进池）：¥{d['realized_pnl']:,.0f} ｜ 活跃段：{d['open_segments']}")
+    if pool == 'sleeve':
+        typer.echo(f"   活跃事件槽：{d['active_slots']}/20 ｜ 待成交单：{d['pending_slots']}")
 
 
 @app.command("master-pool-allocate")
@@ -169,18 +215,31 @@ def _ensure_code(stock: str, code: Optional[str]) -> str:
 def watchlist_add(
     stock: str = typer.Argument(...),
     code: Optional[str] = typer.Option(None, "--code"),
-    strategy: str = typer.Option("L2", "--strategy", help="L1/L2/L3"),
+    strategy: str = typer.Option("L2", "--strategy", help="L1/L2/L3/NEWS"),
     source: str = typer.Option("agent", "--source", help="agent/manual"),
     reason: str = typer.Option("", "--reason"),
     pin: Optional[bool] = typer.Option(None, "--pin/--no-pin", help="设置/清除名单保护（pin=1 禁删除可降级）"),
+    event_key: Optional[str] = typer.Option(None, "--event-key", help="消息组 G3 事件键（NEWS 收编必带，如 ND#293）"),
+    news_kind: Optional[str] = typer.Option(None, "--news-kind", help="六类词表：price_cycle/policy/earnings/company_event/tech_catalyst/sentiment/other"),
 ):
-    """入池/调整档位（--pin 设置名单保护；--code 缺失时自动查码补全）"""
+    """入池/调整档位（--pin 名单保护；--code 自动查码；NEWS 收编带 --event-key/--news-kind
+    并过 G2 次新否决：上市 <40 交易日硬拒绝）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
         code = _ensure_code(stock, code)
-        w.add(stock, code, strategy, source, reason, pin)
+        # G2 次新否决（消息组硬闸）：NEWS 收编不足 40 交易日直接拒绝；
+        # 技术组（L1/L2/L3）仅提示不改行为（G2 属消息组清单闸，方案 2.2）
+        from paper_trading_v2.helpers import check_listing_age
+        ok, detail = check_listing_age(stock, code)
+        if not ok:
+            if strategy == 'NEWS':
+                typer.echo(f"❌ {detail}", err=True)
+                raise typer.Exit(1)
+            typer.echo(f"ℹ️ {detail}（技术组仅提示）")
+        w.add(stock, code, strategy, source, reason, pin,
+              event_key=event_key, news_kind=news_kind)
         typer.echo(f"✅ 入池 {stock} ({strategy})" + (" 🔒pin" if pin else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -211,14 +270,208 @@ def watchlist_remove(
     stock: str = typer.Argument(...),
     source: str = typer.Option("agent", "--source", help="agent/manual"),
     reason: str = typer.Option("", "--reason"),
+    archive: bool = typer.Option(False, "--archive/--removed", help="archive=档案化终态"
+                                 "（清仓不回池，方案 2.6b）；removed=旧语义（默认）"),
 ):
-    """移出池"""
+    """移出池（默认旧 removed 语义；--archive 走档案化终态）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
-        w.remove(stock, source, reason)
-        typer.echo(f"✅ 移出 {stock}")
+        w.remove(stock, source, reason, archive=archive)
+        typer.echo(f"✅ {'档案化' if archive else '移出'} {stock}"
+                   + ("（archived 终态）" if archive else ""))
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+# ============ sleeve 命令组（消息组事件槽，sleeve-m1） ============
+
+@app.command("sleeve-pool-init")
+def sleeve_pool_init(
+    amount: float = typer.Option(..., "--amount", help="消息池初始资金（=总池 20%）"),
+):
+    """初始化消息池（一次性；pool_ledger CHECK(id=1) 挡第二行，故独立 sleeve_ledger）"""
+    from paper_trading_v2.master_pool import MasterPoolManager
+    mpm = MasterPoolManager(pool='sleeve')
+    try:
+        mpm.init_pool(amount)
+        typer.echo(f"✅ 消息池初始化成功：¥{amount:,.0f}（上限 20% 总资金）")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-show")
+def sleeve_show():
+    """消息池状态 + 事件槽清单"""
+    from paper_trading_v2.db import get_connection, migrate_db
+    from paper_trading_v2.master_pool import MasterPoolManager
+    mpm = MasterPoolManager(pool='sleeve')
+    d = mpm.show()
+    if 'error' in d:
+        typer.echo(d['error'], err=True)
+        raise typer.Exit(1)
+    typer.echo(f"💰 消息池：¥{d['total']:,.0f} ｜ 空闲：¥{d['free']:,.0f}")
+    typer.echo(f"   槽占用：¥{d['occupied']:,.0f} ({d['usage_rate']*100:.0f}%) ｜ "
+               f"活跃槽 {d['active_slots']}/20 ｜ 待成交 {d['pending_slots']} ｜ "
+               f"成员段 {d['open_segments']}")
+    typer.echo(f"   已实现盈亏：¥{d['realized_pnl']:,.0f}")
+    conn = get_connection(mpm.db_path)
+    migrate_db(conn)
+    try:
+        rows = conn.execute(
+            "SELECT event_key,status,fill_status,budget,realized,news_kind,members_json,"
+            "invalidation,topup_locked,opened_at FROM event_slots "
+            "ORDER BY (status IN ('open','partial')) DESC, opened_at DESC").fetchall()
+        if not rows:
+            typer.echo("📭 无事件槽")
+            return
+        typer.echo("📋 事件槽：")
+        for r in rows:
+            lock = " 🔒" if r['topup_locked'] else ""
+            flag = f" ⚑失效:{r['invalidation']}" if r['invalidation'] else ""
+            typer.echo(f"  [{r['status']:>8}/{r['fill_status'] or '-':>8}] {r['event_key']}  "
+                       f"¥{(r['budget'] or 0):,.0f}  已实现¥{(r['realized'] or 0):,.0f}  "
+                       f"{r['news_kind'] or '-'}  成员 {r['members_json'] or '[]'}{lock}{flag}")
+    finally:
+        conn.close()
+
+
+@app.command("sleeve-open")
+def sleeve_open(
+    stocks: list[str] = typer.Argument(..., help="成员股票（可多只，等权）"),
+    budget: float = typer.Option(..., "--budget", help="本事件槽预算（从消息池拨付）"),
+    event_key: Optional[str] = typer.Option(None, "--event-key", help="G3 事件键（如 ND#293；缺省 fail-open 生成兜底键）"),
+    news_kind: Optional[str] = typer.Option(None, "--news-kind", help="六类词表打标"),
+    title: Optional[str] = typer.Option(None, "--title", help="事件标题"),
+    reason: str = typer.Option("", "--reason", help="判定依据（审计）"),
+    source: str = typer.Option("agent", "--source", help="agent/manual"),
+    code: list[str] = typer.Option(None, "--code", help="成员代码，顺序对应成员（可多次）"),
+):
+    """消息组 L1 建仓事务：sleeve_ledger 扣款→成员账户(grp=news)→pending 待成交单→开槽
+    （G3 归并：活跃槽并入等权不加坑；关闭槽二波=新键开新槽）"""
+    stocks = [normalize_stock_name(s) for s in stocks]
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    code_map = {}
+    if code:
+        for i, c in enumerate(code):
+            if i < len(stocks):
+                code_map[stocks[i]] = c.strip()
+    try:
+        op = SleeveOpener()
+        if not code_map:
+            for s in stocks:
+                try:
+                    code_map[s] = _ensure_code(s, None)
+                except ValueError:
+                    pass
+        r = op.open_slot(stocks, budget, event_key=event_key, news_kind=news_kind,
+                         source=source, reason=reason, title=title, code_map=code_map)
+        typer.echo(f"✅ sleeve-open [{r['mode']}] {r['event_key']}  成员 {r['members']}  "
+                   f"等权份额 ¥{r['share']:,.0f}")
+        if r.get('derived_wave'):
+            typer.echo(f"   ↳ 二波新槽（原键已关闭，永不并回）")
+        if r.get('key_missing'):
+            typer.echo(f"   ⚠️ 事件键缺失 fail-open：兜底键 {r['event_key']}（影子账#9 已记）")
+        for c in r.get('conflicts', []):
+            typer.echo(f"   ⚠️ {c} 主池另有 open 段（同票双组）——晨审人工裁决")
+        typer.echo(f"   待成交单 pending → 心跳开盘后首扫 sleeve-fill 按开盘价成交")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-fill")
+def sleeve_fill(
+    event_key: Optional[str] = typer.Option(None, "--event-key", help="只成交该槽（缺省=全部 pending）"),
+    price: list[str] = typer.Option(None, "--price", help="开盘价注入 股票=价格（测试/停牌顺延场景）"),
+    atr: Optional[str] = typer.Option(None, "--atr", help="ATR 注入 股票=ATR 或单一标量（缺省触网算）"),
+    skip_conditions: bool = typer.Option(False, "--skip-conditions", help="跳过挂三件套（不推荐）"),
+):
+    """开盘成交分支（心跳 ≥9:30 首扫调用）：pending → 按当日开盘价成交 + 挂三件套"""
+    from paper_trading_v2.sleeve_open import SleeveOpener
+
+    def _kv(pairs):
+        out = {}
+        for p in pairs or []:
+            if '=' in p:
+                k, v = p.split('=', 1)
+                out[normalize_stock_name(k.strip())] = float(v)
+        return out
+
+    atr_arg = _kv([atr]) if (atr and '=' in atr) else \
+        (float(atr) if atr else None)
+    try:
+        res = SleeveOpener().fill_pending(event_key=event_key, open_prices=_kv(price),
+                                          atr=atr_arg, skip_conditions=skip_conditions)
+        if not res:
+            typer.echo("IDLE（无 pending 待成交单）")
+            return
+        for s in res:
+            for f in s['filled']:
+                if 'qty' in f:
+                    typer.echo(f"✅ {s['event_key']} {f['stock']} 买 {f['qty']} 股 @ ¥{f['price']} "
+                               f"= ¥{f['amount']:,.0f}")
+                else:
+                    typer.echo(f"⏭ {s['event_key']} {f['stock']} {f.get('note','')}")
+            for st, why in s['skipped']:
+                typer.echo(f"⏭ {s['event_key']} {st} 未成交：{why}")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-cancel")
+def sleeve_cancel(
+    event_key: str = typer.Argument(...),
+    reason: str = typer.Option("", "--reason", help="弃单原因（TTL 过期/停牌超期）"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """弃单：资金回消息池 + 槽 archived（坑释放）+ 影子账#1"""
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    try:
+        r = SleeveOpener().cancel_pending(event_key, reason=reason, source=source)
+        typer.echo(f"✅ 弃单 {event_key}（回款 ¥{r['refund']:,.0f}，影子账#1 已记）")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-migrate")
+def sleeve_migrate(
+    stock: str = typer.Argument(...),
+    reason: str = typer.Option("", "--reason", help="V11 资格判定依据（晨审产出）"),
+    source: str = typer.Option("agent", "--source"),
+    code: Optional[str] = typer.Option(None, "--code"),
+):
+    """移交桥：sleeve 持仓平移主仓（原成本结转+双 ledger 对转+迁移成本 FIFO+加仓锁）"""
+    stock = normalize_stock_name(stock)
+    from paper_trading_v2.sleeve_migrate import SleeveMigrator
+    try:
+        code = _ensure_code(stock, code)
+        r = SleeveMigrator().migrate(stock, reason=reason, source=source, code=code)
+        typer.echo(f"✅ 移交 {stock}：{r['qty']} 股 @ ¥{r['avg_cost']:.2f}（成本 ¥{r['cost']:,.0f}）")
+        typer.echo(f"   槽 {r['event_key']} → {r['slot_status']}（加仓锁已落）")
+        typer.echo(f"   双 ledger 对转：主池承接 ¥{r['cost']:,.0f}，消息池回款 ¥{r['refund_to_sleeve']:,.0f}")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-close-slot")
+def sleeve_close_slot(
+    event_key: str = typer.Argument(...),
+    reason: str = typer.Option("", "--reason"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """槽对账归档：全成员清零后槽 closed 释放（残余资金回消息池）"""
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    try:
+        r = SleeveOpener().close_slot(event_key, reason=reason, source=source)
+        typer.echo(f"✅ 槽 {event_key} closed（预算 ¥{r['budget']:,.0f}，已实现 ¥{r['realized']:,.0f}，"
+                   f"残余回款 ¥{r['residual_refund']:,.0f}）")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -266,8 +519,10 @@ def buy(
 ):
     """买入股票"""
     stock_name = normalize_stock_name(stock_name)
+    from paper_trading_v2.gate import enforce
     from paper_trading_v2.trading import PaperTrader
     try:
+        enforce(stock_name, 'buy')      # 能力矩阵：消息组禁直接 buy（只走 sleeve-fill）
         account = PaperTrader().buy_stock(stock_name, quantity=qty, amount=amount, note=note)
         typer.echo(f"✅ 买入成功：{stock_name} ｜ 剩余可用 ¥{account.capital_pool.available:,.0f}")
     except ValueError as e:

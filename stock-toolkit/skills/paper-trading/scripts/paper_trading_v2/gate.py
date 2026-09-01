@@ -46,9 +46,11 @@ def open_conn(db_path=None):
 
 
 def account_grp(conn, stock_name) -> Optional[str]:
-    row = conn.execute("SELECT grp FROM accounts WHERE stock_name=? ORDER BY id LIMIT 1",
-                       (stock_name,)).fetchone()
-    return row[0] if row else None
+    """组路由经 resolve_account 段锚定消歧（R1/Y3/D9）——同票双组并存时不再误命中
+    news 历史壳（迁移票按 L1 段解析为 tech）。"""
+    from paper_trading_v2.storage import resolve_account
+    row = resolve_account(conn, stock_name)
+    return row['grp'] if row else None
 
 
 def log_violation(conn, stock_name, capability, detail='', source='agent'):
@@ -70,9 +72,9 @@ def enforce(stock_name, capability, *, conn=None, db_path=None, source='agent',
     if own:
         conn = open_conn(db_path)
     try:
-        row = conn.execute("SELECT grp FROM accounts WHERE stock_name=? ORDER BY id LIMIT 1",
-                           (stock_name,)).fetchone()
-        grp = row[0] if row else None
+        from paper_trading_v2.storage import resolve_account
+        row = resolve_account(conn, stock_name)
+        grp = row['grp'] if row else None
         # ① 消息组账户：禁 conditions 写 / buy / topup / 主池 allocate
         if grp == 'news' and capability in NEWS_BLOCKED:
             _reject(conn, stock_name, capability,
@@ -85,16 +87,29 @@ def enforce(stock_name, capability, *, conn=None, db_path=None, source='agent',
                 _reject(conn, stock_name, capability,
                         '该股在池中为 NEWS 档（消息组信号缓冲）——技术组不得直接 allocate，'
                         '须走 sleeve-migrate 迁移桥', source, own)
-        # ③ 迁移票加仓锁（migrated 槽 topup_locked=1）
+        # ④ R6/Y5：buy 加池档维度检查——NEWS 档票即便尚无账户（pending 槽未成交）也留痕拒绝
+        if capability == 'buy' and grp != 'news':
+            prow = conn.execute("SELECT strategy FROM pool WHERE stock=? AND "
+                                "pool_status='active'", (stock_name,)).fetchone()
+            if prow and prow['strategy'] == 'NEWS':
+                _reject(conn, stock_name, capability,
+                        '该股在池中为 NEWS 档（消息组信号缓冲）——建仓只走 '
+                        'sleeve-open→sleeve-fill 开盘成交分支，禁直接 buy', source, own)
+        # ③ 迁移票加仓锁（migrated 槽 topup_locked=1）。
+        #    R1 宪法 2.6 豁免：--source migrate（承接后正规 topup 路径，豁免甜点动量检查）；
+        #    资金帽/段位帽/冷却不豁免（master_pool.topup 侧不放宽）。
         if capability == 'topup':
             prow = conn.execute("SELECT event_key FROM pool WHERE stock=?", (stock_name,)).fetchone()
             if prow and prow['event_key']:
                 slot = conn.execute("SELECT status, topup_locked FROM event_slots "
                                     "WHERE event_key=?", (prow['event_key'],)).fetchone()
-                if slot and slot['status'] == 'migrated' and slot['topup_locked']:
+                if slot and slot['status'] == 'migrated' and slot['topup_locked'] \
+                        and source != 'migrate':
                     _reject(conn, stock_name, capability,
                             '迁移票加仓锁（event_slots.topup_locked=1）——'
-                            '二波事件开新槽，不得对已迁移持仓加仓', source, own)
+                            '二波事件开新槽，不得对已迁移持仓加仓；承接后正规注资须 '
+                            '--source migrate（豁免甜点动量检查，资金帽/段位帽/冷却不豁免）',
+                            source, own)
     finally:
         if own:
             conn.close()

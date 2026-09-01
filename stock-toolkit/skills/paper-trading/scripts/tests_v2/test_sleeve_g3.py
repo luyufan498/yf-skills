@@ -10,8 +10,12 @@ from paper_trading_v2.gate import GateViolation
 
 @pytest.fixture(autouse=True)
 def no_network(ws):
+    # 价格抓取全 mock：测试注入价（10/20 等）不触网——R7 价差防线以昨收为参照，
+    # 未 mock 会拿真实行情判 30% 偏离（测试必须密闭，对齐 /tmp/sleeve_audit conftest）
     with patch('paper_trading_v2.trading.PaperTrader.init_account'), \
-         patch('paper_trading_v2.trading.PaperTrader.get_account') as mg:
+         patch('paper_trading_v2.trading.PaperTrader.get_account') as mg, \
+         patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price',
+               return_value=None):
         def _fake_get(stock_name):
             from paper_trading_v2.storage import SqlStorage
             return SqlStorage(ws / 'master_pool.db').load_account(stock_name)
@@ -99,7 +103,7 @@ def test_g3_fail_open_missing_key(pools, ws):
 
 
 def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
-    """sleeve-migrate：主仓 FIFO 成本基准正确（operations/positions 对账）+ 双 ledger 守恒。"""
+    """sleeve-migrate 段转策略（v4.2）：FIFO 行随迁不重买（禁迁移成本行）+ 双 ledger 守恒。"""
     op = _opener(ws)
     op.open_slot(['迁票'], budget=100000, event_key='ND#3', news_kind='sentiment',
                  code_map={'迁票': 'sh600100'})
@@ -123,6 +127,8 @@ def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
     # 卖出所得入账（真实路径由 sell_stock 更新 available；此处对账模拟）
     conn.execute("UPDATE accounts SET capital_available=capital_available+43329.0 "
                  "WHERE id=?", (aid,))
+    n_pos_before = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    n_ops_before = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
     conn.commit(); conn.close()
 
     from paper_trading_v2.sleeve_migrate import SleeveMigrator
@@ -131,17 +137,24 @@ def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
     conn = get_connection(ws / 'master_pool.db')
     aid_t = conn.execute("SELECT id FROM accounts WHERE stock_name='迁票' AND grp='tech'"
                          ).fetchone()[0]
-    # positions 对账：主仓 BUY 行 qty/price/total_cost
-    pos = dict(conn.execute("SELECT * FROM positions WHERE account_id=? AND operation='buy' "
-                            "ORDER BY seq DESC LIMIT 1", (aid_t,)).fetchone())
-    # operations 对账：迁移成本 BUY 行
-    op_row = dict(conn.execute("SELECT * FROM operations WHERE account_id=? AND type='buy' "
-                               "ORDER BY seq DESC LIMIT 1", (aid_t,)).fetchone())
+    # 段转策略：NEWS 段原地转 L1（id 不动），budget=主池实际承接成本
+    seg = dict(conn.execute("SELECT * FROM position WHERE stock='迁票' AND status='open'"
+                            ).fetchone())
+    # FIFO 行随迁（account_id 改挂 tech，不插新行）——迁移前后全库行数不变
+    n_pos_after = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    n_ops_after = conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
+    moved_buy = dict(conn.execute("SELECT * FROM positions WHERE account_id=? AND "
+                                  "operation='buy'", (aid_t,)).fetchone())
+    assert seg['id'] and seg['strategy'] == 'L1' and abs(seg['budget'] - 66670.0) < 1e-6
+    assert n_pos_after == n_pos_before and n_ops_after == n_ops_before   # 零新增行
+    assert moved_buy['quantity'] == 10000 and abs(moved_buy['price'] - 10.0) < 1e-6
+    assert abs(moved_buy['total_cost'] - 100000.0) < 1e-6
+    assert '段转ND#3' in (moved_buy['note'] or '')                       # 留痕
+    # 技术组账户 FIFO 剩余=迁移持仓（成本基准连续，经名字寻址可查）
+    from paper_trading_v2.sleeve_slots import account_remaining
+    qty_left, cost_left = account_remaining(conn, aid_t)
+    assert qty_left == 6667 and abs(cost_left - 66670.0) < 1e-6
     conn.close()
-    assert pos['quantity'] == 6667 and abs(pos['price'] - 10.0) < 1e-6
-    assert abs(pos['total_cost'] - 66670.0) < 1e-6
-    assert abs(op_row['amount'] - 66670.0) < 1e-6
-    assert '迁移成本' in (op_row['note'] or '')
     # 资金守恒：主池 -66670，消息池 +（现金 43329 + 结转 66670）
     main_free = pools.show()['free']
     sleeve_free = pools.show(pool='sleeve')['free']

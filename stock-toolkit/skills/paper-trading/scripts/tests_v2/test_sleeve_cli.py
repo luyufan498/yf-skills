@@ -18,6 +18,14 @@ def _run(app, *args):
     return r
 
 
+@pytest.fixture(autouse=True)
+def no_network(ws):
+    """密闭测试：价格/ATR 抓取不触网（R7 价差防线参照昨收，未 mock 会拿真实行情拒单）"""
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price',
+               return_value=None):
+        yield
+
+
 @pytest.fixture
 def env(ws, monkeypatch):
     """CLI 默认走 STOCK_ANALYSIS_WORKSPACE 环境变量（config.get_workspace_config）"""

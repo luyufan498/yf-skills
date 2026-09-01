@@ -16,6 +16,55 @@ class StorageBackend:
     pass
 
 
+def resolve_account(conn, stock_name: str, prefer_grp: Optional[str] = None):
+    """名字寻址消歧（sleeve-m1.5 R1/Y3/D9）：同票双组（grp=tech/news）并存时按持仓段锚定。
+
+    返回 accounts 行（sqlite3.Row）或 None。规则（确定性，零歧义）：
+      1. 同名仅一个账户 → 直接返回（单组票行为与改造前逐字节一致）
+      2. 有 strategy 非 'NEWS' 的 open 段 → tech 账户（技术组 L1 段锚定——迁移票主寻址，
+         "优先按持仓段（strategy 非 NEWS 的 open 段所在账户）解析"，方案 2.3 v4.2）
+      3. 有 strategy='NEWS' 的 open 段 → news 账户（sleeve 成员）
+      4. 双壳无段（迁移后清仓等）：FIFO 剩余持仓 qty>0 者优先；仍并列取 grp='tech'
+         （迁移后 tech 是活跃承接方，news 仅历史壳——"不得再被活跃寻址命中"）
+    prefer_grp：调用方显式指定组时最高优先（sell_stock 按卖出账户传入，防误路由）。
+    """
+    rows = conn.execute("SELECT * FROM accounts WHERE stock_name=? ORDER BY id",
+                        (stock_name,)).fetchall()
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    by_grp = {r['grp']: r for r in rows}
+    if prefer_grp and prefer_grp in by_grp:
+        return by_grp[prefer_grp]
+    seg = conn.execute(
+        "SELECT strategy FROM position WHERE stock=? AND status='open' "
+        "ORDER BY id DESC LIMIT 1", (stock_name,)).fetchone()
+    if seg:
+        want = 'news' if (seg['strategy'] or '') == 'NEWS' else 'tech'
+        if want in by_grp:
+            return by_grp[want]
+    # 双壳/段侧缺账户：按 FIFO 剩余持仓锁定活跃方
+    def _qty(account_id):
+        rows_p = conn.execute("SELECT operation, quantity FROM positions WHERE account_id=? "
+                              "ORDER BY seq", (account_id,)).fetchall()
+        live = 0
+        for r in rows_p:
+            q = r['quantity'] or 0
+            live += q if (r['operation'] or '') == 'buy' else (-q if
+                                                              (r['operation'] or '') == 'sell' else 0)
+        return live
+    best = None
+    best_qty = 0
+    for r in rows:
+        q = _qty(r['id'])
+        if q > best_qty:
+            best, best_qty = r, q
+    if best is not None:
+        return best
+    return by_grp.get('tech', rows[0])
+
+
 class SqlStorage(StorageBackend):
     """SQLite 规范化表存储。水合：表 → 内存模型，领域逻辑照常。"""
 
@@ -38,14 +87,17 @@ class SqlStorage(StorageBackend):
         return get_workspace_config()['tradings_dir'] / stock_name
 
     def _account_id(self, conn, stock_name: str) -> Optional[int]:
-        row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
-        return row[0] if row else None
+        """名字寻址唯一入口：经 resolve_account 段锚定消歧（R1/Y3/D9，全链路复用）。"""
+        row = resolve_account(conn, stock_name)
+        return row['id'] if row else None
 
     # ---- Account ----
     def load_account(self, stock_name: str) -> Optional[Account]:
         conn = self._conn()
         try:
-            row = conn.execute("SELECT * FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
+            # 名字寻址统一走 resolve_account 段锚定消歧（R1/Y3/D9）——
+            # 迁移票同票双账户并存时命中 tech 持仓账户，不得命中已清零 news 历史壳
+            row = resolve_account(conn, stock_name)
             if not row:
                 return None
             positions = self._load_positions(conn, row['id'])

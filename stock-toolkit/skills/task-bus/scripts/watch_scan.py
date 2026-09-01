@@ -174,7 +174,7 @@ def check_tasks() -> list[dict]:
         conn.commit()
         return [dict(r) for r in conn.execute(
             "SELECT id, type, entity, priority, source FROM task_events "
-            "WHERE status='pending' AND type NOT IN ('CALENDAR','L3_SNAPSHOT') "
+            "WHERE status='pending' AND type NOT IN ('CALENDAR','L3_SNAPSHOT','NEWS_SNAPSHOT') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()
@@ -260,8 +260,8 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
 
     manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
-    mode="eval"（L3 观察窗价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
-    mode="buy"（L2 建仓点）：同 eval 不碰 conditions，额外带 budget（建仓预算）供消费方 allocate。
+    mode="eval"（技术组 L2 待命复检价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
+    mode="buy"（技术组 L2 建仓点）：同 eval 不碰 conditions，额外带 budget（建仓预算）供消费方 allocate。
     tp_only=True（止盈阶梯，2026-08-30）：**只标记触发的 TP 条件本身**，不做 family 标记——
       阶梯只卖 1/3、仓位存续，family UPDATE（category='hard'）会连坐清掉
       cost_protection/trailing_stop，造成余仓裸奔。
@@ -536,7 +536,11 @@ def check_market_shock() -> list[str]:
 
 # ---------- 5. 动量异动扫描（原有） ----------
 def pool_stocks() -> list[tuple[str, str]]:
-    """池内 active 股票 (名称, code)。code 缺失时从 accounts 表兜底（pool.code 可能为 NULL）。"""
+    """池内 active 股票 (名称, code)。code 缺失时从 accounts 表兜底（pool.code 可能为 NULL）。
+
+    sleeve-m1（方案 3.4）：排除 strategy='NEWS'（消息组信号缓冲）——甜点区/追高检测
+    对消息票产噪音告警，消息组不走技术档位语言。
+    """
     if not os.path.exists(POOL_DB):
         return []
     conn = sqlite3.connect(POOL_DB)
@@ -545,7 +549,7 @@ def pool_stocks() -> list[tuple[str, str]]:
         rows = conn.execute(
             "SELECT p.stock AS stock, COALESCE(p.code, a.stock_code) AS code "
             "FROM pool p LEFT JOIN accounts a ON a.stock_name = p.stock "
-            "WHERE p.pool_status='active'").fetchall()
+            "WHERE p.pool_status='active' AND COALESCE(p.strategy,'') != 'NEWS'").fetchall()
         return [(r["stock"], r["code"]) for r in rows if r["code"]]
     finally:
         conn.close()
@@ -645,7 +649,7 @@ def check_calendar() -> list[str]:
     """CALENDAR 事件到期检测：到期时刻 ≤ now 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
 
     分析 agent 对"暂时不买/等财报/等催化"的股票写 CALENDAR 事件（payload.due），
-    到期时心跳唤醒重新评估（升级 L2 / 继续观察 / 移除）。未到期不输出（安静睡眠）。
+    到期时心跳唤醒重新评估（进技术组 L2 待命复检 / 继续观察 / 移除）。未到期不输出（安静睡眠）。
 
     到期时刻语义（2026-08-18 修复，防凌晨空触发）：
     - 纯日期 "2026-08-20" → 视为当天 **15:30（收盘后）** 到期——等财报/等公告的事件
@@ -690,8 +694,9 @@ def check_watch_points() -> list[str]:
     """价格点检测：现价 ≤ 价格点 → WATCH_ALERT + 移除价格点（触发即失效）。
 
     价格点由组合审查/分析 agent 用 taskbus watchpoint add 写入 kv_store('watch_points')。
-    - mode=eval（L3 观察窗）→ WATCH_ALERT(mode=eval) 唤醒分析 agent 评估升级
-    - mode=buy（L2 建仓点）→ WATCH_ALERT(mode=buy, budget=金额) 唤醒核验 → allocate → buy
+    - mode=eval（技术组 L2 待命复检点）→ WATCH_ALERT(mode=eval) 唤醒分析 agent 复检
+      （升 L1 挂 conditions / 继续观察 / 移除——原"评估升级"语义，L3 已并 L2）
+    - mode=buy（技术组 L2 建仓点）→ WATCH_ALERT(mode=buy, budget=金额) 唤醒核验 → allocate → buy
     """
     if not in_trade_hours() or not os.path.exists(TASKS_DB):
         return []
@@ -730,11 +735,11 @@ def check_watch_points() -> list[str]:
                         points.pop(entity, None)  # 触发即失效
                         changed = True
                 else:
-                    cond_name = f"L3观察-{note}" if note else "L3观察"
+                    cond_name = f"L2复检-{note}" if note else "L2复检"
                     if _write_alert(entity, code, "eval", 0, cond_name, p["price"], price,
                                     mode="eval"):
-                        alerts.append(f"📌 {entity}({code}) L3价格点触发: 现价¥{price} ≤ ¥{p['price']} "
-                                      f"[{note}] → 唤醒评估升级")
+                        alerts.append(f"📌 {entity}({code}) L2待命复检点触发: 现价¥{price} ≤ ¥{p['price']} "
+                                      f"[{note}] → 唤醒复检（升 L1/挂 conditions/移除）")
                         points.pop(entity, None)  # 触发即失效
                         changed = True
                 break

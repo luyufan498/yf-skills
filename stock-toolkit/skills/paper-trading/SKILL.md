@@ -23,7 +23,7 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 > **2026-08-10 起 ptrade2 已完整上线**：命令面与 v1 完全对齐（35 命令），SQLite 深迁移存储 + 弹性组合总池 + 三档策略。旧 ptrade v1 保留但仅用于回退。
 
 **核心区别**：
-- **存储**：`ptrade2` 用 SQLite（`master_pool.db`）单一事实源，取代 v1 的每账户 JSON 文件。命令 `ptrade2` 与 v1 命令同名同参，直接替换前缀即可。
+- **存储**：`ptrade2` 用 SQLite（`master_pool.db`）单一事实源，取代 v1 的每账户 JSON 文件。命令 `ptrade2` 与 v1 命令同名同参，直接替换前缀即可。**2026-09-01 M1.6（schema v9）起"账户层退役、段即账户"**：每只股票的资金/持仓实体=**持仓段（position 行）**——段预算（budget）=分配的资金标签、段现金（cash）=未占用资金、FIFO 流水存 `trades` 表按段锚定；旧 `accounts` 表退役为 `accounts_old`（只读历史，寻址/读写全部走段）。CLI 命令名不变（`list`/`info`/`pool`/`holdings` 等输出为**段视角**）。
 - **资金模型**：v1"每只股票独立资金池互不相通" → v2"**一个总池 1000 万 + 按股分配/释放**"。池 ≠ 持仓 ≠ 预算三者解耦。2026-09-01 sleeve-m1 起**双资金池**：`pool_ledger` 趋势池 + `sleeve_ledger` 消息池（≤总资金 20%），互不透支。
 - **档位语义（2026-09-01 L3 Sleeve 架构，两组两层制）**：技术组 L2 待命 → L1 持仓；消息组 NEWS 信号缓冲 → L1 事件槽（sleeve）。L3 并入 L2（`strategy` 值 'L3'→'L2' 的数据合并在 M2 切换时执行）。
 
@@ -52,8 +52,8 @@ ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 
 **消息组（消息池 sleeve_ledger ≤总资金 20%，20 事件坑）**
 - **L2 信号缓冲**（`strategy='NEWS'`，存池表，无交易权限）：收编扫描/晨审按 G1-G4 清单闸落库——G1 数据卫生 / G2 次新否决（上市 <40 交易日硬拒绝，`watchlist-add` 对 NEWS 硬检查）/ G3 事件键归并（键=watchlog.event_key，活跃槽并入不加坑，关闭槽再遇同催化=二波新键）/ G4 TTL 2 交易日作废。**禁设价格点/禁 conditions/禁技术档位语言**
-- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权；**M1/M2 禁用，M3 灰度开放后才可调用**）：每事件 1 槽、成员各挂 grp='news' 账户、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交（R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交 + shadow_log fill_blocked 留痕，槽保持 pending 下轮重试）；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
-- **同票双组**：accounts 以 grp 列路由（tech/news），同名双账户可并存；`allocate`/`sleeve-open` 两侧都查另一组活跃持仓，冲突进晨审人工裁决（例外处理非排序），灰度记账
+- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权；**M1/M2 禁用，M3 灰度开放后才可调用**）：每事件 1 槽、成员各建 NEWS 段（strategy='NEWS'，组由段 strategy 推导）、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交（R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交 + shadow_log fill_blocked 留痕，槽保持 pending 下轮重试）；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
+- **同票双组**：同票两个 open 段并存（L1 段 + NEWS 段），组由段 strategy 推导（'NEWS'⟺news，其余⟺tech，v9 无 grp 列）；`allocate`/`sleeve-open` 两侧都查另一组活跃持仓，冲突进晨审人工裁决（例外处理非排序），灰度记账
 
 ```bash
 # ===== 技术组 =====
@@ -104,7 +104,7 @@ LLM 对买卖的临场裁量判决（违三安全线一）；缓冲态超 TTL �
 | 跨组 | 禁直接买 NEWS 票（须走迁移桥） | 事件不进技术组 L2 |
 | 资金 | pool_ledger | sleeve_ledger ≤20% |
 
-> 违例 = CLI 报错 + shadow_log(kind='gate_violation') 留痕。闸门拦截：grp=news 账户的
+> 违例 = CLI 报错 + shadow_log(kind='gate_violation') 留痕。闸门拦截：NEWS 段（消息组成员）的
 > conditions 写全家/buy/topup；pool strategy='NEWS' 票的直接 allocate。
 
 ## 🌉 移交桥（迁移＝段转策略，方案 2.3 v4.2；**M1/M2 禁用，M3 灰度开放后才可调用**）
@@ -114,8 +114,9 @@ LLM 对买卖的临场裁量判决（违三安全线一）；缓冲态超 TTL �
 - **动作语义 v4.2＝段转策略**：`ptrade2 sleeve-migrate <股> --reason "<V11 依据>"`——成员持仓段
   原地 strategy 'NEWS'→'L1'（段行 id 不动，成本基准/FIFO 天然连续，不重买不追价、
   **禁插"迁移成本"operation 行**——那是 FIFO 错账源头）；同事务配套：news 账户资金结算
-  （承接成本入同名 grp=tech 账户、现金+成本回消息池）、positions/operations/conditions 行随迁
-  （保护链按原成本续挂）、pool_ledger↔sleeve_ledger 对转、主池池行写 event_key、
+  （承接成本入承接段 budget、段现金+承接成本回消息池）、trades/operations/conditions 行随段
+  （同票无 tech 段=原地转 id 不动；有=并入 tech 段；保护链按原成本续挂）、
+  pool_ledger↔sleeve_ledger 对转、主池池行写 event_key、
   槽转 migrated（topup_locked=1 加仓锁）。**单向、一次、不可回迁**；未持仓事件票走技术确认买入=永久禁止
 - **承接后治理**：转段即入主池治理（计 20 段位、受 30% 帽）；承接注资走
   `master-pool-topup --source migrate`（豁免甜点动量检查，宪法 2.6；资金帽/段位帽/冷却不豁免）
@@ -261,7 +262,7 @@ G1-G4 清单闸机械执行 + news_kind 打标 + sleeve-open，禁任何甜点�
 
 **与其他机制分工**：入池的"事件驱动"路径（taskbus CANDIDATE → 分析）管盘中新题材；组合审查主动扫描管"没上新闻雷达但技术面转好"的兜底 + 出池候选识别（不删除）。
 
-# 开持仓段（从 free 拨预算建账户）——替代 v1 的 ptrade init
+# 开持仓段（从 free 拨预算段直建，v9 段即账户）——替代 v1 的 ptrade init
 ptrade2 master-pool-allocate 股票 --amount 200000 --reason 右侧建仓
 
 # 段内注资（买入缺口时）
@@ -276,8 +277,12 @@ ptrade2 buy 股票 --qty 100
 ptrade2 atr-sync 股票
 ptrade2 check-triggers 股票
 
-# 历史迁移（一次性，把 v1 JSON 账户归档为 closed 段）
+# 历史迁移（一次性，已于 2026-08-10 完成；v9 起显式拒绝——账户层退役后无一股一户导入语义）
 ptrade2 migrate-existing
+
+# 资金恒等式对账（U7.5，只报不拦）：主池free+消息池free+Σopen段budget vs 总资金，
+# 容差=closed 段滞留现金+费税项；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）
+ptrade2 reconcile [--detail]
 ```
 
 详细文档：[弹性组合总池（V2）](references/elastic-master-pool.md)、[V2 资金纪律](references/trading-principles.md)

@@ -19,6 +19,10 @@ SLOT_ACTIVE = ('open', 'partial')
 NEWS_KINDS = ('price_cycle', 'policy', 'earnings', 'company_event',
               'tech_catalyst', 'sentiment', 'other')
 
+# 段转留痕标记（M1.5 段转策略：随迁行 note 后缀 [段转{event_key}]；M1.7/F1 起同时是
+# get_account 重建公式的分段锚——含标记行=迁移前历史，已随 sleeve 回款结算，不入现金公式）
+SEGMENT_TRANSFER_MARK = '段转'
+
 
 def now_iso() -> str:
     return datetime.now().isoformat()

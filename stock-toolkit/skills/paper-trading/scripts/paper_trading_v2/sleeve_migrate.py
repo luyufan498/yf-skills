@@ -196,10 +196,12 @@ class SleeveMigrator:
         """账户行随迁（段转策略留痕）：positions/operations/exright_applied/conditions
         整体改挂 to_aid——不插入任何新行（positions 纯 FIFO 现金流红线）。
         - positions：note 追加段转标记（留痕），seq 重排续接目标账户
-        - operations：现金流史跟随持仓（load_operations 与 FIFO/available 复算一致）
+        - operations：现金流史跟随持仓（M1.7/F1：标记行=迁移前历史，已随 sleeve 回款
+          结算，get_account 重建公式按标记分段，不再计入 tech 账户现金流）
         - conditions：保护链三件套按原成本续挂（方案 2.3，sleeve 与主仓参数同构）
         """
-        marker = f" [段转{event_key}]"
+        from paper_trading_v2.sleeve_slots import SEGMENT_TRANSFER_MARK
+        marker = f" [{SEGMENT_TRANSFER_MARK}{event_key}]"
         base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions "
                             "WHERE account_id=?", (to_aid,)).fetchone()[0]
         rows = conn.execute("SELECT id FROM positions WHERE account_id=? ORDER BY seq",

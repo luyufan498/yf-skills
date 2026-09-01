@@ -363,3 +363,96 @@ def test_release_twice_sequential_rejected(pools, env):
     m.release('放票W', reason='第一次')
     with pytest.raises(ValueError):
         m.release('放票W', reason='第二次')
+
+
+# ============ F1：幻影现金（迁移前已实现盈亏双算/双扣） ============
+
+class _PI:
+    """价格注入（密闭，零触网）。"""
+
+    def __init__(self, p):
+        self.current_price = p
+        self.open_price = p
+        self.pre_close = p
+
+
+def _trader(env):
+    from paper_trading_v2.trading import PaperTrader
+    from paper_trading_v2.storage import SqlStorage
+    return PaperTrader(storage=SqlStorage(env / 'master_pool.db'))
+
+
+def _w_delta(env):
+    """普适资金守恒：free(双池)+Σavail+ΣFIFO成本−Σ已实现盈亏 vs 常数 12,000,000。"""
+    conn = _conn(env)
+    pool_free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
+    sleeve_free = conn.execute("SELECT free FROM sleeve_ledger WHERE id=1").fetchone()[0]
+    avail = conn.execute("SELECT COALESCE(SUM(capital_available),0) FROM accounts").fetchone()[0]
+    rpnl = 0.0
+    for tbl in ('operations', 'operations_archive'):
+        rpnl += conn.execute(
+            f"SELECT COALESCE(SUM(COALESCE(amount,0)-COALESCE(cost,0)),0) FROM {tbl} "
+            f"WHERE type='sell'").fetchone()[0] or 0.0
+    fifo = 0.0
+    from paper_trading_v2.sleeve_slots import account_remaining
+    for (aid,) in conn.execute("SELECT DISTINCT account_id FROM positions").fetchall():
+        fifo += account_remaining(conn, aid)[1]
+    conn.close()
+    return pool_free + sleeve_free + avail + fifo - rpnl - 12_000_000
+
+
+@pytest.mark.parametrize('sell_price,expected_pnl', [(12.0, 40_000), (8.0, -40_000)])
+def test_migrated_account_no_phantom_cash(pools, env, sell_price, expected_pnl):
+    """phantom.py 三态：迁移前部分卖出（盈/亏）→ migrate → get_account available 必须=0。
+
+    审计实测：随迁 operations 进重建公式 → 盈利双算 +40,000 / 亏损双扣 −40,000，
+    传导 release close_value 污染主池（W_delta ±40,000）。
+    """
+    op = _opener(env)
+    op.open_slot(['幻票'], budget=500_000, event_key='ND#PH', code_map={'幻票': 'sh1'})
+    op.fill_pending(event_key='ND#PH', open_prices={'幻票': 10.0}, skip_conditions=True)
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(sell_price)
+        _trader(env).sell_stock('幻票', quantity=20_000, note='TP1')
+    _migrator(env).migrate('幻票', reason='V11')
+
+    acct = _trader(env).get_account('幻票')
+    assert acct.grp == 'tech'
+    assert abs(acct.capital_pool.available) < 0.01, \
+        f"幻影现金 {acct.capital_pool.available:+,.0f}（应=0；迁移前盈亏 {expected_pnl:+,.0f} 被双算）"
+    assert abs(_w_delta(env)) < 0.01, f"W_delta={_w_delta(env):+,.2f}"
+
+
+def test_migrated_account_available_tracks_post_migration_trading(pools, env):
+    """迁移前有已实现盈亏 + 迁移后继续交易：available 恒 = total − Σ(open FIFO cost)
+    + Σ(迁移后已实现盈亏)；旧全史公式会多出"迁移前盈亏"一项（幻影）。"""
+    op = _opener(env)
+    op.open_slot(['续票'], budget=400_000, event_key='ND#PS', code_map={'续票': 'sh1'})
+    op.fill_pending(event_key='ND#PS', open_prices={'续票': 10.0}, atr={'续票': 0.5})
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(12.0)
+        _trader(env).sell_stock('续票', quantity=13_333, note='TP1 迁移前部分卖出')
+    _migrator(env).migrate('续票', reason='V11', code='sh1')
+    _pool_mgr(env).topup('续票', 200_000, reason='承接注资', source='migrate')
+
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(15.0)
+        trader = _trader(env)
+        trader.buy_stock('续票', amount=150_000, note='承接后加买')
+        trader.sell_stock('续票', quantity=5_000, note='承接后减仓')
+
+    acct = _trader(env).get_account('续票')
+    conn = _conn(env)
+    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='续票' AND grp='tech'"
+                       ).fetchone()[0]
+    from paper_trading_v2.sleeve_slots import account_remaining
+    qty, fifo_cost = account_remaining(conn, aid)
+    rpnl = conn.execute("SELECT COALESCE(SUM(COALESCE(amount,0)-COALESCE(cost,0)),0) "
+                        "FROM operations WHERE account_id=? AND type='sell' AND note "
+                        "NOT LIKE '%段转%'", (aid,)).fetchone()[0] or 0.0
+    conn.close()
+    expected = acct.capital_pool.total - fifo_cost + rpnl
+    assert qty > 0
+    assert abs(acct.capital_pool.available - expected) < 1.0, \
+        f"available={acct.capital_pool.available:,.2f} 应=total−FIFO成本+已实现盈亏={expected:,.2f}"
+    assert abs(_w_delta(env)) < 0.01, f"W_delta={_w_delta(env):+,.2f}"

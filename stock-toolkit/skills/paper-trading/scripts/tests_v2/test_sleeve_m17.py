@@ -456,3 +456,77 @@ def test_migrated_account_available_tracks_post_migration_trading(pools, env):
     assert abs(acct.capital_pool.available - expected) < 1.0, \
         f"available={acct.capital_pool.available:,.2f} 应=total−FIFO成本+已实现盈亏={expected:,.2f}"
     assert abs(_w_delta(env)) < 0.01, f"W_delta={_w_delta(env):+,.2f}"
+
+
+# ============ F2：保护链只写不可读（conditions_manager 裸名字寻址） ============
+
+def _cm(env):
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    from paper_trading_v2.storage import SqlStorage
+    return ConditionsManager(storage=SqlStorage(env / 'master_pool.db'))
+
+
+def test_migrated_ticket_conditions_readable_and_triggerable(pools, env):
+    """迁移票挂线→改价破位→check_triggers 能触发（审计站6c/6e：load_conditions 裸名字
+    寻址命中 news 历史壳 → 迁移票保护链只写不可读、check_triggers 破位返空）。"""
+    op = _opener(env)
+    op.open_slot(['护票'], budget=400_000, event_key='ND#PC', code_map={'护票': 'sh1'})
+    op.fill_pending(event_key='ND#PC', open_prices={'护票': 10.0}, atr={'护票': 0.5})
+    _migrator(env).migrate('护票', reason='V11', code='sh1')
+
+    rec = _cm(env).load_conditions('护票')
+    assert rec is not None and rec.conditions, \
+        "load_conditions 裸名字寻址命中 news 历史壳 → 迁移票保护链读不到"
+    assert {'cost_protection', 'trailing_stop'} <= set(rec.conditions)
+    assert abs(rec.conditions['cost_protection'].price - 9.0) < 0.01
+
+    breaches = _cm(env).check_triggers('护票', current_price=8.5)
+    assert breaches, "现价 8.5 已破 9.0 保护线但 check_triggers 返回空（感知断链）"
+
+    # save 路径：改价必须写回 tech 账户，不得写进/清空 news 壳
+    rec.conditions['cost_protection'].price = 8.8
+    _cm(env).save_conditions(rec)
+    conn = _conn(env)
+    aid_tech = conn.execute("SELECT id FROM accounts WHERE stock_name='护票' AND grp='tech'"
+                            ).fetchone()[0]
+    aid_news = conn.execute("SELECT id FROM accounts WHERE stock_name='护票' AND grp='news'"
+                            ).fetchone()[0]
+    tech_cp = conn.execute("SELECT price FROM conditions WHERE account_id=? AND "
+                           "type='cost_protection'", (aid_tech,)).fetchone()
+    news_conds = conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
+                              (aid_news,)).fetchone()[0]
+    conn.close()
+    assert tech_cp and abs(tech_cp[0] - 8.8) < 0.01, f"改价未写回 tech: {tech_cp}"
+    assert news_conds == 0, f"news 壳被误写 {news_conds} 条条件"
+
+
+def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
+    """buy 后重锚写对账户（审计站6d：_sync_conditions_after_buy 被 news 壳吞掉，
+    cost_protection 锚死在迁移前原成本 9.0）。"""
+    op = _opener(env)
+    op.open_slot(['锚票'], budget=400_000, event_key='ND#PA', code_map={'锚票': 'sh1'})
+    op.fill_pending(event_key='ND#PA', open_prices={'锚票': 10.0}, atr={'锚票': 0.5})
+    _migrator(env).migrate('锚票', reason='V11', code='sh1')
+    _pool_mgr(env).topup('锚票', 200_000, reason='承接注资', source='migrate')
+
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(15.0)
+        _trader(env).buy_stock('锚票', amount=150_000, note='承接后加买')
+
+    conn = _conn(env)
+    aid_tech = conn.execute("SELECT id FROM accounts WHERE stock_name='锚票' AND grp='tech'"
+                            ).fetchone()[0]
+    from paper_trading_v2.sleeve_slots import account_remaining
+    qty, fifo_cost = account_remaining(conn, aid_tech)
+    news_conds = conn.execute(
+        "SELECT COUNT(*) FROM conditions WHERE account_id=(SELECT id FROM accounts "
+        "WHERE stock_name='锚票' AND grp='news')").fetchone()[0]
+    tech_cp = conn.execute("SELECT price FROM conditions WHERE account_id=? AND "
+                           "type='cost_protection'", (aid_tech,)).fetchone()
+    conn.close()
+    avg_cost = fifo_cost / qty
+    expected = round(avg_cost * (1 - 0.03), 2)       # 刚买入=建仓缓冲期（BUILD_BUFFER=3%）
+    assert avg_cost > 10.0, f"加买后加权成本={avg_cost}（应含 15 元新买档）"
+    assert tech_cp and abs(tech_cp[0] - expected) < 0.01, \
+        f"加买后保本锁未重锚：{tech_cp[0] if tech_cp else None}（应={expected}，锚死 9.0=原成本）"
+    assert news_conds == 0

@@ -192,7 +192,8 @@ def _ensure_code(stock: str, code: Optional[str]) -> str:
         conn = get_connection(w.db_path)
         row = conn.execute(
             "SELECT COALESCE((SELECT code FROM pool WHERE stock=? LIMIT 1), "
-            "(SELECT stock_code FROM accounts WHERE stock_name=? LIMIT 1)) AS c",
+            "(SELECT stock_code FROM accounts WHERE stock_name=? AND stock_code IS NOT NULL "
+            "LIMIT 1)) AS c",
             (stock, stock),
         ).fetchone()
         conn.close()

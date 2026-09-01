@@ -15,7 +15,7 @@ from paper_trading_v2.conditions import (
     format_trigger_table, format_audit_table, calculate_expiry_date,
     OVERRIDE_TRIGGERS,
 )
-from paper_trading_v2.storage import JsonStorage
+from paper_trading_v2.storage import JsonStorage, resolve_account
 from paper_trading_v2.models import Account
 
 
@@ -30,10 +30,15 @@ class ConditionsManager:
         return get_connection(self.storage.db_path)
 
     def load_conditions(self, stock_name: str) -> Optional[ConditionsRecord]:
-        """从 SQLite 水合 ConditionsRecord（conditions dict + events 列表，保序）"""
+        """从 SQLite 水合 ConditionsRecord（conditions dict + events 列表，保序）
+
+        M1.7/F2：账户寻址走 resolve_account 段锚定消歧——同票双组并存时（迁移票）命中
+        tech 持仓账户；裸 `WHERE stock_name=?` 会命中 id 最小的 news 历史壳（0 条件），
+        保护链退化成"只写不可读"（check-triggers 破位返空、buy 后重锚被吞）。
+        """
         conn = self._db_conn()
         try:
-            row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (stock_name,)).fetchone()
+            row = resolve_account(conn, stock_name)
             if not row:
                 return None
             account_id = row[0]
@@ -73,10 +78,14 @@ class ConditionsManager:
             conn.close()
 
     def save_conditions(self, record: ConditionsRecord) -> Path:
-        """把 ConditionsRecord 事务化 upsert 进 SQLite"""
+        """把 ConditionsRecord 事务化 upsert 进 SQLite
+
+        M1.7/F2：写路径同样走 resolve_account 段锚定——条件改写/重锚必须落在
+        持仓侧账户（tech），不得写入/清空 news 历史壳。
+        """
         conn = self._db_conn()
         try:
-            row = conn.execute("SELECT id FROM accounts WHERE stock_name=?", (record.stock_name,)).fetchone()
+            row = resolve_account(conn, record.stock_name)
             if not row:
                 raise ValueError(f"账户 '{record.stock_name}' 不存在，请先初始化")
             account_id = row[0]

@@ -142,7 +142,7 @@ class SleeveOpener:
                         for s in all_members:
                             aid = news_account_id(conn, s)
                             cur_total = conn.execute(
-                                "SELECT capital_total FROM accounts WHERE id=?", (aid,)
+                                "SELECT budget FROM position WHERE id=?", (aid,)
                             ).fetchone()[0] or 0.0
                             if share > cur_total:
                                 deduct += share - cur_total
@@ -222,7 +222,7 @@ class SleeveOpener:
                             stale_aid = news_account_id(conn, s)
                             if stale_aid:
                                 cash = conn.execute(
-                                    "SELECT capital_available FROM accounts WHERE id=?",
+                                    "SELECT cash FROM position WHERE id=?",
                                     (stale_aid,)).fetchone()[0] or 0.0
                                 if cash:
                                     conn.execute("UPDATE sleeve_ledger SET free=free+?, "
@@ -259,66 +259,49 @@ class SleeveOpener:
         finally:
             conn.close()
 
-    # ---- 成员账户 ----
+    # ---- 成员段（v9 段即账户：不再建 accounts 行，成员=NEWS 段 + 段现金）----
 
     def _ensure_member_account(self, conn, stock, code, now, reset=True, capital=None):
-        """建/重置 grp='news' 成员账户（对齐 allocate 的重入归档语义）。返回 account_id。"""
-        cur = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp='news'",
-                           (stock,)).fetchone()
-        if cur:
-            aid = cur[0]
-            if reset:
-                seg_id = conn.execute(
-                    "SELECT id FROM position WHERE stock=? AND status='closed' "
-                    "ORDER BY id DESC LIMIT 1", (stock,)).fetchone()
-                seg_id = seg_id[0] if seg_id else None
-                conn.execute(
-                    "INSERT INTO operations_archive (account_id, archived_at, segment_id, type, "
-                    "price, quantity, amount, cost, profit, capital, timestamp, note, seq) "
-                    "SELECT ?, ?, ?, type, price, quantity, amount, cost, profit, capital, "
-                    "timestamp, note, seq FROM operations WHERE account_id=?",
-                    (aid, now, seg_id, aid))
-                conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
-                conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
-                conn.execute("DELETE FROM condition_history WHERE condition_id IN "
-                             "(SELECT id FROM conditions WHERE account_id=?)", (aid,))
-                conn.execute("DELETE FROM conditions WHERE account_id=?", (aid,))
-                conn.execute("DELETE FROM exright_applied WHERE account_id=?", (aid,))
-                conn.execute("UPDATE accounts SET stock_code=COALESCE(?, stock_code), "
-                             "capital_total=?, capital_available=?, capital_used=0, "
-                             "fifo_index=-1, fifo_offset=0, updated_at=? WHERE id=?",
-                             (code, capital, capital, now, aid))
-                conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
-                             "note) VALUES (?,0,'init',?,?,'sleeve 成员初始化')",
-                             (aid, capital, now))
-            return aid
-        cur = conn.execute(
-            "INSERT INTO accounts (stock_name, stock_code, capital_total, capital_available, "
-            "capital_used, fifo_index, fifo_offset, grp, created_at, updated_at) "
-            "VALUES (?,?,?,?,0,-1,0,'news',?,?)", (stock, code, capital, capital, now, now))
-        aid = cur.lastrowid
-        conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, note) "
-                     "VALUES (?,0,'init',?,?,'sleeve 成员初始化')", (aid, capital, now))
-        return aid
+        """建/重置 NEWS 成员段（v9：段即账户，组由 strategy='NEWS' 推导）。返回段 id。
 
-    def _topup_member(self, conn, stock, target_total, now):
-        """并入时补足成员账户到新等权份额；position.budget 同步累计。返回实补金额。"""
-        aid = news_account_id(conn, stock)
-        if aid is None:
-            raise ValueError(f"并入成员 {stock} 缺 grp=news 账户（数据异常）")
-        cur_total = conn.execute("SELECT capital_total FROM accounts WHERE id=?",
-                                 (aid,)).fetchone()[0] or 0.0
-        delta = target_total - cur_total
-        if delta <= 0:
-            return 0.0
-        conn.execute("UPDATE accounts SET capital_total=?, capital_available="
-                     "capital_available+?, updated_at=? WHERE id=?",
-                     (target_total, delta, now, aid))
+        reset=True（新槽/旧槽已关残留重开）：段现金重置为 capital、FIFO 清零；
+        reset=False（并入等权）：段已存在（调用方先建 budget=0 段），不重建不重置。
+        旧实现的重入归档（operations_archive/DELETE 流水）在 v9 废除——
+        旧段（closed）自带全部 trades/operations 历史，段即账户历史天然分段。
+        """
         seg = conn.execute("SELECT id FROM position WHERE stock=? AND status='open' "
                            "AND strategy='NEWS' ORDER BY id DESC LIMIT 1", (stock,)).fetchone()
         if seg:
-            conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+? "
-                         "WHERE id=?", (delta, delta, seg['id']))
+            aid = seg[0]
+            if reset:
+                conn.execute("UPDATE position SET cash=?, fifo_index=-1, fifo_offset=0, "
+                             "code=COALESCE(?, code) WHERE id=?", (capital or 0.0, code, aid))
+                conn.execute("INSERT INTO operations (account_id, seq, type, capital, "
+                             "timestamp, note) VALUES (?,0,'init',?,?,'sleeve 成员初始化（段直建）')",
+                             (aid, capital, now))
+            return aid
+        cur = conn.execute(
+            "INSERT INTO position (stock, code, strategy, status, budget, topup_total, "
+            "opened_at, cash, fifo_index, fifo_offset) VALUES (?,?,'NEWS','open',?,0,?,?,-1,0)",
+            (stock, code, capital or 0.0, now, capital or 0.0))
+        aid = cur.lastrowid
+        conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, note) "
+                     "VALUES (?,0,'init',?,?,'sleeve 成员初始化（段直建）')", (aid, capital, now))
+        return aid
+
+    def _topup_member(self, conn, stock, target_total, now):
+        """并入时补足成员段到新等权份额（段 cash/budget 同步累计）。返回实补金额。"""
+        aid = news_account_id(conn, stock)
+        if aid is None:
+            raise ValueError(f"并入成员 {stock} 缺 NEWS open 段（数据异常）")
+        seg = conn.execute("SELECT cash, budget FROM position WHERE id=?", (aid,)).fetchone()
+        cur_total = seg['budget'] or 0.0
+        cur_cash = seg['cash'] or 0.0
+        delta = target_total - cur_total
+        if delta <= 0:
+            return 0.0
+        conn.execute("UPDATE position SET budget=?, cash=?, topup_total=topup_total+? "
+                     "WHERE id=?", (target_total, cur_cash + delta, delta, aid))
         return delta
 
     def _upsert_pool_row(self, conn, stock, code, event_key, news_kind, now, source):
@@ -390,8 +373,7 @@ class SleeveOpener:
                         filled.append({"stock": stock, "note": "已有持仓跳过"})
                         continue
                     cash, acct_code = conn.execute(
-                        "SELECT capital_available, stock_code FROM accounts WHERE id=?",
-                        (aid,)).fetchone()
+                        "SELECT cash, code FROM position WHERE id=?", (aid,)).fetchone()
                     cash = cash or 0.0
                     code = (codes or {}).get(stock) or acct_code
                     price = (open_prices or {}).get(stock)
@@ -456,20 +438,19 @@ class SleeveOpener:
                         skipped.append((stock, 'ATR 解析失败，拒绝裸奔成交（下轮重试）'))
                         all_filled = False
                         continue
-                    # R2/A1：扣款认领=条件 UPDATE（余额充足才扣），并发同成员抢不到=出局
+                    # R2/A1：扣款认领=条件 UPDATE（段现金充足才扣），并发同成员抢不到=出局
                     cur = conn.execute(
-                        "UPDATE accounts SET capital_available=capital_available-?, "
-                        "capital_used=capital_used+?, updated_at=? "
-                        "WHERE id=? AND capital_available>=?",
-                        (amount, amount, now, aid, amount))
+                        "UPDATE position SET cash=cash-?, updated_at=? "
+                        "WHERE id=? AND cash>=?",
+                        (amount, now, aid, amount))
                     if cur.rowcount == 0:
                         skipped.append((stock, '扣款未获认领（并发成交让位/资金不足）'))
                         all_filled = False
                         continue
-                    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions "
+                    seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM trades "
                                        "WHERE account_id=?", (aid,)).fetchone()[0]
                     conn.execute(
-                        "INSERT INTO positions (account_id, seq, operation, stock_code, quantity,"
+                        "INSERT INTO trades (account_id, seq, operation, stock_code, quantity,"
                         " price, total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?)",
                         (aid, seq, 'buy', code, qty, price, amount, now,
                          f"sleeve-fill {slot['event_key']}"))
@@ -564,10 +545,15 @@ class SleeveOpener:
         for ctype, price, name, peak, auto_link in (
                 ('cost_protection', cost_prot, f'sleeve成本保护-{ATR_K_COST}×ATR', None, 1),
                 ('trailing_stop', trail, f'sleeve移动止损-{ATR_K_TRAIL}×ATR', fill_price, 0)):
+            # U7.1：INSERT 前查活跃同型线，存在则 UPDATE 不 INSERT
+            #（凯莱英 8/31 三连挂实证：重复挂低垂 trailing 线先触发→提前误卖；多引擎读线歧义）
             exists = conn.execute(
-                "SELECT id FROM conditions WHERE account_id=? AND type=? AND status='active'",
-                (aid, ctype)).fetchone()
+                "SELECT id, price FROM conditions WHERE account_id=? AND type=? AND "
+                "status='active'", (aid, ctype)).fetchone()
             if exists:
+                conn.execute("UPDATE conditions SET price=?, peak_price=COALESCE(?, peak_price), "
+                             "modified_at=? WHERE id=?",
+                             (price, peak, now, exists['id']))
                 continue
             seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM conditions "
                                "WHERE account_id=?", (aid,)).fetchone()[0]
@@ -613,13 +599,13 @@ class SleeveOpener:
                     if qty > 0:
                         raise ValueError(f"{stock} 已部分成交（{qty} 股），不能整单弃单，"
                                          f"请走正常退出路径")
-                    cash = conn.execute("SELECT capital_available FROM accounts WHERE id=?",
+                    cash = conn.execute("SELECT cash FROM position WHERE id=?",
                                         (aid,)).fetchone()[0] or 0.0
                     refund += cash
                     conn.execute("UPDATE sleeve_ledger SET free=free+?, updated_at=? WHERE id=1",
                                  (cash, now))
-                    conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, "
-                                 "capital_used=0, updated_at=? WHERE id=?", (now, aid))
+                    conn.execute("UPDATE position SET cash=0, fifo_index=-1, fifo_offset=0 "
+                                 "WHERE id=?", (aid,))
                     conn.execute("UPDATE position SET status='closed', closed_at=?, "
                                  "close_value=0, realized_pnl=0 WHERE stock=? AND status='open' "
                                  "AND strategy='NEWS'", (now, stock))
@@ -680,14 +666,14 @@ class SleeveOpener:
                     aid = news_account_id(conn, m['stock'])
                     if aid is None:
                         continue
-                    cash = conn.execute("SELECT capital_available FROM accounts WHERE id=?",
+                    cash = conn.execute("SELECT cash FROM position WHERE id=?",
                                         (aid,)).fetchone()[0] or 0.0
                     if cash:
                         residual += cash
                         conn.execute("UPDATE sleeve_ledger SET free=free+?, updated_at=? "
                                      "WHERE id=1", (cash, now))
-                        conn.execute("UPDATE accounts SET capital_total=0, capital_available=0,"
-                                     " capital_used=0, updated_at=? WHERE id=?", (now, aid))
+                        conn.execute("UPDATE position SET cash=0, fifo_index=-1, "
+                                     "fifo_offset=0 WHERE id=?", (aid,))
                     conn.execute("UPDATE position SET status='closed', closed_at=?, "
                                  "close_value=COALESCE(close_value,0) WHERE stock=? AND "
                                  "status='open' AND strategy='NEWS'", (now, m['stock']))

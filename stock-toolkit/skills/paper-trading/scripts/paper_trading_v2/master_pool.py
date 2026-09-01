@@ -137,12 +137,15 @@ class MasterPoolManager:
 
     def allocate(self, stock, amount, reason, source="agent", code=None, pool=None,
                  grp=None):
-        """开持仓段：从 free 拨 budget，建/重置账户，记 audit。账户与池同事务。
+        """开持仓段：从 free 拨 budget，段吸收现金（v9 段即账户），记 audit。段与池同事务。
 
-        pool='main'（默认）：主池 allocate，行为与改造前一致（账户 grp='tech'）。
-        pool='sleeve'：消息池成员拨款——账户 grp='news'、段 strategy='NEWS'、
-        不改池档位（消息组 L1 实体是事件槽，非池档位）。
+        pool='main'（默认）：主池 allocate，行为与改造前一致（组由段 strategy='L1' 推导=tech）。
+        pool='sleeve'：消息池成员拨款——段 strategy='NEWS'（组=news 由 strategy 推导，U2
+        不设 grp 列）、不改池档位（消息组 L1 实体是事件槽，非池档位）。
+        grp 参数保留兼容签名；v9 组恒由 strategy 推导，传入值忽略。
         sleeve-open（多成员原子开槽）走 sleeve_open.SleeveOpener，不经本方法。
+        v9 变更：不再建/重置 accounts 行（表已退役）；旧段操作不再归档清空——
+        旧段（closed）自带全部 trades/operations 历史（段即账户，历史天然分段）。
         """
         pool = pool or self.pool
         from paper_trading_v2.gate import enforce
@@ -204,8 +207,6 @@ class MasterPoolManager:
                                          (stock,)).fetchone()
                 if code is None:
                     code = pool_code['code'] if pool_code else None
-                if grp is None:
-                    grp = 'news'
             with conn:
                 # M1.7/F4：资金认领=相对条件扣减（`free=free-? WHERE free>=?` + rowcount），
                 # 丢失更新在写入瞬间出局（旧 `SET free=绝对值` 会覆盖并发方的相对写）
@@ -223,54 +224,23 @@ class MasterPoolManager:
                              f"AND {_MAIN_SEG_FILTER}) < 20" if pool == 'main' else "")
                 cur = conn.execute(
                     "INSERT INTO position (stock, code, strategy, status, budget, "
-                    "topup_total, opened_at) SELECT ?,?,?, 'open', ?, 0, ? "
+                    "topup_total, opened_at, cash, fifo_index, fifo_offset) "
+                    "SELECT ?,?,?, 'open', ?, 0, ?, ?, -1, 0 "
                     f"WHERE NOT EXISTS (SELECT 1 FROM position WHERE stock=? AND "
                     f"status='open' AND {seg_filter}) {cap_guard}",
-                    (stock, code, pos_strategy, amount, now, stock))
+                    (stock, code, pos_strategy, amount, now, amount, stock))
                 if cur.rowcount == 0:
                     raise ValueError(f"{stock} 已有 open 段（或段位已满），"
                                      f"需先 release 再重新 allocate")
+                seg_id = cur.lastrowid
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'allocate' if pool == 'main' else 'sleeve_allocate',
                               stock, amount, free, new_free, reason, source))
-                # ---- 账户：同一事务直接 SQL ----
-                acct = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp=?",
-                                    (stock, grp or 'tech')).fetchone()
-                if acct:
-                    aid = acct[0]
-                    # 归档旧段操作（保留历史），再重置账户
-                    seg_id = conn.execute(
-                        "SELECT id FROM position WHERE stock=? AND status='closed' "
-                        "ORDER BY id DESC LIMIT 1", (stock,)).fetchone()
-                    seg_id = seg_id[0] if seg_id else None
-                    conn.execute(
-                        "INSERT INTO operations_archive (account_id, archived_at, segment_id, type, "
-                        "price, quantity, amount, cost, profit, capital, timestamp, note, seq) "
-                        "SELECT ?, ?, ?, type, price, quantity, amount, cost, profit, capital, "
-                        "timestamp, note, seq FROM operations WHERE account_id=?",
-                        (aid, now, seg_id, aid))
-                    conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
-                    conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
-                    conn.execute("DELETE FROM condition_history WHERE condition_id IN "
-                                 "(SELECT id FROM conditions WHERE account_id=?)", (aid,))
-                    conn.execute("DELETE FROM conditions WHERE account_id=?", (aid,))
-                    conn.execute("DELETE FROM exright_applied WHERE account_id=?", (aid,))
-                    conn.execute(
-                        "UPDATE accounts SET stock_code=COALESCE(?, stock_code), capital_total=?, "
-                        "capital_available=?, capital_used=0, fifo_index=-1, fifo_offset=0, "
-                        "updated_at=? WHERE id=?",
-                        (code, amount, amount, now, aid))
-                else:
-                    cur = conn.execute(
-                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                        "capital_available, capital_used, fifo_index, fifo_offset, grp, "
-                        "created_at, updated_at) VALUES (?,?,?,?,0,-1,0,?,?,?)",
-                        (stock, code, amount, amount, grp or 'tech', now, now))
-                    aid = cur.lastrowid
+                # v9：段即账户——段吸收现金（cash=拨款），init 流水行键到段
                 conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
-                             "note) VALUES (?,0,'init',?,?,'初始化资金池')",
-                             (aid, amount, now))
+                             "note) VALUES (?,0,'init',?,?,'初始化资金池（段直建）')",
+                             (seg_id, amount, now))
                 # 分配预算 → 档位自动升 L1（仅主池；消息组档位是槽，不动池 strategy）
                 if pool == 'main':
                     conn.execute("UPDATE pool SET strategy='L1' WHERE stock=? AND pool_status='active'",
@@ -283,9 +253,9 @@ class MasterPoolManager:
 
     def topup(self, stock, amount, reason, source="agent", pool=None):
         pool = pool or self.pool
-        """段内注资：从 free 拨差额进账户，同步加 total/available。同事务。
+        """段内注资：从 free 拨差额进段现金（v9 段即账户），同步加 budget/topup_total。同事务。
 
-        闸门：消息组加仓锁死（灰度）——grp=news 账户与迁移票（topup_locked）一律拒绝。
+        闸门：消息组加仓锁死（灰度）——NEWS 段与迁移票（topup_locked）一律拒绝。
         """
         from paper_trading_v2.gate import enforce
         enforce(stock, 'topup', source=source)      # 闸门：news 加仓锁 / 迁移票加仓锁
@@ -315,11 +285,6 @@ class MasterPoolManager:
                     (stock,)).fetchone()
                 if not seg:
                     raise ValueError(f"{stock} 没有消息池 open 段，需先 sleeve-open")
-            acct = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp=?",
-                                (stock, 'news' if pool == 'sleeve' else 'tech')).fetchone()
-            if not acct:
-                raise ValueError(f"账户 {stock} 不存在")
-            aid = acct[0]
             with conn:
                 # M1.7/F4：资金认领=相对条件扣减 + rowcount（丢失更新在写入瞬间出局）
                 cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
@@ -328,18 +293,16 @@ class MasterPoolManager:
                     raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
                                      f"空闲 ¥{free:,.0f}")
                 new_free = free - amount
-                # 段预算同步=相对累加 + status 守卫（段已被并发关闭则出局回滚）
-                cur = conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+? "
-                                   "WHERE id=? AND status='open'", (amount, amount, seg['id']))
+                # 段预算/段现金同步=相对累加 + status 守卫（段已被并发关闭则出局回滚）
+                cur = conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+?, "
+                                   "cash=cash+? WHERE id=? AND status='open'",
+                                   (amount, amount, amount, seg['id']))
                 if cur.rowcount == 0:
                     raise ValueError(f"{stock} 段已被并发关闭，注资中止")
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'topup' if pool == 'main' else 'sleeve_topup',
                               stock, amount, free, new_free, reason, source))
-                conn.execute("UPDATE accounts SET capital_total=capital_total+?, "
-                             "capital_available=capital_available+?, updated_at=? WHERE id=?",
-                             (amount, amount, now, aid))
             return True
         finally:
             conn.close()
@@ -372,17 +335,17 @@ class MasterPoolManager:
             if not seg:
                 which = '消息池' if pool == 'sleeve' else ''
                 raise ValueError(f"{stock} 没有{which} open 段".replace('  ', ' '))
-            # 读账户（可能触发写回）在池写事务前完成，避免同库写锁冲突
+            # 读段现金（可能触发 get_account 写回修正）在池写事务前完成，避免同库写锁冲突
             if pool == 'sleeve':
                 from paper_trading_v2.sleeve_slots import (
                     news_account_id, account_remaining, settle_member_clear)
                 aid = news_account_id(conn, stock)
                 if aid is None:
-                    raise ValueError(f"账户 {stock}（grp=news）不存在")
+                    raise ValueError(f"{stock} 无 NEWS open 段（非 sleeve 成员）")
                 qty, _ = account_remaining(conn, aid)
                 if qty > 0:
                     raise ValueError(f"{stock} 仍有持仓 {qty} 股，先清仓再 release")
-                value = conn.execute("SELECT capital_available FROM accounts WHERE id=?",
+                value = conn.execute("SELECT cash FROM position WHERE id=?",
                                      (aid,)).fetchone()[0] or 0.0
                 result = settle_member_clear(conn, stock, value, reason=reason,
                                              source=source, archive=archive, now=now)
@@ -393,7 +356,7 @@ class MasterPoolManager:
             trader = PaperTrader()
             acct = trader.get_account(stock)
             if acct is None:
-                raise ValueError(f"账户 {stock} 不存在")
+                raise ValueError(f"{stock} 无可寻址段（账户已退役，v9 段即账户）")
             qty, _ = trader.get_remaining_position(acct)
             if qty > 0:
                 raise ValueError(f"{stock} 仍有持仓 {qty} 股，先清仓再 release")
@@ -401,9 +364,11 @@ class MasterPoolManager:
             with conn:
                 # M1.7/F4：段认领=条件 UPDATE（`status='open'` 才能关段）——
                 # 双 release / release×清仓竞态第二遍在此出局，杜绝双回款
+                # v9：段现金/FIFO 一并清零（原"accounts 清零防双算显示"语义，段自承载）
                 cur = conn.execute(
                     "UPDATE position SET status='closed', closed_at=?, close_value=?, "
-                    "realized_pnl=?, cooldown_until=? WHERE id=? AND status='open'",
+                    "realized_pnl=?, cooldown_until=?, cash=0, fifo_index=-1, fifo_offset=0 "
+                    "WHERE id=? AND status='open'",
                     (now, value, value - seg['budget'],
                      (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
                 if cur.rowcount == 0:
@@ -412,11 +377,6 @@ class MasterPoolManager:
                 conn.execute(f"UPDATE {table} SET free=free+?, updated_at=? WHERE id=1",
                              (value, now))
                 new_free = free + value
-                # 2026-08-27 修复：段关闭 → accounts 表清零（资金已回 free 池，
-                # 避免详情页残留"段资金 ¥50 万/可用 ¥45 万"双算显示）
-                conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, "
-                             "capital_used=0, updated_at=? WHERE grp='tech' AND stock_name=?",
-                             (now, stock))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'release', stock, value, free, new_free, reason, source))

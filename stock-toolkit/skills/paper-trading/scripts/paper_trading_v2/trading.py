@@ -121,12 +121,16 @@ class PaperTrader:
         if used_changed:
             account.capital_pool.used = remaining_cost
 
-        # M1.7/F1 幻影现金：迁移票（账户内含段转随迁行）不得按全史现金流重建——
+        # M1.7/F1 幻影现金：迁移票（段内含段转随迁行）不得按全史现金流重建——
         # 迁移前已实现盈亏已随 sleeve 回款结算（sleeve_migrate.refund=现金+承接成本），
         # 随迁 buy/sell 行再进公式=盈利双算/亏损双扣（实测 ±40,000 传导 release 污染主池）。
         # 迁移票口径（与承接语义恒等，承接瞬间 =C−C+0=0）：
-        #   available = capital_total − Σ(open FIFO cost) + Σ(迁移后卖出已实现盈亏)
+        #   available = 资金基线 − Σ(open FIFO cost) + Σ(迁移后卖出已实现盈亏)
         # 未标记行=迁移后真实现金流：买入已体现在 FIFO 成本里，卖出按价差计入。
+        # v9 资金基线=段 budget（open 段）；closed 段=0（资金已随 release 结算回池，
+        # 原子资产基线归零——沃森生物 −9,270.80 费用损失幽灵值即按此复现，不回写）。
+        baseline = (account.capital_pool.total
+                    if getattr(account, 'segment_status', 'open') == 'open' else 0.0)
         operations = self.storage.load_operations(stock_name)
         ops = operations.operations if operations else []
         if any((op.note or '').find(SEGMENT_TRANSFER_MARK) >= 0 for op in ops):
@@ -134,11 +138,11 @@ class PaperTrader:
                 (op.amount or 0) - (op.cost or 0) for op in ops
                 if op.type == OperationType.SELL
                 and (op.note or '').find(SEGMENT_TRANSFER_MARK) < 0)
-            expected_available = (account.capital_pool.total - remaining_cost
+            expected_available = (baseline - remaining_cost
                                   + realized_after)
         else:
             # 从操作记录重建 available（包含已实现盈利）
-            expected_available = account.capital_pool.total
+            expected_available = baseline
             for op in ops:
                 if op.type == OperationType.BUY:
                     expected_available -= op.amount or 0

@@ -67,8 +67,9 @@ def member_slot(conn, stock, include_migrated=False):
 
 def account_remaining(conn, account_id):
     """FIFO 剩余 (qty, cost)——感知除权除息（与 trading.get_remaining_position 同算法，
-    直接读 positions 表行，供 sleeve 事务内使用，不走 PaperTrader 网络路径）。"""
-    rows = conn.execute("SELECT operation, quantity, total_cost FROM positions "
+    直接读 trades 表行，供 sleeve 事务内使用，不走 PaperTrader 网络路径）。
+    account_id（v9 语义）= position 段 id。"""
+    rows = conn.execute("SELECT operation, quantity, total_cost FROM trades "
                         "WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
     queue = []
     for r in rows:
@@ -108,14 +109,18 @@ def account_remaining(conn, account_id):
 
 
 def news_account_id(conn, stock):
-    row = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp='news' "
-                       "ORDER BY id LIMIT 1", (stock,)).fetchone()
+    """v9（段即账户）：stock 的 NEWS open 段 id（grp 由 strategy 推导，U2 不设 grp 列）。
+    函数名保留 account_id 语义（trades/operations/conditions join 键=段 id）。"""
+    row = conn.execute("SELECT id FROM position WHERE stock=? AND status='open' "
+                       "AND strategy='NEWS' ORDER BY id DESC LIMIT 1", (stock,)).fetchone()
     return row[0] if row else None
 
 
 def tech_account_id(conn, stock):
-    row = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp='tech' "
-                       "ORDER BY id LIMIT 1", (stock,)).fetchone()
+    """v9：stock 的非 NEWS open 段 id（技术组 L1 锚定）。"""
+    row = conn.execute("SELECT id FROM position WHERE stock=? AND status='open' "
+                       "AND COALESCE(strategy,'')!='NEWS' ORDER BY id DESC LIMIT 1",
+                       (stock,)).fetchone()
     return row[0] if row else None
 
 
@@ -182,8 +187,9 @@ def settle_member_clear(conn, stock, value, reason='', source='sleeve', archive=
             return None
         conn.execute("UPDATE sleeve_ledger SET free=free+?, updated_at=? WHERE id=1",
                      (value, now))
-        conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, capital_used=0,"
-                     " updated_at=? WHERE id=?", (now, aid))
+        # v9：段现金清零（段即账户，原 accounts 清零语义）
+        conn.execute("UPDATE position SET cash=0, fifo_index=-1, fifo_offset=0 WHERE id=?",
+                     (aid,))
         conn.execute("INSERT INTO audit (timestamp, action, stock, amount, free_before, "
                      "free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                      (now, 'sleeve_release', stock, value, None, None,

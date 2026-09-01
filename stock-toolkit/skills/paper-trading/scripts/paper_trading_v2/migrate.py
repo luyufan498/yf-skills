@@ -17,6 +17,10 @@ def migrate_existing(source_tradings_dir: Path, db_path: Path, archive_dir: Path
     - conditions.json → conditions 表（逐条件安全解析，坏条目跳过不丢整批）
     - 每个账户落一条 closed 段（预算=total，现值=available，realized=available-total）
     - 物理目录移入 archive_dir（只读归档）
+
+    ⚠ v9（M1.6 账户层退役）起此路径作废：accounts 表已退役为 accounts_old、
+    段即账户（position 吸收 cash/FIFO），"一股一户"导入语义无处安放。
+    本函数只支持 v8 及以下 schema；v9+ 显式拒绝（一次性历史导入器，2026-08-10 已跑完）。
     """
     from paper_trading_v2.models import (
         Account, AccountHistory, CapitalPool, Operation, Position, ExRightAppliedRecord,
@@ -27,6 +31,12 @@ def migrate_existing(source_tradings_dir: Path, db_path: Path, archive_dir: Path
     s = SqlStorage(db_path)
     cm = ConditionsManager(storage=s)
     conn = get_connection(db_path)
+    _ver = conn.execute("SELECT version FROM schema_meta").fetchone()
+    if _ver and _ver[0] >= 9:
+        conn.close()
+        raise RuntimeError(
+            "v1 JSON 导入器仅支持 v8 及以下 schema（v9 段即账户后此路径作废；"
+            "历史导入已于 2026-08-10 完成，如需重放请先降级或改造为段直建）")
     migrated = []
     now = datetime.now().isoformat()
     try:

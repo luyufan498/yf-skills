@@ -82,6 +82,10 @@ class ConditionsManager:
 
         M1.7/F2：写路径同样走 resolve_account 段锚定——条件改写/重锚必须落在
         持仓侧账户（tech），不得写入/清空 news 历史壳。
+        U7.1（M1.6）：active 同型线唯一化——同一 (type) 的多条 active 线在落库前收敛为
+        一条（保留价高者：trailing 高线远离现价，低垂线先触发=提前误卖实证），其余从
+        记录中剔除（不落库）。凯莱英 8/31 三连挂实证：重复挂低垂 trailing 线会先触发
+        →提前误卖；多引擎读线有歧义。
         """
         conn = self._db_conn()
         try:
@@ -89,6 +93,7 @@ class ConditionsManager:
             if not row:
                 raise ValueError(f"账户 '{record.stock_name}' 不存在，请先初始化")
             account_id = row[0]
+            self._dedupe_active_lines(record)
             record.updated_at = datetime.now().isoformat()
             with conn:
                 conn.execute("DELETE FROM condition_history WHERE condition_id IN "
@@ -101,6 +106,30 @@ class ConditionsManager:
             return Path(self.storage.db_path)
         finally:
             conn.close()
+
+    @staticmethod
+    def _dedupe_active_lines(record) -> int:
+        """U7.1：同型 active 线唯一化（保留价高者，其余剔除不落库）。返回剔除数。"""
+        from paper_trading_v2.conditions import ConditionStatus
+        dropped = 0
+        seen = {}
+        for key in list(record.conditions.keys()):
+            cond = record.conditions[key]
+            tval = cond.type.value if hasattr(cond.type, 'value') else str(cond.type)
+            status = cond.status.value if hasattr(cond.status, 'value') else str(cond.status)
+            if status != ConditionStatus.ACTIVE.value:
+                continue
+            prev = seen.get(tval)
+            if prev is None:
+                seen[tval] = cond
+                continue
+            # 同型双 active：保留价高者（远离现价，防低垂线先触发），剔除价低者
+            loser_key = key if (cond.price or 0) <= (prev.price or 0) else \
+                next(k for k, v in record.conditions.items() if v is prev)
+            del record.conditions[loser_key]
+            seen[tval] = prev if (cond.price or 0) <= (prev.price or 0) else cond
+            dropped += 1
+        return dropped
 
     def _insert_condition(self, conn, account_id, key, is_event, seq, cond):
         cur = conn.execute(

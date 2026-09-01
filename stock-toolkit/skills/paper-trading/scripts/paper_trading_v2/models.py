@@ -111,7 +111,8 @@ class CapitalPool(BaseModel):
 
 
 class Position(BaseModel):
-    """持仓记录"""
+    """trades 行模型（v9：positions 表已更名 trades，纯 FIFO 现金流语义不变；
+    本类为行模型，新代码 SQL 一律写 trades 表，类名保留 = v1 领域层兼容）"""
     stock_code: str
     quantity: int = Field(..., ge=0, description="股数，除权分红时为0")
     price: float = Field(..., ge=0, description="价格，除权送转股时为0")
@@ -122,6 +123,10 @@ class Position(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+# v9 起新代码语义名（trades 行）；Position 为兼容别名
+Trade = Position
 
 
 class Operation(BaseModel):
@@ -141,7 +146,10 @@ class Operation(BaseModel):
 
 
 class Account(BaseModel):
-    """账户信息"""
+    """段投影（v9 段即账户）：本模型不再对应 accounts 行，而是名字寻址解析出的
+    position 段行 + 其 trades/operations/exright 子行。capital_pool.total=段 budget
+    （资金标签）、available=段 cash（段现金列）、used=FIFO 占用成本。
+    grp 不再是存储字段：由段 strategy 推导（'NEWS' ⟺ news，其余 ⟺ tech）。"""
     stock_name: str
     stock_code: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
@@ -151,7 +159,8 @@ class Account(BaseModel):
     fifo_index: int = Field(default=-1, description="FIFO指针：当前成本基准BUY position在positions列表中的索引")
     fifo_offset: float = Field(default=0.0, description="当前fifo_index指向的BUY position中已消耗的股数（除权后可能为小数）")
     exright_applied: List[ExRightAppliedRecord] = Field(default_factory=list, description="已应用的除权记录")
-    grp: Optional[str] = Field(default=None, description="账户组 tech/news（sleeve-m1.5：清仓路由与组闸门寻址用，经 resolve_account 段锚定解析）")
+    grp: Optional[str] = Field(default=None, description="组（v9 由段 strategy 推导的运行期字段，非存储字段：'NEWS' ⟺ news，其余 ⟺ tech）")
+    segment_status: Optional[str] = Field(default=None, description="段状态运行期字段（v9）：open/closed。closed 段的现金重建基线=0（资金已随 release 结算回池，防幽灵复活）")
 
     class Config:
         json_schema_extra = {

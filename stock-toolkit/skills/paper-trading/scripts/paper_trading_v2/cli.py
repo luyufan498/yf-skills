@@ -166,6 +166,77 @@ def master_pool_records(
                    f"{r['reason']}")
 
 
+@app.command("reconcile")
+def reconcile_cmd(
+    detail: bool = typer.Option(False, "--detail", help="逐段列出段现金恒等式核对"),
+):
+    """U7.5 资金恒等式对账（只报不拦）：主池free+消息池free+Σopen段budget vs 总资金。
+
+    容差 = |Σ closed 段 cash|（滞留在死壳段、未回池的资金，如沃森生物费用损失）
+        + Σ 非 buy/sell/init/exright 类型 operations 金额（费税项）。
+    超差 → stdout ⚠️ 告警（不拦截任何操作）；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）。
+    同时逐段核对段现金恒等式：cash + FIFO成本 − realized == budget（±0.01）。
+    """
+    from paper_trading_v2.db import get_connection, migrate_db, grp_of_strategy
+    from paper_trading_v2.config import get_workspace_config
+    conn = get_connection(get_workspace_config()['db_path'])
+    migrate_db(conn)
+    try:
+        ledger = lambda t: (conn.execute(f"SELECT total, free FROM {t} WHERE id=1").fetchone()
+                            or {'total': 0.0, 'free': 0.0})
+        main = ledger('pool_ledger')
+        sleeve = ledger('sleeve_ledger')
+        open_budget = conn.execute(
+            "SELECT COALESCE(SUM(budget),0) FROM position WHERE status='open'").fetchone()[0]
+        closed_cash = conn.execute(
+            "SELECT COALESCE(SUM(cash),0) FROM position WHERE status='closed'").fetchone()[0]
+        odd_ops = conn.execute(
+            "SELECT COALESCE(SUM(ABS(COALESCE(amount,0))),0) FROM operations WHERE type NOT IN "
+            "('buy','sell','init','exright_bonus','exright_dividend')").fetchone()[0]
+        total = main['total'] + sleeve['total']
+        w = main['free'] + sleeve['free'] + open_budget
+        drift = w - total
+        tolerance = abs(closed_cash) + (odd_ops or 0.0)
+        typer.echo("🔍 资金恒等式对账（U7.5，只报不拦）")
+        typer.echo(f"   主池 total/free: ¥{main['total']:,.2f} / ¥{main['free']:,.2f} ｜ "
+                   f"消息池 total/free: ¥{sleeve['total']:,.2f} / ¥{sleeve['free']:,.2f}")
+        typer.echo(f"   Σ open 段 budget: ¥{open_budget:,.2f}")
+        typer.echo(f"   W = free(双池) + Σopen段budget = ¥{w:,.2f} ｜ 总资金 = ¥{total:,.2f}")
+        typer.echo(f"   偏差 drift = ¥{drift:,.2f} ｜ 容差 = ¥{tolerance:,.2f} "
+                   f"（closed 段滞留现金 ¥{closed_cash:,.2f} + 费税项 ¥{odd_ops or 0:,.2f}）")
+        if abs(drift) > tolerance + 0.005:
+            typer.echo(f"⚠️ 超差告警：|drift| {abs(drift):,.2f} > 容差 {tolerance:,.2f}"
+                       f"——账本/段现金存在未入账资金流，需人工核查（本命令只报不拦）")
+        else:
+            typer.echo("✅ 恒等式在容差内")
+        # 段现金恒等式（U5 不变量）：cash + FIFO成本 − realized == budget
+        from paper_trading_v2.sleeve_slots import account_remaining
+        bad = []
+        for seg in conn.execute("SELECT id, stock, strategy, status, budget, cash, "
+                                "realized_pnl FROM position ORDER BY id"):
+            qty, fifo_cost = account_remaining(conn, seg['id'])
+            realized = seg['realized_pnl'] or 0.0
+            ident = (seg['cash'] or 0.0) + fifo_cost - realized
+            base = seg['budget'] or 0.0
+            if seg['status'] == 'open' and abs(ident - base) > 0.01:
+                bad.append((seg['id'], seg['stock'], ident, base, seg['cash'], fifo_cost))
+        typer.echo(f"   段现金恒等式（open 段 cash+FIFO−realized==budget）："
+                   f"{'全部成立 ✅' if not bad else f'{len(bad)} 段破恒等 ❌'}")
+        for seg_id, stock, ident, base, cash, fifo in bad:
+            typer.echo(f"     ❌ 段#{seg_id} {stock}: cash ¥{cash:,.2f} + FIFO ¥{fifo:,.2f} "
+                       f"− realized = ¥{ident:,.2f} ≠ budget ¥{base:,.2f}")
+        if detail:
+            typer.echo("   —— 逐段明细 ——")
+            for seg in conn.execute("SELECT id, stock, strategy, status, budget, cash, "
+                                    "realized_pnl FROM position ORDER BY id"):
+                qty, fifo_cost = account_remaining(conn, seg['id'])
+                typer.echo(f"     段#{seg['id']:<3} {seg['stock']:<6} {grp_of_strategy(seg['strategy']):<4} "
+                           f"{seg['status']:<6} budget ¥{seg['budget'] or 0:,.0f} ｜ cash ¥{seg['cash'] or 0:,.2f} "
+                           f"｜ FIFO {qty}股/¥{fifo_cost:,.2f} ｜ realized ¥{seg['realized_pnl'] or 0:,.2f}")
+    finally:
+        conn.close()
+
+
 # ============ watchlist 命令组 ============
 
 @app.command("watchlist-list")
@@ -178,13 +249,14 @@ def watchlist_list():
 
 
 def _ensure_code(stock: str, code: Optional[str]) -> str:
-    """自动查码兜底：--code 缺失时先查本地 pool/accounts，再触网查码补全；都查不到才拒绝。
+    """自动查码兜底：--code 缺失时先查本地 pool/position，再触网查码补全；都查不到才拒绝。
 
     2026-08-25 加入：堵住"入池/建段不带 code"导致网站代码列空白 + 无法取价的坑。
+    v9：本地兜底源=pool 表 + position 段表（accounts 已退役，段即账户）。
     """
     if code and code.strip():
         return code.strip()
-    # 1) 本地兜底：pool 表 / accounts 表已有该股 code（离线也可靠）
+    # 1) 本地兜底：pool 表 / position 段表已有该股 code（离线也可靠）
     try:
         from paper_trading_v2.db import get_connection
         from paper_trading_v2.watchlist import Watchlist
@@ -192,8 +264,7 @@ def _ensure_code(stock: str, code: Optional[str]) -> str:
         conn = get_connection(w.db_path)
         row = conn.execute(
             "SELECT COALESCE((SELECT code FROM pool WHERE stock=? LIMIT 1), "
-            "(SELECT stock_code FROM accounts WHERE stock_name=? AND stock_code IS NOT NULL "
-            "LIMIT 1)) AS c",
+            "(SELECT code FROM position WHERE stock=? AND code IS NOT NULL LIMIT 1)) AS c",
             (stock, stock),
         ).fetchone()
         conn.close()
@@ -498,9 +569,9 @@ def init(
     code: Optional[str] = typer.Option(None, "--code"),
     force: bool = typer.Option(False, "--force", "-f"),
 ):
-    """初始化资金池（一般用 master-pool-allocate 替代）"""
+    """初始化资金池（v9=manual L1 段直建；一般用 master-pool-allocate 替代）"""
     stock_name = normalize_stock_name(stock_name)
-    # 有 open 段的股票，账户资金由段管理，禁止 init --force（防幻影资金）
+    # 有 open 段的股票，资金由段管理，禁止 init --force（防幻影资金）
     from paper_trading_v2.db import get_connection, migrate_db
     from paper_trading_v2.config import get_workspace_config
     _conn = get_connection(get_workspace_config()['db_path'])
@@ -511,12 +582,14 @@ def init(
     finally:
         _conn.close()
     if seg:
-        typer.echo(f"❌ {stock_name} 有 open 段，账户资金由段管理，禁止 init --force", err=True)
+        typer.echo(f"❌ {stock_name} 有 open 段，资金由段管理，禁止 init --force", err=True)
         raise typer.Exit(1)
     from paper_trading_v2.trading import PaperTrader
     try:
+        # v9 段即账户：init_account 落为 manual L1 open 段（budget=cash=capital）
         account = PaperTrader().init_account(stock_name, capital, stock_code=code, force=force)
-        typer.echo(f"✅ 资金池初始化成功：{account.stock_name} ¥{capital:,.0f}")
+        typer.echo(f"✅ 段直建成功（段视角）：{account.stock_name} ¥{capital:,.0f} "
+                   f"→ manual L1 open 段（budget=cash=¥{capital:,.0f}）")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -562,19 +635,24 @@ def sell(
 
 @app.command("list")
 def list_cmd():
-    """列出所有账户"""
+    """列出所有段（段视角，v9：段即账户）"""
     from paper_trading_v2.storage import SqlStorage
     s = SqlStorage()
     names = s.list_accounts()
     if not names:
-        typer.echo("📭 暂无账户")
+        typer.echo("📭 暂无 open 段（段视角）")
         return
-    typer.echo(f"📊 共有 {len(names)} 个账户：")
+    closed = s.list_accounts(include_closed=True)
+    typer.echo(f"📊 共有 {len(names)} 个 open 段（段视角）：")
     for name in names:
         acct = s.load_account(name)
         if acct:
-            typer.echo(f"  • {name}: ¥{acct.capital_pool.available:,.0f} 可用 / "
-                       f"¥{acct.capital_pool.current_total:,.0f} 当前总资产")
+            typer.echo(f"  • {name}: ¥{acct.capital_pool.available:,.0f} 段现金 / "
+                       f"¥{acct.capital_pool.current_total:,.0f} 段内总资产"
+                       f"（budget ¥{acct.capital_pool.total:,.0f}）")
+    n_closed = len(closed) - len(names)
+    if n_closed > 0:
+        typer.echo(f"（另有 {n_closed} 个已关闭段为历史壳：ptrade2 info <股> 按名查询）")
 
 
 # ============ 查询命令组（v1 对齐，驱动 SQLite） ============

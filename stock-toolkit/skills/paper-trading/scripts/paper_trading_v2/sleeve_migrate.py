@@ -40,13 +40,24 @@ class SleeveMigrator:
         return conn
 
     def migrate(self, stock, reason='', source='agent', code=None):
-        """段转策略迁移：NEWS 段原地转 L1 + 资金/账户/槽/池行配套。返回摘要 dict。"""
+        """段转策略迁移（v9 段即账户）：NEWS 段原地转 L1 + 资金/槽/池行配套。返回摘要 dict。
+
+        v9 两条路径：
+        - 纯段转（同票无 tech open 段，常规态）：NEWS 段原地 strategy→'L1'（段行 id 不动，
+          成本基准/FIFO/trades/operations/conditions 全部原地连续），段现金清零
+          （原现金 A 随 refund 回消息池），budget=主池实际承接成本——零行移动、零新增行。
+        - 同票双组（该股另有非 NEWS open 段）：承接进 tech 段——子行（trades/operations/
+          conditions/exright_applied）account_id 改挂 tech 段（seq 续接+留痕标记）、
+          tech 段 budget += 承接成本，NEWS 段关闭成历史壳（realized_pnl=回款−原预算）。
+          （v8 等价形态：v8 靠"news 账户行随迁 tech 账户"实现，段行只有一行；v9 段即账户，
+          双段必须并一段，承载段=tech 段。）
+        """
         conn = self._conn()
         now = now_iso()
         try:
             aid_sleeve = news_account_id(conn, stock)
             if aid_sleeve is None:
-                raise ValueError(f"{stock} 无 grp=news 账户，不是 sleeve 成员")
+                raise ValueError(f"{stock} 无 NEWS open 段，不是 sleeve 成员")
             qty, cost = account_remaining(conn, aid_sleeve)
             if qty <= 0 or cost <= 0:
                 raise ValueError(f"{stock} 无存活持仓（qty={qty}），无可迁移对象——"
@@ -66,34 +77,21 @@ class SleeveMigrator:
                 raise ValueError(f"{stock} 无 NEWS open 段（段转策略锚点缺失）")
 
             avg_cost = cost / qty
-            # M1.7/F6：code 继承——CLI 不传 code 时从 news 侧承接，杜绝 tech 账户
-            # stock_code=NULL（sell 断链、code_searcher 查不到的老票二次断链）
+            # M1.7/F6：code 继承——CLI 不传 code 时从 sleeve 段承接，杜绝承接段
+            # code=NULL（sell 断链、code_searcher 查不到的老票二次断链）
             if code is None:
-                code = conn.execute("SELECT stock_code FROM accounts WHERE id=?",
-                                    (aid_sleeve,)).fetchone()[0] or None
+                code = seg['code'] or None
 
             with conn:
                 # ⓪ 成员认领（M1.7/F3）：条件 UPDATE + rowcount 判定——同一成员第二次迁移
                 #    （并发双跑/重放）在此出局，杜绝双重对转（资格检查在事务外=TOCTOU）。
-                #    认领=本事务首个写，其后的建户/对转全部串行化在其后。
+                #    认领=本事务首个写，其后的对转/改段全部串行化在其后。
                 cur = conn.execute(
                     "UPDATE event_slot_members SET migrated_at=? WHERE event_key=? AND stock=? "
                     "AND migrated_at IS NULL", (now, slot['event_key'], stock))
                 if cur.rowcount == 0:
                     raise ValueError(f"{stock} 已迁移或正被并发迁移"
                                      f"（槽 {slot['event_key']}），不能重复迁移")
-
-                # ⓪' 主仓账户（无则建 grp='tech'；有则承接——含活跃双组场景，行只追加不覆盖）。
-                #    建户在认领之后（M1.7/F3：并发双跑第二个 INSERT 撞 UNIQUE(stock_name,grp)
-                #    前已被认领拦下），并随本事务原子提交/回滚。
-                aid_tech = tech_account_id(conn, stock)
-                if aid_tech is None:
-                    cur = conn.execute(
-                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                        "capital_available, capital_used, fifo_index, fifo_offset, grp, "
-                        "created_at, updated_at) VALUES (?,?,0,0,0,-1,0,'tech',?,?)",
-                        (stock, code, now, now))
-                    aid_tech = cur.lastrowid
 
                 # ① 预算承接：pool_ledger.free 条件扣减（rowcount 判定，不足即出局）
                 cur = conn.execute(
@@ -105,25 +103,29 @@ class SleeveMigrator:
                     raise ValueError(f"总池空闲不足：迁移承接需 ¥{cost:,.0f}，"
                                      f"空闲 ¥{free:,.0f}")
 
-                # ② 段转策略：NEWS 段原地转 L1（id 不动，成本/FIFO 连续），预算=实际承接成本
-                conn.execute("UPDATE position SET strategy='L1', budget=?, "
-                             "code=COALESCE(?, code) WHERE id=?",
-                             (cost, code, seg['id']))
+                # ② 段转策略：纯段转（原地）/ 同票双组（并入 tech 段）
+                aid_tech = tech_account_id(conn, stock)
+                sleeve_cash = seg['cash'] or 0.0
+                if aid_tech is None:
+                    conn.execute("UPDATE position SET strategy='L1', budget=?, cash=0, "
+                                 "code=COALESCE(?, code) WHERE id=?",
+                                 (cost, code, seg['id']))
+                    transfer_mode = 'in_place'
+                else:
+                    self._move_segment_rows(conn, aid_sleeve, aid_tech, code,
+                                            slot['event_key'])
+                    conn.execute("UPDATE position SET budget=budget+?, "
+                                 "topup_total=topup_total+? WHERE id=?",
+                                 (cost, cost, aid_tech))
+                    conn.execute(
+                        "UPDATE position SET status='closed', closed_at=?, "
+                        "realized_pnl=?, note=COALESCE(note,'')||? WHERE id=?",
+                        (now, (sleeve_cash + cost) - (seg['budget'] or 0.0),
+                         f" [段转并入 tech 段#{aid_tech} {slot['event_key']}]", aid_sleeve))
+                    transfer_mode = 'merge_into_tech'
 
-                # ③ FIFO 行随迁（留痕）：只改 account_id/seq/note——不插入任何无现金流行
-                self._move_account_rows(conn, aid_sleeve, aid_tech, code,
-                                        slot['event_key'])
-
-                # ④ 资金：news 账户清零成历史壳；tech 账户承接占用成本
-                sleeve_cash = conn.execute(
-                    "SELECT capital_available FROM accounts WHERE id=?",
-                    (aid_sleeve,)).fetchone()[0] or 0.0
-                refund = sleeve_cash + cost        # 现金（前次卖出所得）+ 承接成本 → 消息池
-                conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, "
-                             "capital_used=0, updated_at=? WHERE id=?", (now, aid_sleeve))
-                conn.execute("UPDATE accounts SET capital_total=capital_total+?, "
-                             "capital_used=capital_used+?, updated_at=? WHERE id=?",
-                             (cost, cost, now, aid_tech))
+                # ③ 资金对转：回款=段现金（前次卖出所得）+ 承接成本 → 消息池
+                refund = sleeve_cash + cost
                 main_free = conn.execute(
                     "SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
                 conn.execute(
@@ -149,7 +151,7 @@ class SleeveMigrator:
                     "INSERT INTO watchlog (timestamp, action, stock, strategy_from, strategy_to, "
                     "reason, source, event_key) VALUES (?,?,?,?,?,?,?,?)",
                     (now, 'set_strategy', stock, 'NEWS', 'L1',
-                     f"移交桥段转策略（{reason or 'V11'}）——段行 id 不动、成本连续", source,
+                     f"移交桥段转策略（{reason or 'V11'}）——{transfer_mode}，成本连续", source,
                      slot['event_key']))
 
                 # ④ 槽状态：全成员走完 → migrated（加仓锁+原槽预算）；否则保持 partial
@@ -186,54 +188,56 @@ class SleeveMigrator:
                 shadow_write(conn, 'bridge_track', slot['event_key'],
                              {"stock": stock, "qty": qty, "avg_cost": avg_cost,
                               "cost": cost, "mode": "segment_transfer",
+                              "transfer_mode": transfer_mode,
                               "news_account_id": aid_sleeve, "tech_account_id": aid_tech,
                               "phase": "migrate",
                               "reason": reason, "source": source, "ts": now})
             return {"stock": stock, "qty": qty, "avg_cost": avg_cost, "cost": cost,
                     "refund_to_sleeve": refund, "member_realized": member_realized,
                     "event_key": slot['event_key'], "slot_status": slot_status,
-                    "migrated": others == 0}
+                    "transfer_mode": transfer_mode, "migrated": others == 0}
         finally:
             conn.close()
 
     @staticmethod
-    def _move_account_rows(conn, from_aid, to_aid, code, event_key):
-        """账户行随迁（段转策略留痕）：positions/operations/exright_applied/conditions
-        整体改挂 to_aid——不插入任何新行（positions 纯 FIFO 现金流红线）。
-        - positions：note 追加段转标记（留痕），seq 重排续接目标账户
+    def _move_segment_rows(conn, from_seg, to_seg, code, event_key):
+        """段间行随迁（v9 同票双组路径；原 _move_account_rows，锚点 accounts→段）：
+        trades/operations/exright_applied/conditions 整体改挂 to_seg——不插入任何新行
+        （trades 纯 FIFO 现金流红线）。
+        - trades：note 追加段转标记（留痕），seq 重排续接目标段
         - operations：现金流史跟随持仓（M1.7/F1：标记行=迁移前历史，已随 sleeve 回款
-          结算，get_account 重建公式按标记分段，不再计入 tech 账户现金流）
+          结算，get_account 重建公式按标记分段，不再计入承接段现金流）
         - conditions：保护链三件套按原成本续挂（方案 2.3，sleeve 与主仓参数同构）
         """
         from paper_trading_v2.sleeve_slots import SEGMENT_TRANSFER_MARK
         marker = f" [{SEGMENT_TRANSFER_MARK}{event_key}]"
-        base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions "
-                            "WHERE account_id=?", (to_aid,)).fetchone()[0]
-        rows = conn.execute("SELECT id FROM positions WHERE account_id=? ORDER BY seq",
-                            (from_aid,)).fetchall()
+        base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM trades "
+                            "WHERE account_id=?", (to_seg,)).fetchone()[0]
+        rows = conn.execute("SELECT id FROM trades WHERE account_id=? ORDER BY seq",
+                            (from_seg,)).fetchall()
         for i, r in enumerate(rows):
             conn.execute(
-                "UPDATE positions SET account_id=?, seq=?, stock_code=COALESCE(?, stock_code), "
+                "UPDATE trades SET account_id=?, seq=?, stock_code=COALESCE(?, stock_code), "
                 "note=COALESCE(note,'')||? WHERE id=?",
-                (to_aid, base + i, code, marker, r['id']))
+                (to_seg, base + i, code, marker, r['id']))
         base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM operations "
-                            "WHERE account_id=?", (to_aid,)).fetchone()[0]
+                            "WHERE account_id=?", (to_seg,)).fetchone()[0]
         rows = conn.execute("SELECT id FROM operations WHERE account_id=? ORDER BY seq",
-                            (from_aid,)).fetchall()
+                            (from_seg,)).fetchall()
         for i, r in enumerate(rows):
             conn.execute("UPDATE operations SET account_id=?, seq=?, note=COALESCE(note,'')||? "
-                         "WHERE id=?", (to_aid, base + i, marker, r['id']))
+                         "WHERE id=?", (to_seg, base + i, marker, r['id']))
         base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM conditions "
-                            "WHERE account_id=?", (to_aid,)).fetchone()[0]
+                            "WHERE account_id=?", (to_seg,)).fetchone()[0]
         rows = conn.execute("SELECT id FROM conditions WHERE account_id=? ORDER BY seq, id",
-                            (from_aid,)).fetchall()
+                            (from_seg,)).fetchall()
         for i, r in enumerate(rows):
             conn.execute("UPDATE conditions SET account_id=?, seq=? WHERE id=?",
-                         (to_aid, base + i, r['id']))
+                         (to_seg, base + i, r['id']))
         base = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM exright_applied "
-                            "WHERE account_id=?", (to_aid,)).fetchone()[0]
+                            "WHERE account_id=?", (to_seg,)).fetchone()[0]
         rows = conn.execute("SELECT id FROM exright_applied WHERE account_id=? ORDER BY seq",
-                            (from_aid,)).fetchall()
+                            (from_seg,)).fetchall()
         for i, r in enumerate(rows):
             conn.execute("UPDATE exright_applied SET account_id=?, seq=? WHERE id=?",
-                         (to_aid, base + i, r['id']))
+                         (to_seg, base + i, r['id']))

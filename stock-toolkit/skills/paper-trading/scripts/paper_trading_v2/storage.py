@@ -1,4 +1,8 @@
-"""SqlStorage — SQLite 深迁移存储（接口与 JsonStorage 一致）"""
+"""SqlStorage — SQLite 深迁移存储（接口与 JsonStorage 一致）
+
+v9（M1.6 账户层退役）：段即账户。名字寻址终点=position 段行（不再是 accounts 行）；
+accounts 表退役为 accounts_old，其 cash/FIFO 状态由 position 段列承载。
+"""
 import json
 import sqlite3
 from datetime import datetime
@@ -8,7 +12,7 @@ from typing import Optional, List
 from paper_trading_v2.models import (
     Account, AccountHistory, Operation, Position, ExRightAppliedRecord, CapitalPool,
 )
-from paper_trading_v2.db import get_connection, migrate_db
+from paper_trading_v2.db import get_connection, migrate_db, grp_of_strategy
 
 
 class StorageBackend:
@@ -17,52 +21,54 @@ class StorageBackend:
 
 
 def resolve_account(conn, stock_name: str, prefer_grp: Optional[str] = None):
-    """名字寻址消歧（sleeve-m1.5 R1/Y3/D9）：同票双组（grp=tech/news）并存时按持仓段锚定。
+    """名字寻址终局（v9/U3）：名字 → open 段 → 段即账户。
 
-    返回 accounts 行（sqlite3.Row）或 None。规则（确定性，零歧义）：
-      1. 同名仅一个账户 → 直接返回（单组票行为与改造前逐字节一致）
-      2. 有 strategy 非 'NEWS' 的 open 段 → tech 账户（技术组 L1 段锚定——迁移票主寻址，
-         "优先按持仓段（strategy 非 NEWS 的 open 段所在账户）解析"，方案 2.3 v4.2）
-      3. 有 strategy='NEWS' 的 open 段 → news 账户（sleeve 成员）
-      4. 双壳无段（迁移后清仓等）：FIFO 剩余持仓 qty>0 者优先；仍并列取 grp='tech'
-         （迁移后 tech 是活跃承接方，news 仅历史壳——"不得再被活跃寻址命中"）
-    prefer_grp：调用方显式指定组时最高优先（sell_stock 按卖出账户传入，防误路由）。
+    返回 position 段行（sqlite3.Row）或 None；`row['id']` 即"account_id"
+    （trades/operations/conditions/exright_applied 的 join 键，v9 语义=段 id）。
+    组由段 strategy 推导（strategy='NEWS' ⟺ news，其余 ⟺ tech，U2 不设 grp 列）。
+    规则（确定性，零歧义，与 v8 双壳消歧行为等价）：
+      1. 该名仅一个段 → 直接返回（单段票行为不变）
+      2. prefer_grp 指定组（sell_stock 锁定本侧）→ 该组 open 段最高优先
+      3. 有非 NEWS 的 open 段 → 技术组 L1 段锚定（迁移票主寻址，方案 2.3 v4.2）
+      4. 有 NEWS open 段 → sleeve 成员段
+      5. 无 open 段（清仓/历史票）：FIFO 剩余持仓>0 的段优先，并列取非 NEWS（tech 优先，
+         迁移后 tech 是活跃承接方）；仍无 → 最后关闭段（历史可读，info/operations 查询用）
     """
-    rows = conn.execute("SELECT * FROM accounts WHERE stock_name=? ORDER BY id",
+    segs = conn.execute("SELECT * FROM position WHERE stock=? ORDER BY id",
                         (stock_name,)).fetchall()
-    if not rows:
+    if not segs:
         return None
-    if len(rows) == 1:
-        return rows[0]
-    by_grp = {r['grp']: r for r in rows}
-    if prefer_grp and prefer_grp in by_grp:
-        return by_grp[prefer_grp]
-    seg = conn.execute(
-        "SELECT strategy FROM position WHERE stock=? AND status='open' "
-        "ORDER BY id DESC LIMIT 1", (stock_name,)).fetchone()
-    if seg:
-        want = 'news' if (seg['strategy'] or '') == 'NEWS' else 'tech'
-        if want in by_grp:
-            return by_grp[want]
-    # 双壳/段侧缺账户：按 FIFO 剩余持仓锁定活跃方
-    def _qty(account_id):
-        rows_p = conn.execute("SELECT operation, quantity FROM positions WHERE account_id=? "
-                              "ORDER BY seq", (account_id,)).fetchall()
+    if len(segs) == 1:
+        return segs[0]
+    if prefer_grp:
+        for s in segs:
+            if s['status'] == 'open' and grp_of_strategy(s['strategy']) == prefer_grp:
+                return s
+    for s in reversed(segs):                       # 最新段优先
+        if s['status'] == 'open' and (s['strategy'] or '') != 'NEWS':
+            return s
+    for s in segs:
+        if s['status'] == 'open':
+            return s
+    # 无 open 段：FIFO 剩余持仓>0 的段优先（与 v8 双壳规则等价），并列取非 NEWS
+    def _qty(seg_id):
+        rows = conn.execute("SELECT operation, quantity FROM trades WHERE account_id=? "
+                            "ORDER BY seq", (seg_id,)).fetchall()
         live = 0
-        for r in rows_p:
+        for r in rows:
             q = r['quantity'] or 0
-            live += q if (r['operation'] or '') == 'buy' else (-q if
-                                                              (r['operation'] or '') == 'sell' else 0)
+            live += q if (r['operation'] or '') == 'buy' else \
+                (-q if (r['operation'] or '') == 'sell' else 0)
         return live
-    best = None
-    best_qty = 0
-    for r in rows:
-        q = _qty(r['id'])
-        if q > best_qty:
-            best, best_qty = r, q
-    if best is not None:
+    best, best_qty = None, 0
+    for s in segs:
+        q = _qty(s['id'])
+        if q > best_qty or (q == best_qty and q > 0 and best is not None
+                            and (s['strategy'] or '') != 'NEWS'):
+            best, best_qty = s, q
+    if best is not None and best_qty > 0:
         return best
-    return by_grp.get('tech', rows[0])
+    return segs[-1]                                # 最后关闭段（历史查询兜底）
 
 
 class SqlStorage(StorageBackend):
@@ -87,42 +93,55 @@ class SqlStorage(StorageBackend):
         return get_workspace_config()['tradings_dir'] / stock_name
 
     def _account_id(self, conn, stock_name: str) -> Optional[int]:
-        """名字寻址唯一入口：经 resolve_account 段锚定消歧（R1/Y3/D9，全链路复用）。"""
+        """名字寻址唯一入口：经 resolve_account 段锚定（v9 段即账户，全链路复用）。"""
         row = resolve_account(conn, stock_name)
         return row['id'] if row else None
 
     # ---- Account ----
     def load_account(self, stock_name: str) -> Optional[Account]:
+        """段 → Account 内存模型（v9 段即账户）。
+
+        capital_pool：total=段 budget（资金标签）、available=段 cash（段现金列，U2）、
+        used=FIFO 占用成本（从 trades 现算，段表不存冗余列）。
+        """
         conn = self._conn()
         try:
-            # 名字寻址统一走 resolve_account 段锚定消歧（R1/Y3/D9）——
-            # 迁移票同票双账户并存时命中 tech 持仓账户，不得命中已清零 news 历史壳
+            # 名字寻址统一走 resolve_account 段锚定——迁移票同票双段并存时命中
+            # 非 NEWS open 段（tech 侧），不得命中已结算的 news/关闭段
             row = resolve_account(conn, stock_name)
             if not row:
                 return None
             positions = self._load_positions(conn, row['id'])
             exright = self._load_exright(conn, row['id'])
+            used = 0.0
+            for pos in positions:
+                if pos.operation == 'buy':
+                    used += pos.total_cost or 0.0
+                elif pos.operation == 'sell':
+                    used -= pos.total_cost or 0.0
+            used = max(0.0, used)
             return Account(
-                stock_name=row['stock_name'],
-                stock_code=row['stock_code'],
+                stock_name=row['stock'],
+                stock_code=row['code'],
                 capital_pool=CapitalPool(
-                    total=row['capital_total'],
-                    available=row['capital_available'],
-                    used=row['capital_used'],
+                    total=row['budget'] or 0.0,
+                    available=row['cash'] or 0.0,
+                    used=used,
                 ),
                 positions=positions,
-                fifo_index=row['fifo_index'],
-                fifo_offset=row['fifo_offset'],
+                fifo_index=row['fifo_index'] if row['fifo_index'] is not None else -1,
+                fifo_offset=row['fifo_offset'] or 0.0,
                 exright_applied=exright,
-                grp=row['grp'] if 'grp' in row.keys() else None,
-                created_at=row['created_at'],
-                updated_at=row['updated_at'],
+                grp=grp_of_strategy(row['strategy']),
+                segment_status=row['status'],
+                created_at=row['opened_at'],
+                updated_at=row['closed_at'] or row['opened_at'],
             )
         finally:
             conn.close()
 
     def _load_positions(self, conn, account_id: int) -> List[Position]:
-        rows = conn.execute("SELECT * FROM positions WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM trades WHERE account_id=? ORDER BY seq", (account_id,)).fetchall()
         return [Position(
             stock_code=r['stock_code'] or '', quantity=r['quantity'] or 0,
             price=r['price'] or 0.0, total_cost=r['total_cost'] or 0.0,
@@ -138,35 +157,41 @@ class SqlStorage(StorageBackend):
         ) for r in rows]
 
     def save_account(self, account: Account) -> Path:
+        """段直写（v9）：现金/FIFO 状态落 position 段列，FIFO 流水落 trades。
+
+        无段可寻址时建 manual L1 open 段（段直建，U5 fixtures 同款；等价 v8 的
+        save_account 兜底建户语义——资金标签=capital_pool.total）。
+        """
         account.updated_at = datetime.now().isoformat()
         conn = self._conn()
         try:
-            existing = self._account_id(conn, account.stock_name)
             with conn:
-                if existing is None:
+                row = resolve_account(conn, account.stock_name)
+                if row is None:
                     cur = conn.execute(
-                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                        "capital_available, capital_used, fifo_index, fifo_offset, "
-                        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO position (stock, code, strategy, status, budget, "
+                        "topup_total, opened_at, cash, fifo_index, fifo_offset) "
+                        "VALUES (?,?,'L1','open',?,0,?,?,?,?)",
                         (account.stock_name, account.stock_code,
-                         account.capital_pool.total, account.capital_pool.available,
-                         account.capital_pool.used, account.fifo_index, account.fifo_offset,
-                         account.created_at, account.updated_at))
+                         account.capital_pool.total, datetime.now().isoformat(),
+                         account.capital_pool.available, account.fifo_index,
+                         account.fifo_offset))
                     account_id = cur.lastrowid
                 else:
-                    account_id = existing
-                    conn.execute(
-                        "UPDATE accounts SET stock_code=?, capital_total=?, "
-                        "capital_available=?, capital_used=?, fifo_index=?, fifo_offset=?, "
-                        "updated_at=? WHERE id=?",
-                        (account.stock_code, account.capital_pool.total,
-                         account.capital_pool.available, account.capital_pool.used,
-                         account.fifo_index, account.fifo_offset,
-                         account.updated_at, account_id))
-                conn.execute("DELETE FROM positions WHERE account_id=?", (account_id,))
+                    account_id = row['id']
+                    if row['status'] == 'open':
+                        conn.execute(
+                            "UPDATE position SET cash=?, fifo_index=?, fifo_offset=?, "
+                            "code=COALESCE(?, code) WHERE id=?",
+                            (account.capital_pool.available, account.fifo_index,
+                             account.fifo_offset, account.stock_code, account_id))
+                    else:
+                        # 关闭段只读：现金/FIFO 已随 release 结算，不回写（防幽灵复活）
+                        pass
+                conn.execute("DELETE FROM trades WHERE account_id=?", (account_id,))
                 for i, pos in enumerate(account.positions):
                     conn.execute(
-                        "INSERT INTO positions (account_id, seq, operation, stock_code, "
+                        "INSERT INTO trades (account_id, seq, operation, stock_code, "
                         "quantity, price, total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?)",
                         (account_id, i, pos.operation, pos.stock_code, pos.quantity,
                          pos.price, pos.total_cost, pos.timestamp, pos.note))
@@ -227,29 +252,43 @@ class SqlStorage(StorageBackend):
         ops.operations.append(operation)
         return self.save_operations(stock_name, ops)
 
-    # ---- 账户列表 / 删除 ----
-    def list_accounts(self) -> List[str]:
+    # ---- 段列表 / 删除（v9 段视角）----
+    def list_accounts(self, include_closed: bool = False) -> List[str]:
+        """段视角列表（U4）：默认=open 段（活跃持仓实体）；include_closed=True 含关闭段。
+
+        （v8 语义=accounts 全列表；v9 段即账户，死壳段不再混入活跃列表，
+        但仍可按名查询：info <股> 经 resolve_account 落到其最后关闭段。）
+        """
         conn = self._conn()
         try:
-            rows = conn.execute("SELECT stock_name FROM accounts ORDER BY id").fetchall()
-            return [r[0] for r in rows]
+            q = "SELECT stock FROM position"
+            if not include_closed:
+                q += " WHERE status='open'"
+            q += " ORDER BY id"
+            seen, out = set(), []
+            for r in conn.execute(q):
+                if r[0] not in seen:
+                    seen.add(r[0])
+                    out.append(r[0])
+            return out
         finally:
             conn.close()
 
     def delete_account(self, stock_name: str) -> bool:
+        """删除段及其全部子行（v9：段即账户，删段=删户；v8 同语义换锚点）。"""
         conn = self._conn()
         try:
             account_id = self._account_id(conn, stock_name)
             if account_id is None:
                 return False
             with conn:
-                conn.execute("DELETE FROM positions WHERE account_id=?", (account_id,))
+                conn.execute("DELETE FROM trades WHERE account_id=?", (account_id,))
                 conn.execute("DELETE FROM operations WHERE account_id=?", (account_id,))
                 conn.execute("DELETE FROM condition_history WHERE condition_id IN "
                              "(SELECT id FROM conditions WHERE account_id=?)", (account_id,))
                 conn.execute("DELETE FROM conditions WHERE account_id=?", (account_id,))
                 conn.execute("DELETE FROM exright_applied WHERE account_id=?", (account_id,))
-                conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+                conn.execute("DELETE FROM position WHERE id=?", (account_id,))
             return True
         finally:
             conn.close()

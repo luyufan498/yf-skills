@@ -46,11 +46,12 @@ def open_conn(db_path=None):
 
 
 def account_grp(conn, stock_name) -> Optional[str]:
-    """组路由经 resolve_account 段锚定消歧（R1/Y3/D9）——同票双组并存时不再误命中
-    news 历史壳（迁移票按 L1 段解析为 tech）。"""
+    """组路由（v9/U3）：resolve_account 段锚定 + 组由段 strategy 推导
+    （strategy='NEWS' ⟺ news，其余 ⟺ tech——accounts.grp 列随账户退役消亡）。"""
+    from paper_trading_v2.db import grp_of_strategy
     from paper_trading_v2.storage import resolve_account
     row = resolve_account(conn, stock_name)
-    return row['grp'] if row else None
+    return grp_of_strategy(row['strategy']) if row else None
 
 
 def log_violation(conn, stock_name, capability, detail='', source='agent'):
@@ -72,9 +73,10 @@ def enforce(stock_name, capability, *, conn=None, db_path=None, source='agent',
     if own:
         conn = open_conn(db_path)
     try:
+        from paper_trading_v2.db import grp_of_strategy
         from paper_trading_v2.storage import resolve_account
         row = resolve_account(conn, stock_name)
-        grp = row['grp'] if row else None
+        grp = grp_of_strategy(row['strategy']) if row else None
         # ① 消息组账户：禁 conditions 写 / buy / topup / 主池 allocate
         if grp == 'news' and capability in NEWS_BLOCKED:
             _reject(conn, stock_name, capability,

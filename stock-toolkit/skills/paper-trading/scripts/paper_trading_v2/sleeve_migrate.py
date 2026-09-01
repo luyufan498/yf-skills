@@ -66,17 +66,30 @@ class SleeveMigrator:
                 raise ValueError(f"{stock} 无 NEWS open 段（段转策略锚点缺失）")
 
             avg_cost = cost / qty
-            # 主仓账户（无则建 grp='tech'；有则承接——含活跃双组场景，行只追加不覆盖）
-            aid_tech = tech_account_id(conn, stock)
-            if aid_tech is None:
-                cur = conn.execute(
-                    "INSERT INTO accounts (stock_name, stock_code, capital_total, "
-                    "capital_available, capital_used, fifo_index, fifo_offset, grp, "
-                    "created_at, updated_at) VALUES (?,?,0,0,0,-1,0,'tech',?,?)",
-                    (stock, code, now, now))
-                aid_tech = cur.lastrowid
 
             with conn:
+                # ⓪ 成员认领（M1.7/F3）：条件 UPDATE + rowcount 判定——同一成员第二次迁移
+                #    （并发双跑/重放）在此出局，杜绝双重对转（资格检查在事务外=TOCTOU）。
+                #    认领=本事务首个写，其后的建户/对转全部串行化在其后。
+                cur = conn.execute(
+                    "UPDATE event_slot_members SET migrated_at=? WHERE event_key=? AND stock=? "
+                    "AND migrated_at IS NULL", (now, slot['event_key'], stock))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{stock} 已迁移或正被并发迁移"
+                                     f"（槽 {slot['event_key']}），不能重复迁移")
+
+                # ⓪' 主仓账户（无则建 grp='tech'；有则承接——含活跃双组场景，行只追加不覆盖）。
+                #    建户在认领之后（M1.7/F3：并发双跑第二个 INSERT 撞 UNIQUE(stock_name,grp)
+                #    前已被认领拦下），并随本事务原子提交/回滚。
+                aid_tech = tech_account_id(conn, stock)
+                if aid_tech is None:
+                    cur = conn.execute(
+                        "INSERT INTO accounts (stock_name, stock_code, capital_total, "
+                        "capital_available, capital_used, fifo_index, fifo_offset, grp, "
+                        "created_at, updated_at) VALUES (?,?,0,0,0,-1,0,'tech',?,?)",
+                        (stock, code, now, now))
+                    aid_tech = cur.lastrowid
+
                 # ① 预算承接：pool_ledger.free 条件扣减（rowcount 判定，不足即出局）
                 cur = conn.execute(
                     "UPDATE pool_ledger SET free=free-?, updated_at=? WHERE id=1 AND free>=?",
@@ -135,12 +148,11 @@ class SleeveMigrator:
                      slot['event_key']))
 
                 # ④ 槽状态：全成员走完 → migrated（加仓锁+原槽预算）；否则保持 partial
+                #（成员 migrated_at 已由 ⓪ 认领语句落位，不再重复写）
                 others = conn.execute(
                     "SELECT COUNT(*) FROM event_slot_members WHERE event_key=? AND stock!=? "
                     "AND exited_at IS NULL AND migrated_at IS NULL",
                     (slot['event_key'], stock)).fetchone()[0]
-                conn.execute("UPDATE event_slot_members SET migrated_at=? WHERE event_key=? "
-                             "AND stock=?", (now, slot['event_key'], stock))
                 if others == 0:
                     conn.execute(
                         "UPDATE event_slots SET status='migrated', migrated_at=?, "

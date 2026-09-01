@@ -170,11 +170,14 @@ def settle_member_clear(conn, stock, value, reason='', source='sleeve', archive=
     member_budget = seg['budget'] or 0.0
     realized = value - member_budget
     with conn:
+        # M1.7/F3：段认领=条件 UPDATE（status 守卫）——双结算/重放第二遍在此出局
+        cur = conn.execute("UPDATE position SET status='closed', closed_at=?, close_value=?, "
+                           "realized_pnl=? WHERE id=? AND status='open'",
+                           (now, value, realized, seg['id']))
+        if cur.rowcount == 0:
+            return None
         conn.execute("UPDATE sleeve_ledger SET free=free+?, updated_at=? WHERE id=1",
                      (value, now))
-        conn.execute("UPDATE position SET status='closed', closed_at=?, close_value=?, "
-                     "realized_pnl=? WHERE id=?",
-                     (now, value, realized, seg['id']))
         conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, capital_used=0,"
                      " updated_at=? WHERE id=?", (now, aid))
         conn.execute("INSERT INTO audit (timestamp, action, stock, amount, free_before, "

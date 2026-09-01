@@ -603,7 +603,12 @@ class SleeveOpener:
     # ---------- sleeve-close-slot ----------
 
     def close_slot(self, event_key, reason='', source='agent', archive=None):
-        """对账 + 归档：全成员清零后槽 closed 释放；残余未清资金回消息池。"""
+        """对账 + 归档：全成员清零后槽 closed 释放；残余未清资金回消息池。
+
+        M1.7/F3：槽关账=事务内条件认领（`WHERE status IN (open,partial)` + rowcount 判定）——
+        并发 close×2 / close×cancel 同槽时抢不到行即出局，杜绝双回款（旧"读-判-写"检查在
+        事务外=TOCTOU，认领 UPDATE 无条件=双写）。认领后核验仍有持仓 → 异常回滚，槽还原。
+        """
         if archive is None:
             archive = os.environ.get('SLEEVE_ARCHIVE_ON_CLEAR', '') == '1'
         conn = self._conn()
@@ -617,17 +622,26 @@ class SleeveOpener:
                 raise ValueError(f"事件槽 {event_key} 状态 {slot['status']} 非 open/partial")
             members = conn.execute("SELECT stock FROM event_slot_members WHERE event_key=?",
                                    (event_key,)).fetchall()
-            holding = []
-            for m in members:
-                aid = news_account_id(conn, m['stock'])
-                if aid is None:
-                    continue
-                qty, _ = account_remaining(conn, aid)
-                if qty > 0:
-                    holding.append({"stock": m['stock'], "qty": qty})
-            if holding:
-                raise ValueError(f"事件槽 {event_key} 仍有持仓 {holding}——先清仓/迁移再 close-slot")
             with conn:
+                # M1.7/F3：槽认领=条件 UPDATE（状态守卫进事务）——抢不到=已被并发处理
+                cur = conn.execute(
+                    "UPDATE event_slots SET status='closed', closed_at=?, "
+                    "note=COALESCE(note,'')||? WHERE event_key=? AND status IN (?,?)",
+                    (now, f" [close-slot:{reason}]", event_key, SLOT_ACTIVE[0], SLOT_ACTIVE[1]))
+                if cur.rowcount == 0:
+                    raise ValueError(f"事件槽 {event_key} 已被并发处理（状态 {slot['status']}），"
+                                     f"不能重复 close-slot")
+                holding = []
+                for m in members:
+                    aid = news_account_id(conn, m['stock'])
+                    if aid is None:
+                        continue
+                    qty, _ = account_remaining(conn, aid)
+                    if qty > 0:
+                        holding.append({"stock": m['stock'], "qty": qty})
+                if holding:
+                    raise ValueError(f"事件槽 {event_key} 仍有持仓 {holding}"
+                                     f"——先清仓/迁移再 close-slot")
                 residual = 0.0
                 for m in members:
                     aid = news_account_id(conn, m['stock'])
@@ -651,9 +665,6 @@ class SleeveOpener:
                         if not tech_open:
                             conn.execute("UPDATE pool SET pool_status='archived', archived_at=? "
                                          "WHERE stock=?", (now, m['stock']))
-                conn.execute("UPDATE event_slots SET status='closed', closed_at=?, "
-                             "note=COALESCE(note,'')||? WHERE event_key=?",
-                             (now, f" [close-slot:{reason}]", event_key))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, reason, source)"
                              " VALUES (?,?,?,?,?,?)",
                              (now, 'sleeve_close_slot', event_key, residual,

@@ -207,13 +207,29 @@ class MasterPoolManager:
                 if grp is None:
                     grp = 'news'
             with conn:
+                # M1.7/F4：资金认领=相对条件扣减（`free=free-? WHERE free>=?` + rowcount），
+                # 丢失更新在写入瞬间出局（旧 `SET free=绝对值` 会覆盖并发方的相对写）
+                cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
+                                   "WHERE id=1 AND free>=?", (amount, now, amount))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
+                                     f"空闲 ¥{free:,.0f}")
                 new_free = free - amount
-                conn.execute(f"UPDATE {table} SET free=?, updated_at=? WHERE id=1",
-                             (new_free, now))
+                # M1.7/F4：段认领=条件 INSERT（同票活跃段互斥 + 主池 20 段位帽，
+                # 计数与写入同语句原子——并发同票第二个 allocate 在此出局）
                 pos_strategy = 'NEWS' if pool == 'sleeve' else 'L1'
-                conn.execute("INSERT INTO position (stock, code, strategy, status, budget, "
-                             "topup_total, opened_at) VALUES (?,?,?,'open',?,0,?)",
-                             (stock, code, pos_strategy, amount, now))
+                seg_filter = _MAIN_SEG_FILTER if pool == 'main' else "strategy='NEWS'"
+                cap_guard = ("AND (SELECT COUNT(*) FROM position WHERE status='open' "
+                             f"AND {_MAIN_SEG_FILTER}) < 20" if pool == 'main' else "")
+                cur = conn.execute(
+                    "INSERT INTO position (stock, code, strategy, status, budget, "
+                    "topup_total, opened_at) SELECT ?,?,?, 'open', ?, 0, ? "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM position WHERE stock=? AND "
+                    f"status='open' AND {seg_filter}) {cap_guard}",
+                    (stock, code, pos_strategy, amount, now, stock))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{stock} 已有 open 段（或段位已满），"
+                                     f"需先 release 再重新 allocate")
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'allocate' if pool == 'main' else 'sleeve_allocate',
@@ -305,11 +321,18 @@ class MasterPoolManager:
                 raise ValueError(f"账户 {stock} 不存在")
             aid = acct[0]
             with conn:
-                conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+? "
-                             "WHERE id=?", (amount, amount, seg['id']))
+                # M1.7/F4：资金认领=相对条件扣减 + rowcount（丢失更新在写入瞬间出局）
+                cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
+                                   "WHERE id=1 AND free>=?", (amount, now, amount))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
+                                     f"空闲 ¥{free:,.0f}")
                 new_free = free - amount
-                conn.execute(f"UPDATE {table} SET free=?, updated_at=? WHERE id=1",
-                             (new_free, now))
+                # 段预算同步=相对累加 + status 守卫（段已被并发关闭则出局回滚）
+                cur = conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+? "
+                                   "WHERE id=? AND status='open'", (amount, amount, seg['id']))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{stock} 段已被并发关闭，注资中止")
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
                              "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
                              (now, 'topup' if pool == 'main' else 'sleeve_topup',
@@ -375,16 +398,20 @@ class MasterPoolManager:
             if qty > 0:
                 raise ValueError(f"{stock} 仍有持仓 {qty} 股，先清仓再 release")
             value = acct.capital_pool.available
-            free = self._get_free(conn, pool)
-            new_free = free + value
             with conn:
-                conn.execute(f"UPDATE {table} SET free=?, updated_at=? WHERE id=1",
-                             (new_free, now))
-                realized = value - seg['budget']
-                conn.execute("UPDATE position SET status='closed', closed_at=?, close_value=?, "
-                             "realized_pnl=?, cooldown_until=? WHERE id=?",
-                             (now, value, realized,
-                              (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
+                # M1.7/F4：段认领=条件 UPDATE（`status='open'` 才能关段）——
+                # 双 release / release×清仓竞态第二遍在此出局，杜绝双回款
+                cur = conn.execute(
+                    "UPDATE position SET status='closed', closed_at=?, close_value=?, "
+                    "realized_pnl=?, cooldown_until=? WHERE id=? AND status='open'",
+                    (now, value, value - seg['budget'],
+                     (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
+                if cur.rowcount == 0:
+                    raise ValueError(f"{stock} 段已被并发释放，不能重复 release")
+                free = self._get_free(conn, pool)
+                conn.execute(f"UPDATE {table} SET free=free+?, updated_at=? WHERE id=1",
+                             (value, now))
+                new_free = free + value
                 # 2026-08-27 修复：段关闭 → accounts 表清零（资金已回 free 池，
                 # 避免详情页残留"段资金 ¥50 万/可用 ¥45 万"双算显示）
                 conn.execute("UPDATE accounts SET capital_total=0, capital_available=0, "

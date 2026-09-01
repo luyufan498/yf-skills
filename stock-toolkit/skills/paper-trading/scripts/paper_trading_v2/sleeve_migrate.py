@@ -110,6 +110,10 @@ class SleeveMigrator:
                     conn.execute("UPDATE position SET strategy='L1', budget=?, cash=0, "
                                  "code=COALESCE(?, code) WHERE id=?",
                                  (cost, code, seg['id']))
+                    # 段转留痕（v9 原地转的 F1 幻影现金防线）：段上既有 trades/operations
+                    # 全部为迁移前历史，追加标记——get_account 重建公式按标记分段
+                    # （标记行已随 sleeve 回款结算，未标记行=迁移后真实现金流）。
+                    self._mark_segment_rows(conn, seg['id'], code, slot['event_key'])
                     transfer_mode = 'in_place'
                 else:
                     self._move_segment_rows(conn, aid_sleeve, aid_tech, code,
@@ -198,6 +202,22 @@ class SleeveMigrator:
                     "transfer_mode": transfer_mode, "migrated": others == 0}
         finally:
             conn.close()
+
+    @staticmethod
+    def _mark_segment_rows(conn, seg_id, code, event_key):
+        """段转留痕（v9 原地转路径）：段上全部既有 trades/operations 追加段转标记。
+
+        语义与 _move_segment_rows 一致（M1.7/F1）：标记行=迁移前历史，已随 sleeve
+        回款结算；get_account 重建公式按标记分段，不再计入承接后现金流。
+        零新增行、零数值改动（note 追加），id 不动。
+        """
+        from paper_trading_v2.sleeve_slots import SEGMENT_TRANSFER_MARK
+        marker = f" [{SEGMENT_TRANSFER_MARK}{event_key}]"
+        conn.execute(
+            "UPDATE trades SET stock_code=COALESCE(?, stock_code), "
+            "note=COALESCE(note,'')||? WHERE account_id=?", (code, marker, seg_id))
+        conn.execute("UPDATE operations SET note=COALESCE(note,'')||? WHERE account_id=?",
+                     (marker, seg_id))
 
     @staticmethod
     def _move_segment_rows(conn, from_seg, to_seg, code, event_key):

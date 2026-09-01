@@ -123,19 +123,12 @@ class SleeveOpener:
                     share = total_budget / n
                     pure_merge = (budget == 0)      # R4/B1'：纯归并合法形态——零拨款，
                     #                                 不回收既有成员、新成员 0 元起步
-                    # 新成员建账户（资金 0 起步，下面补足到等权份额）+ position 段
+                    # 新成员段直建（v9 段即账户；资金 0 起步，下面补足到等权份额）——
+                    # 段 budget=0，由 _topup_member 同步计入，保证"段预算恒=段实际占用
+                    # （不超分）"在 merge 下同样成立
                     for s in new_members:
                         self._ensure_member_account(conn, s, code_map.get(s), now,
                                                     reset=False, capital=0)
-                        # 段先建（budget=0），由 _topup_member 与账户同步计入——
-                        # 保证"段预算恒=账户实际占用（不超分）"在 merge 下同样成立
-                        if not conn.execute(
-                            "SELECT 1 FROM position WHERE stock=? AND status='open' "
-                            "AND strategy='NEWS'", (s,)).fetchone():
-                            conn.execute(
-                                "INSERT INTO position (stock, code, strategy, status, budget, "
-                                "topup_total, opened_at) VALUES (?,?,'NEWS','open',0,0,?)",
-                                (s, code_map.get(s), now))
                     # 补足所有成员到新等权份额，实扣 = Σ缺口（等权重算，不加坑）
                     deduct = 0.0
                     if not pure_merge:
@@ -227,12 +220,9 @@ class SleeveOpener:
                                 if cash:
                                     conn.execute("UPDATE sleeve_ledger SET free=free+?, "
                                                  "updated_at=? WHERE id=1", (cash, now))
+                        # v9 段直建（段即账户）：NEWS open 段 + 段现金=share，不再建 accounts 行
                         self._ensure_member_account(conn, s, code_map.get(s), now, reset=True,
                                                     capital=share)
-                        conn.execute(
-                            "INSERT INTO position (stock, code, strategy, status, budget, "
-                            "topup_total, opened_at) VALUES (?,?,'NEWS','open',?,0,?)",
-                            (s, code_map.get(s), share, now))
                         conn.execute(
                             "INSERT OR IGNORE INTO event_slot_members (event_key, stock, weight, "
                             "joined_at) VALUES (?,?,?,?)",
@@ -440,9 +430,9 @@ class SleeveOpener:
                         continue
                     # R2/A1：扣款认领=条件 UPDATE（段现金充足才扣），并发同成员抢不到=出局
                     cur = conn.execute(
-                        "UPDATE position SET cash=cash-?, updated_at=? "
+                        "UPDATE position SET cash=cash-? "
                         "WHERE id=? AND cash>=?",
-                        (amount, now, aid, amount))
+                        (amount, aid, amount))
                     if cur.rowcount == 0:
                         skipped.append((stock, '扣款未获认领（并发成交让位/资金不足）'))
                         all_filled = False

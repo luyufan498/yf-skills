@@ -57,7 +57,7 @@ def _identity(conn):
     """系统资金恒等式：pool_ledger.free + sleeve_ledger.free + Σaccounts.capital_total。"""
     pool_free = conn.execute("SELECT free FROM pool_ledger").fetchone()[0]
     sleeve_free = conn.execute("SELECT free FROM sleeve_ledger").fetchone()[0]
-    acct = conn.execute("SELECT COALESCE(SUM(capital_total),0) FROM accounts").fetchone()[0]
+    acct = money_label_sum(conn)
     return pool_free + sleeve_free + acct, pool_free, sleeve_free, acct
 
 

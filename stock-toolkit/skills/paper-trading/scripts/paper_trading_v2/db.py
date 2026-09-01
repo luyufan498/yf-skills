@@ -666,8 +666,11 @@ def _v9_account_segment_map(conn) -> dict:
       2. 否则该票最后一个 closed 段（closed_at/id 最大者）
       3. 否则建 stub closed 段（budget=0, note 标记 v9 迁移归档）
     返回 {old_account_id: position_id}；顺带把 cash/fifo 写进配对段（活户=段现金真身）。
+    （accounts/position 缺表（合成 schema 测试）→ 空映射，段表照建。）
     """
     mapping = {}
+    if not _table_exists(conn, 'accounts'):
+        return mapping
     accts = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
     for a in accts:
         stock = a['stock_name']
@@ -807,6 +810,11 @@ def _migrate_v9_body(conn: sqlite3.Connection):
     conn.executemany("INSERT INTO _v9_map (old_id, position_id) VALUES (?,?)",
                      list(mapping.items()))
     for old, new, ddl, cols_sql, select_sql in _V9_CHILD_TABLES:
+        if not _table_exists(conn, old):
+            # 合成/极简 schema（无该表）：直接按 v9 定义建空表（无需重建）
+            if not _table_exists(conn, new):
+                conn.execute(ddl)
+            continue
         staged = f'{new}_v9_old'
         conn.execute(f"ALTER TABLE {old} RENAME TO {staged}")
         conn.execute(ddl)
@@ -836,7 +844,8 @@ def _migrate_v9_body(conn: sqlite3.Connection):
     conn.execute("DROP TABLE _v9_map")
 
     # 4. accounts 退役：RENAME accounts_old 保留（安全迁移模式，禁 DROP）
-    conn.execute("ALTER TABLE accounts RENAME TO accounts_old")
+    if _table_exists(conn, 'accounts'):
+        conn.execute("ALTER TABLE accounts RENAME TO accounts_old")
 
     # 5. pool_ledger CHECK(free>=0)（M17-D12）
     _rebuild_pool_ledger_v9(conn)

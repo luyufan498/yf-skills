@@ -63,9 +63,10 @@ def _conn(env):
 
 
 def _snapshots(conn):
+    from tests_v2.v9_helpers import money_label_sum
     pool_free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
     sleeve_free = conn.execute("SELECT free FROM sleeve_ledger WHERE id=1").fetchone()[0]
-    acct = conn.execute("SELECT COALESCE(SUM(capital_total),0) FROM accounts").fetchone()[0]
+    acct = money_label_sum(conn)      # v9：Σ open 段 budget（v8 语义=Σ capital_total）
     return pool_free, sleeve_free, acct
 
 
@@ -104,19 +105,18 @@ class PausingConn:
 # ============ F3：close_slot 条件认领（双回款灭） ============
 
 def _setup_cleared_member(env, stock, key, cash=110_000):
-    """开槽成交后清掉成员持仓、只留残余现金（等价保护链成交回款）。"""
+    """开槽成交后清掉成员持仓、只留残余现金（等价保护链成交回款）。v9：段即账户。"""
+    from tests_v2.v9_helpers import insert_sell, set_seg_cash
     _setup_filled_slot(env, stock, key)
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name=? AND grp='news'",
-                       (stock,)).fetchone()[0]
-    qty = conn.execute("SELECT quantity FROM positions WHERE account_id=? AND "
+    aid = conn.execute("SELECT id FROM position WHERE stock=? AND status='open' "
+                       "AND strategy='NEWS'", (stock,)).fetchone()[0]
+    qty = conn.execute("SELECT quantity FROM trades WHERE account_id=? AND "
                        "operation='buy'", (aid,)).fetchone()[0]
-    cost = conn.execute("SELECT total_cost FROM positions WHERE account_id=? AND "
+    cost = conn.execute("SELECT total_cost FROM trades WHERE account_id=? AND "
                         "operation='buy'", (aid,)).fetchone()[0]
-    conn.execute("INSERT INTO positions (account_id, seq, operation, stock_code, quantity, "
-                 "price, total_cost, timestamp, note) VALUES (?,1,'sell','sh1',?,?,?,"
-                 "datetime('now'),'审计卖')", (aid, qty, cash / qty, cost))
-    conn.execute("UPDATE accounts SET capital_available=? WHERE id=?", (cash, aid))
+    insert_sell(conn, aid, qty, cash / qty, cost)
+    set_seg_cash(conn, aid, cash)
     conn.commit()
     conn.close()
 
@@ -225,18 +225,18 @@ def test_migrate_concurrent_no_double_transfer(pools, env):
 
     conn = _conn(env)
     pool_free, sleeve_free, acct = _snapshots(conn)
-    tech = conn.execute("SELECT capital_total FROM accounts WHERE stock_name='迁票' "
-                        "AND grp='tech'").fetchone()
+    tech = conn.execute("SELECT budget FROM position WHERE stock='迁票' "
+                        "AND status='open'").fetchone()
     bridge = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='bridge_track'"
                           ).fetchone()[0]
-    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    buys = conn.execute("SELECT COUNT(*) FROM trades WHERE operation='buy'").fetchone()[0]
     migrated = conn.execute("SELECT COUNT(*) FROM event_slots WHERE status='migrated'"
                             ).fetchone()[0]
     conn.close()
     # 恒等式：1,000 万 + 200 万（迁移是等额对转）
     assert abs(pool_free + sleeve_free + acct - 12_000_000) < 0.01, \
         f"双重对转 Δ={pool_free + sleeve_free + acct - 12_000_000:+,.2f}"
-    assert tech and abs(tech[0] - 100_000) < 0.01, f"tech 承接={tech[0] if tech else None}"
+    assert tech and abs(tech[0] - 100_000) < 0.01, f"承接段 budget={tech[0] if tech else None}"
     assert bridge == 1, f"bridge_track={bridge}"
     assert buys == 1, f"buy 行={buys}"
     assert migrated == 1, f"migrated 槽={migrated}"
@@ -269,11 +269,11 @@ def test_allocate_same_stock_concurrent_single_segment(pools, env):
     pool_free, _, acct = _snapshots(conn)
     segs = conn.execute("SELECT COUNT(*) FROM position WHERE stock='同票X' AND status='open'"
                         ).fetchone()[0]
-    accounts = conn.execute("SELECT COUNT(*) FROM accounts WHERE stock_name='同票X'"
+    seg_rows = conn.execute("SELECT COUNT(*) FROM position WHERE stock='同票X'"
                             ).fetchone()[0]
     conn.close()
     assert segs <= 1, f"同票双段={segs}"
-    assert accounts <= 1, f"同票双账户={accounts}"
+    assert seg_rows <= 1, f"同票多段行={seg_rows}"
     ok = [v for v in results.values() if isinstance(v, bool) and v]
     assert len(ok) == 1, f"成功数={len(ok)}（恰 1）"
     assert abs(pool_free - 9_500_000) < 0.01, f"池扣款 main.free={pool_free}"
@@ -318,9 +318,7 @@ def test_release_concurrent_no_double_refund(pools, env):
     m = _pool_mgr(env)
     m.allocate('放票Z', 500_000, reason='建段')
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='放票Z' AND grp='tech'"
-                       ).fetchone()[0]
-    conn.execute("UPDATE accounts SET capital_available=0, capital_used=0 WHERE id=?", (aid,))
+    conn.execute("UPDATE position SET cash=0 WHERE stock='放票Z' AND status='open'")
     conn.commit()
     conn.close()
 
@@ -355,9 +353,7 @@ def test_release_twice_sequential_rejected(pools, env):
     m = _pool_mgr(env)
     m.allocate('放票W', 500_000, reason='建段')
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='放票W' AND grp='tech'"
-                       ).fetchone()[0]
-    conn.execute("UPDATE accounts SET capital_available=0, capital_used=0 WHERE id=?", (aid,))
+    conn.execute("UPDATE position SET cash=0 WHERE stock='放票W' AND status='open'")
     conn.commit()
     conn.close()
     m.release('放票W', reason='第一次')
@@ -387,7 +383,7 @@ def _w_delta(env):
     conn = _conn(env)
     pool_free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
     sleeve_free = conn.execute("SELECT free FROM sleeve_ledger WHERE id=1").fetchone()[0]
-    avail = conn.execute("SELECT COALESCE(SUM(capital_available),0) FROM accounts").fetchone()[0]
+    avail = conn.execute("SELECT COALESCE(SUM(cash),0) FROM position").fetchone()[0]
     rpnl = 0.0
     for tbl in ('operations', 'operations_archive'):
         rpnl += conn.execute(
@@ -395,7 +391,7 @@ def _w_delta(env):
             f"WHERE type='sell'").fetchone()[0] or 0.0
     fifo = 0.0
     from paper_trading_v2.sleeve_slots import account_remaining
-    for (aid,) in conn.execute("SELECT DISTINCT account_id FROM positions").fetchall():
+    for (aid,) in conn.execute("SELECT DISTINCT account_id FROM trades").fetchall():
         fifo += account_remaining(conn, aid)[1]
     conn.close()
     return pool_free + sleeve_free + avail + fifo - rpnl - 12_000_000
@@ -443,7 +439,7 @@ def test_migrated_account_available_tracks_post_migration_trading(pools, env):
 
     acct = _trader(env).get_account('续票')
     conn = _conn(env)
-    aid = conn.execute("SELECT id FROM accounts WHERE stock_name='续票' AND grp='tech'"
+    aid = conn.execute("SELECT id FROM position WHERE stock='续票' AND status='open'"
                        ).fetchone()[0]
     from paper_trading_v2.sleeve_slots import account_remaining
     qty, fifo_cost = account_remaining(conn, aid)
@@ -472,6 +468,11 @@ def test_migrated_ticket_conditions_readable_and_triggerable(pools, env):
     op = _opener(env)
     op.open_slot(['护票'], budget=400_000, event_key='ND#PC', code_map={'护票': 'sh1'})
     op.fill_pending(event_key='ND#PC', open_prices={'护票': 10.0}, atr={'护票': 0.5})
+    conn = _conn(env)
+    _pre_migrate_news_seg = conn.execute(
+        "SELECT id FROM position WHERE stock='护票' AND status='open' AND strategy='NEWS'"
+    ).fetchone()[0]
+    conn.close()
     _migrator(env).migrate('护票', reason='V11', code='sh1')
 
     rec = _cm(env).load_conditions('护票')
@@ -483,21 +484,20 @@ def test_migrated_ticket_conditions_readable_and_triggerable(pools, env):
     breaches = _cm(env).check_triggers('护票', current_price=8.5)
     assert breaches, "现价 8.5 已破 9.0 保护线但 check_triggers 返回空（感知断链）"
 
-    # save 路径：改价必须写回 tech 账户，不得写进/清空 news 壳
+    # save 路径：改价必须写回承接段（v9 段即账户，原 NEWS 段原地转 L1 同一行）
     rec.conditions['cost_protection'].price = 8.8
     _cm(env).save_conditions(rec)
     conn = _conn(env)
-    aid_tech = conn.execute("SELECT id FROM accounts WHERE stock_name='护票' AND grp='tech'"
+    aid_tech = conn.execute("SELECT id FROM position WHERE stock='护票' AND status='open'"
                             ).fetchone()[0]
-    aid_news = conn.execute("SELECT id FROM accounts WHERE stock_name='护票' AND grp='news'"
-                            ).fetchone()[0]
-    tech_cp = conn.execute("SELECT price FROM conditions WHERE account_id=? AND "
-                           "type='cost_protection'", (aid_tech,)).fetchone()
-    news_conds = conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
-                              (aid_news,)).fetchone()[0]
+    n_segs = conn.execute("SELECT COUNT(*) FROM position WHERE stock='护票'").fetchone()[0]
+    n_conds = conn.execute("SELECT COUNT(*) FROM conditions WHERE account_id=?",
+                           (aid_tech,)).fetchone()[0]
     conn.close()
-    assert tech_cp and abs(tech_cp[0] - 8.8) < 0.01, f"改价未写回 tech: {tech_cp}"
-    assert news_conds == 0, f"news 壳被误写 {news_conds} 条条件"
+    assert tech_cp and abs(tech_cp[0] - 8.8) < 0.01, f"改价未写回承接段: {tech_cp}"
+    # v9 等价断言（原"news 壳零条件"）：原地转后恰一个段行、条件全在该段
+    assert n_segs == 1, f"迁移后段行数={n_segs}（原地转应仍 1 行）"
+    assert n_conds >= 2, f"承接段条件数={n_conds}（保护链应随段）"
 
 
 def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
@@ -506,6 +506,11 @@ def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
     op = _opener(env)
     op.open_slot(['锚票'], budget=400_000, event_key='ND#PA', code_map={'锚票': 'sh1'})
     op.fill_pending(event_key='ND#PA', open_prices={'锚票': 10.0}, atr={'锚票': 0.5})
+    conn = _conn(env)
+    _pre_migrate_news_seg = conn.execute(
+        "SELECT id FROM position WHERE stock='锚票' AND status='open' AND strategy='NEWS'"
+    ).fetchone()[0]
+    conn.close()
     _migrator(env).migrate('锚票', reason='V11', code='sh1')
     _pool_mgr(env).topup('锚票', 200_000, reason='承接注资', source='migrate')
 
@@ -514,13 +519,13 @@ def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
         _trader(env).buy_stock('锚票', amount=150_000, note='承接后加买')
 
     conn = _conn(env)
-    aid_tech = conn.execute("SELECT id FROM accounts WHERE stock_name='锚票' AND grp='tech'"
+    aid_tech = conn.execute("SELECT id FROM position WHERE stock='锚票' AND status='open'"
                             ).fetchone()[0]
     from paper_trading_v2.sleeve_slots import account_remaining
     qty, fifo_cost = account_remaining(conn, aid_tech)
     news_conds = conn.execute(
-        "SELECT COUNT(*) FROM conditions WHERE account_id=(SELECT id FROM accounts "
-        "WHERE stock_name='锚票' AND grp='news')").fetchone()[0]
+        "SELECT COUNT(*) FROM conditions WHERE account_id=?",
+        (aid_tech,)).fetchone()[0]
     tech_cp = conn.execute("SELECT price FROM conditions WHERE account_id=? AND "
                            "type='cost_protection'", (aid_tech,)).fetchone()
     conn.close()
@@ -529,7 +534,8 @@ def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
     assert avg_cost > 10.0, f"加买后加权成本={avg_cost}（应含 15 元新买档）"
     assert tech_cp and abs(tech_cp[0] - expected) < 0.01, \
         f"加买后保本锁未重锚：{tech_cp[0] if tech_cp else None}（应={expected}，锚死 9.0=原成本）"
-    assert news_conds == 0
+    # v9 段即账户：原"news 壳零条件"断言的等价形态=保护线落在承接段（原地转 L1 同一行）
+    assert news_conds >= 1, "承接段应有保护线（buy 后重锚）"
 
 
 # ============ F5：R7 次级防线（极小价 / 昨收=0 脏值 / skip_conditions 留痕） ============
@@ -549,7 +555,7 @@ def test_fill_rejects_sub_tick_price(pools, env):
     r = op.fill_pending(event_key='ND#PF1', open_prices={'小价票': 0.001},
                         skip_conditions=True)
     conn = _conn(env)
-    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    buys = conn.execute("SELECT COUNT(*) FROM trades WHERE operation='buy'").fetchone()[0]
     conn.close()
     assert buys == 0, "极小价 0.001 不应成交"
     assert _fill_blocked_count(env) == 1, "拒单应 shadow_log 留痕"
@@ -563,7 +569,7 @@ def test_fill_rejects_dirty_zero_prev_close(pools, env):
     op.fill_pending(event_key='ND#PF2', open_prices={'脏昨票': 10.0},
                     prev_close_map={'脏昨票': 0.0}, skip_conditions=True)
     conn = _conn(env)
-    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    buys = conn.execute("SELECT COUNT(*) FROM trades WHERE operation='buy'").fetchone()[0]
     conn.close()
     assert buys == 0, "昨收=0 脏参照不应裸奔成交"
     assert _fill_blocked_count(env) == 1
@@ -577,7 +583,7 @@ def test_fill_skip_conditions_leaves_shadow_trace(pools, env):
         r = op.fill_pending(event_key='ND#PF3', open_prices={'后门票': 10.0},
                             skip_conditions=True)
     conn = _conn(env)
-    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    buys = conn.execute("SELECT COUNT(*) FROM trades WHERE operation='buy'").fetchone()[0]
     traces = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='skip_conditions'"
                           ).fetchone()[0]
     conn.close()
@@ -595,13 +601,12 @@ def test_migrate_code_inherited_from_news_account(pools, env):
     op.fill_pending(event_key='ND#PG1', open_prices={'承票': 10.0}, skip_conditions=True)
     _migrator(env).migrate('承票', reason='V11')          # 不传 code
     conn = _conn(env)
-    tech_code = conn.execute("SELECT stock_code FROM accounts WHERE stock_name='承票' "
-                             "AND grp='tech'").fetchone()
-    news_code = conn.execute("SELECT stock_code FROM accounts WHERE stock_name='承票' "
-                             "AND grp='news'").fetchone()
+    seg_code = conn.execute("SELECT code FROM position WHERE stock='承票' "
+                            "AND status='open'").fetchone()
     conn.close()
-    assert news_code[0] == 'sh600000'
-    assert tech_code[0] == 'sh600000', f"tech code={tech_code[0]!r}（应继承 news 侧）"
+    # v9 段即账户：NEWS 段原地转 L1（同一行），code 继承=段 code 原值保留
+    assert seg_code is not None
+    assert seg_code[0] == 'sh600000', f"承接段 code={seg_code[0]!r}（应继承 sleeve 段）"
 
     # 直接 API sell（不经 CLI _ensure_code 兜底）应走通
     with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:

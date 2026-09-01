@@ -332,9 +332,10 @@ def check_naked_conditions() -> list[str]:
         alerts = []
         for stock in open_stocks:
             # 该股 active 的保护类条件
+            # v9（M1.6 账户层退役）：段即账户——conditions join position 段行
             cnt = conn.execute(
-                "SELECT COUNT(*) AS n FROM conditions c JOIN accounts a ON a.id=c.account_id "
-                "WHERE a.stock_name=? AND c.status='active' "
+                "SELECT COUNT(*) AS n FROM conditions c JOIN position a ON a.id=c.account_id "
+                "WHERE a.stock=? AND c.status='active' "
                 "AND c.type IN ('cost_protection','trailing_stop')", (stock,)
             ).fetchone()["n"]
             if cnt == 0:
@@ -344,8 +345,9 @@ def check_naked_conditions() -> list[str]:
             # active cost_protection 且 price > 现价×1.02 → 告警；排除深跌期补执行
             # （现价 < 成本×88% 时 88% 底线故意高于现价——语义正确不报）
             code_row = conn.execute(
-                "SELECT p.code, a.id AS aid FROM position p JOIN accounts a ON a.stock_name=p.stock "
-                "WHERE p.stock=? AND p.status='open'", (stock,)
+                "SELECT p.code, p.id AS aid FROM position p "
+                "WHERE p.stock=? AND p.status='open' "
+                "AND COALESCE(p.strategy,'')!='NEWS' ORDER BY p.id DESC LIMIT 1", (stock,)
             ).fetchone()
             if code_row:
                 px = fetch_price(code_row["code"])
@@ -353,13 +355,13 @@ def check_naked_conditions() -> list[str]:
                     avg_cost = conn.execute(
                         "SELECT SUM(CASE WHEN pos.operation='buy' THEN pos.total_cost "
                         "ELSE -pos.total_cost END)/NULLIF(SUM(CASE WHEN pos.operation='buy' THEN "
-                        "pos.quantity ELSE -pos.quantity END),0) AS c FROM positions pos "
+                        "pos.quantity ELSE -pos.quantity END),0) AS c FROM trades pos "
                         "WHERE pos.account_id=?", (code_row["aid"],)
                     ).fetchone()["c"]
                     deep_period = avg_cost is not None and px < avg_cost * 0.88
                     for c in conn.execute(
-                        "SELECT price FROM conditions c JOIN accounts a ON a.id=c.account_id "
-                        "WHERE a.stock_name=? AND c.status='active' AND c.type='cost_protection'",
+                        "SELECT price FROM conditions c JOIN position a ON a.id=c.account_id "
+                        "WHERE a.stock=? AND c.status='active' AND c.type='cost_protection'",
                         (stock,)).fetchall():
                         if c["price"] and px and c["price"] > px * 1.02 and not deep_period:
                             alerts.append(
@@ -377,10 +379,11 @@ def check_price_triggers() -> list[str]:
     conn = sqlite3.connect(POOL_DB)
     conn.row_factory = sqlite3.Row
     try:
+        # v9：段即账户——条件表 join position 段行（stock/code 即段字段）
         rows = conn.execute(
-            "SELECT cn.id, a.stock_name, a.stock_code, cn.price, cn.action, cn.category, "
-            "cn.type, cn.name, cn.is_event "
-            "FROM conditions cn JOIN accounts a ON cn.account_id=a.id "
+            "SELECT cn.id, a.stock AS stock_name, a.code AS stock_code, cn.price, cn.action, "
+            "cn.category, cn.type, cn.name, cn.is_event "
+            "FROM conditions cn JOIN position a ON cn.account_id=a.id "
             "WHERE cn.status='active' AND cn.price IS NOT NULL").fetchall()
     finally:
         conn.close()
@@ -536,7 +539,8 @@ def check_market_shock() -> list[str]:
 
 # ---------- 5. 动量异动扫描（原有） ----------
 def pool_stocks() -> list[tuple[str, str]]:
-    """池内 active 股票 (名称, code)。code 缺失时从 accounts 表兜底（pool.code 可能为 NULL）。
+    """池内 active 股票 (名称, code)。code 缺失时从 position 段表兜底（v9：accounts 已退役，
+    pool.code 可能为 NULL）。
 
     sleeve-m1（方案 3.4）：排除 strategy='NEWS'（消息组信号缓冲）——甜点区/追高检测
     对消息票产噪音告警，消息组不走技术档位语言。
@@ -546,9 +550,11 @@ def pool_stocks() -> list[tuple[str, str]]:
     conn = sqlite3.connect(POOL_DB)
     conn.row_factory = sqlite3.Row
     try:
+        # v9：段即账户——code 兜底源=position 段行（accounts 退役）
         rows = conn.execute(
-            "SELECT p.stock AS stock, COALESCE(p.code, a.stock_code) AS code "
-            "FROM pool p LEFT JOIN accounts a ON a.stock_name = p.stock "
+            "SELECT p.stock AS stock, COALESCE(p.code, "
+            "(SELECT code FROM position WHERE stock=p.stock AND code IS NOT NULL LIMIT 1)) AS code "
+            "FROM pool p "
             "WHERE p.pool_status='active' AND COALESCE(p.strategy,'') != 'NEWS'").fetchall()
         return [(r["stock"], r["code"]) for r in rows if r["code"]]
     finally:

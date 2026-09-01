@@ -910,6 +910,19 @@ def _migrate_v9_body(conn: sqlite3.Connection):
     #     （拿不到 K 线/离线 → 回退段 trades 成交价最高值；仍无 → 留 NULL 交 atr-sync 首扫 seed）
     n_peak = _v9_backfill_peak(conn)
 
+    # 6e. 段已实现盈亏回填（段现金恒等式的前提）：open 段 realized_pnl = Σ(未标记 sell 流水
+    #     amount−cost)。v8 时代该列只在 release 时落（value−budget），open 段恒 0，
+    #     段内部分卖出的盈亏只藏在 cash 里——恒等式 cash+FIFO−realized==budget 因此破缺
+    #     （生产副本实测爱司凯/中芯/凯莱英 3 段）。标记行（段转随迁）不计入。
+    n_rpnl = 0
+    for seg in conn.execute("SELECT id FROM position WHERE status='open'").fetchall():
+        rp = conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(amount,0)-COALESCE(cost,0)),0) FROM operations "
+            "WHERE account_id=? AND type='sell' AND (note IS NULL OR note NOT LIKE '%段转%')",
+            (seg['id'],)).fetchone()[0] or 0.0
+        conn.execute("UPDATE position SET realized_pnl=? WHERE id=?", (rp, seg['id']))
+        n_rpnl += 1
+
     # 7. 留痕（audit 表缺失的合成 schema 跳过）
     n_seg = conn.execute("SELECT COUNT(*) FROM position").fetchone()[0]
     n_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
@@ -921,7 +934,7 @@ def _migrate_v9_body(conn: sqlite3.Connection):
         (datetime.now().isoformat(), 'migrate_v9', None, 0, None, None,
          f"账户层退役：{len(mapping)} 户并段 / 段表 {n_seg} 行(+cash/fifo) / trades {n_trades} 行"
          f" / 僵尸归档 {n_zombie} 条 / 同型线去重 {n_dedupe} 条 / peak 回填 {n_peak} 条"
-         f" / accounts→accounts_old 保留",
+         f" / open段realized回填 {n_rpnl} 段 / accounts→accounts_old 保留",
          'manual'))
     return {"accounts": len(mapping), "zombies": n_zombie, "dedupe": n_dedupe}
 

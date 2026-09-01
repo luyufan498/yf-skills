@@ -252,6 +252,24 @@ class SqlStorage(StorageBackend):
         ops.operations.append(operation)
         return self.save_operations(stock_name, ops)
 
+    def bump_segment_realized(self, stock_name: str, profit_delta: float) -> None:
+        """段已实现盈亏增量落列（v9 段现金恒等式 runtime 维护）。
+
+        sell_stock 每笔卖出后调用：realized_pnl += profit。恒等式
+        cash + FIFO成本 − realized == budget 依赖该列与段现金同步
+        （release 时按 value−budget 重写，FIFO=0 时两者恒等，无双计）。
+        """
+        conn = self._conn()
+        try:
+            with conn:
+                row = resolve_account(conn, stock_name)
+                if row is None:
+                    return
+                conn.execute("UPDATE position SET realized_pnl=COALESCE(realized_pnl,0)+? "
+                             "WHERE id=?", (profit_delta, row['id']))
+        finally:
+            conn.close()
+
     # ---- 段列表 / 删除（v9 段视角）----
     def list_accounts(self, include_closed: bool = False) -> List[str]:
         """段视角列表（U4）：默认=open 段（活跃持仓实体）；include_closed=True 含关闭段。

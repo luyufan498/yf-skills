@@ -329,6 +329,15 @@ class PaperTrader:
         )
         self.storage.save_operation(stock_name, sell_operation)
 
+        # v9 段现金恒等式 runtime 维护：段已实现盈亏随每笔卖出同步落段列
+        # （v8 时代 realized_pnl 只在 release 落值，open 段恒 0 → 恒等式破缺）
+        bump = getattr(self.storage, 'bump_segment_realized', None)
+        if bump is not None:
+            try:
+                bump(stock_name, profit)
+            except Exception:
+                pass
+
         # 同步条件：卖出后更新成本保护或暂停条件
         self._sync_conditions_after_sell(stock_name, account)
 

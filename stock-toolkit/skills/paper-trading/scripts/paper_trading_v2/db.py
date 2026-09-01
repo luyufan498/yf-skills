@@ -906,6 +906,10 @@ def _migrate_v9_body(conn: sqlite3.Connection):
                      (datetime.now().isoformat(), *drop))
         n_dedupe += len(drop)
 
+    # 6d. U7.3：peak_price 回填——active trailing 而 peak=NULL 的线，用段开仓以来 K 线补
+    #     （拿不到 K 线/离线 → 回退段 trades 成交价最高值；仍无 → 留 NULL 交 atr-sync 首扫 seed）
+    n_peak = _v9_backfill_peak(conn)
+
     # 7. 留痕（audit 表缺失的合成 schema 跳过）
     n_seg = conn.execute("SELECT COUNT(*) FROM position").fetchone()[0]
     n_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
@@ -916,9 +920,58 @@ def _migrate_v9_body(conn: sqlite3.Connection):
         "source) VALUES (?,?,?,?,?,?,?,?)",
         (datetime.now().isoformat(), 'migrate_v9', None, 0, None, None,
          f"账户层退役：{len(mapping)} 户并段 / 段表 {n_seg} 行(+cash/fifo) / trades {n_trades} 行"
-         f" / 僵尸归档 {n_zombie} 条 / 同型线去重 {n_dedupe} 条 / accounts→accounts_old 保留",
+         f" / 僵尸归档 {n_zombie} 条 / 同型线去重 {n_dedupe} 条 / peak 回填 {n_peak} 条"
+         f" / accounts→accounts_old 保留",
          'manual'))
     return {"accounts": len(mapping), "zombies": n_zombie, "dedupe": n_dedupe}
+
+
+def _v9_backfill_peak(conn) -> int:
+    """U7.3：active trailing_stop 而 peak_price IS NULL 的线回填 peak。
+
+    优先段开仓以来日 K 最高价（KLineDataFetcher，网络不可用即跳过）；
+    回退该段 trades 成交价最高值；两者皆无 → 保持 NULL（atr-sync 首扫按当前价 seed，
+    conditions_manager.sync_trailing_stop init_peak='current' 语义兜底）。
+    返回回填条数（方法记入 audit reason）。
+    """
+    if not _table_exists(conn, 'conditions'):
+        return 0
+    rows = conn.execute(
+        "SELECT c.id, c.price, c.account_id, p.stock, p.code, p.opened_at "
+        "FROM conditions c LEFT JOIN position p ON p.id=c.account_id "
+        "WHERE c.type='trailing_stop' AND c.status='active' AND c.peak_price IS NULL"
+    ).fetchall()
+    if not rows:
+        return 0
+    filled = 0
+    for r in rows:
+        peak = None
+        method = None
+        code = r['code']
+        if code:
+            try:
+                from paper_trading_v2.kline_fetcher import KLineDataFetcher
+                klines = KLineDataFetcher().fetch_kline_data(code, 'day', 120) or []
+                since = (r['opened_at'] or '')[:10]
+                highs = [float(k.get('high') or 0) for k in klines
+                         if (k.get('date') or '') >= since and k.get('high')]
+                if highs:
+                    peak = max(highs)
+                    method = 'kline'
+            except Exception:
+                peak = None
+        if peak is None:
+            row = conn.execute(
+                "SELECT MAX(price) FROM trades WHERE account_id=? AND operation='buy'",
+                (r['account_id'],)).fetchone()
+            if row and row[0]:
+                peak = float(row[0])
+                method = 'trades'
+        if peak is not None and peak > 0:
+            conn.execute("UPDATE conditions SET peak_price=? WHERE id=?",
+                         (round(peak, 2), r['id']))
+            filled += 1
+    return filled
 
 
 def _rebuild_pool_ledger_v9(conn: sqlite3.Connection):

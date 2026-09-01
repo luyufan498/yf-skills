@@ -41,7 +41,7 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
 | `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
 | `L3_SNAPSHOT` | [退役-M2] 午间次优候选快照（2026-08-31 加入）——M2 起 stock-l3-scan 重写为消息组收编扫描，本类型停用 | stock-l3-scan（13:35，旧行为） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义） |
-| `NEWS_SNAPSHOT` | 消息组收编扫描快照（sleeve-m1 新增；生产者=收编扫描，消费者=仅次日晨审，**不碰钱**；G1-G4 清单闸 + news_kind 打标 + sleeve-open 建槽） | stock-l3-scan（13:35，M2 重写后） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义）；TTL 2 交易日，积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
+| `NEWS_SNAPSHOT` | 消息组收编扫描快照（sleeve-m1 新增；生产者=收编扫描，消费者=仅次日晨审，**不碰钱**；G1-G4 清单闸 + news_kind 打标 + sleeve-open 建槽[M3 起]） | stock-l3-scan（13:35，M2 重写后） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费 **[M2 部署后生效]**——排除依赖 watch_scan `check_tasks` 的 NOT IN 清单加进 NEWS_SNAPSHOT，当前部署版只排除 `('CALENDAR','L3_SNAPSHOT')`（~/.hermes/scripts/watch_scan.py:177 实测），**M2 部署新版前 NEWS_SNAPSHOT 会被心跳当普通事件消费**，故晨审消费承诺以 M2 部署+md5 核对（灰度手册 M2 步骤 0/2）为前置；TTL 2 交易日，积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
 
 ### CALENDAR 日历回查（2026-08 起，档位管理配套）
 

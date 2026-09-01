@@ -166,6 +166,12 @@ mode=l3-scan      [退役-M2] L3 通道预筛——M2 起 stock-l3-scan 重写�
 
 **l3-scan 消费流程**（[退役-M2] 心跳唤醒后识别 payload.mode=="l3-scan"；M2 起改为 NEWS_SNAPSHOT 消费：
 G1-G4 清单闸机械执行 + news_kind 打标 + sleeve-open，禁任何甜点区/趋势门预筛）：
+
+> **⏳ M2-M3 窗口中间态（时序对齐 [M3 启用] 命令面）**：M2-M3 间 NEWS_SNAPSHOT **只收编落库**
+> （`watchlist-add --strategy NEWS` + news_kind 打标），**不开槽不设价点**——sleeve-open 最早
+> M3 开闸窗口后（sleeve-open/fill/cancel/migrate/close-slot 均 [M3 启用]）。晨审 1b 消费到
+> NEWS_SNAPSHOT 时止步于落库，G 闸清单四步照走，末段产出由 sleeve-open 改为"落库完成"；
+> M3 开闸后才按本流程建槽。
 1. **不信任 payload 数据**——重新拉最新价格/动量/新闻/大盘验证通道条件（消息仓/价值反转/粘滞flag 之一）
 2. 成立 → **先判断交易时段**（`date +%H:%M`，交易时段=9:30-11:30/13:00-15:00）：交易时段内直接按"消息试探仓建仓执行"框架执行；**非交易时段 → 挂 watchpoint（`--mode buy --amount <预算>`，触发价=当前价或分析价，note 注明"非交易时段判定，开盘触发"），开盘后由心跳价格触发执行**
    - **建段必须带 code**：`master-pool-allocate <股> <预算> --code <代码>`（从事件 payload 取 code，缺失则查 pool/accounts 兜底；严禁建段不带 code——否则网站持仓段代码列空白，且 fetch_prices 无法取价）

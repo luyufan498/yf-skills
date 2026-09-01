@@ -27,6 +27,7 @@ from paper_trading_v2.sleeve_slots import (
 
 MAX_ACTIVE_SLOTS = 20          # 20 事件坑（与主池 20 段位上限并存互不侵占）
 FILL_MAX_DEV_PREV_CLOSE = 0.30  # R7：开盘价偏离昨收 >30% 拒绝成交（脏价防线）
+FILL_MIN_PRICE = 0.01          # M1.7/F5：价格下限（A股最小报价单位；<0.01=脏价）
 
 
 class SleeveOpener:
@@ -402,11 +403,24 @@ class SleeveOpener:
                         skipped.append((stock, '无开盘价/脏价≤0（停牌顺延）'))
                         all_filled = False
                         continue
-                    # R7：偏离昨收>30% 拒绝（昨收缺项触网补，仍缺则放行=无参照不立罪）
+                    # M1.7/F5：价格下限——<0.01（A股最小报价单位）=脏价，拒单留痕
+                    #（旧防线只挡 ≤0，0.001 会成交 1 亿股：资金守恒但持仓荒谬）
+                    if price < FILL_MIN_PRICE:
+                        shadow_write(conn, 'fill_blocked', slot['event_key'],
+                                     {"stock": stock, "code": code, "open": price,
+                                      "reason": f"价格 {price} < 下限 {FILL_MIN_PRICE}（脏价），"
+                                                f"拒绝成交", "ts": now})
+                        skipped.append((stock, f'脏价 {price}（< {FILL_MIN_PRICE} 下限）'))
+                        all_filled = False
+                        continue
+                    # R7：偏离昨收>30% 拒绝（昨收缺项触网补，仍缺则放行=无参照不立罪）。
+                    # M1.7/F5：昨收=0/负=有参照但非法（除权日脏数据）→ 拒单留痕，
+                    # 不再 falsy 短路裸奔成交。
                     pre_close = (prev_close_map or {}).get(stock)
                     if pre_close is None:
                         pre_close = self._fetch_pre_close(code)
-                    if pre_close and abs(price / pre_close - 1) > FILL_MAX_DEV_PREV_CLOSE:
+                    if pre_close is not None and pre_close > 0 \
+                            and abs(price / pre_close - 1) > FILL_MAX_DEV_PREV_CLOSE:
                         shadow_write(conn, 'fill_blocked', slot['event_key'],
                                      {"stock": stock, "code": code, "open": price,
                                       "pre_close": pre_close,
@@ -414,6 +428,17 @@ class SleeveOpener:
                                       "reason": f"偏离昨收>{FILL_MAX_DEV_PREV_CLOSE:.0%}，拒绝成交",
                                       "ts": now})
                         skipped.append((stock, f'偏离昨收>30%（{price} vs 昨收 {pre_close}）'))
+                        all_filled = False
+                        continue
+                    if pre_close is not None and pre_close <= 0:
+                        # M1.7/F5：昨收=0/负=脏参照（有参照但非法）——偏离防线无法计算，
+                        # 拒单留痕（旧 falsy 短路=跳过防线裸奔成交）
+                        shadow_write(conn, 'fill_blocked', slot['event_key'],
+                                     {"stock": stock, "code": code, "open": price,
+                                      "pre_close": pre_close,
+                                      "reason": "昨收脏值（≤0），偏离防线无法计算，拒绝成交",
+                                      "ts": now})
+                        skipped.append((stock, f'昨收脏值 {pre_close}（拒绝成交）'))
                         all_filled = False
                         continue
                     qty = int(cash / price)
@@ -458,6 +483,14 @@ class SleeveOpener:
                          f"sleeve-fill {slot['event_key']} 开盘成交"))
                     if not skip_conditions:
                         self._mount_protection(conn, aid, price, atr_v, now)
+                    else:
+                        # M1.7/F5：显式后门（CLI --skip-conditions）成交即留痕——
+                        # 0 保护 0 记录=审计黑洞；影子账可回溯"哪笔成交是裸奔回来的"
+                        shadow_write(conn, 'skip_conditions', slot['event_key'],
+                                     {"stock": stock, "code": code, "price": price,
+                                      "qty": qty, "atr": atr_v,
+                                      "reason": "显式跳过保护挂载（CLI --skip-conditions 后门）",
+                                      "ts": now})
                     # 影子账 #7 高开观察（成交时记 gap）
                     if pre_close:
                         gap = price / pre_close - 1

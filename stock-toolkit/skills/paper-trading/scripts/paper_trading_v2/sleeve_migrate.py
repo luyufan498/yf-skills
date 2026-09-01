@@ -66,6 +66,11 @@ class SleeveMigrator:
                 raise ValueError(f"{stock} 无 NEWS open 段（段转策略锚点缺失）")
 
             avg_cost = cost / qty
+            # M1.7/F6：code 继承——CLI 不传 code 时从 news 侧承接，杜绝 tech 账户
+            # stock_code=NULL（sell 断链、code_searcher 查不到的老票二次断链）
+            if code is None:
+                code = conn.execute("SELECT stock_code FROM accounts WHERE id=?",
+                                    (aid_sleeve,)).fetchone()[0] or None
 
             with conn:
                 # ⓪ 成员认领（M1.7/F3）：条件 UPDATE + rowcount 判定——同一成员第二次迁移

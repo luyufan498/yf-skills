@@ -530,3 +530,81 @@ def test_buy_after_migrate_reanchors_protection_on_tech(pools, env):
     assert tech_cp and abs(tech_cp[0] - expected) < 0.01, \
         f"加买后保本锁未重锚：{tech_cp[0] if tech_cp else None}（应={expected}，锚死 9.0=原成本）"
     assert news_conds == 0
+
+
+# ============ F5：R7 次级防线（极小价 / 昨收=0 脏值 / skip_conditions 留痕） ============
+
+def _fill_blocked_count(env):
+    conn = _conn(env)
+    n = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='fill_blocked'"
+                     ).fetchone()[0]
+    conn.close()
+    return n
+
+
+def test_fill_rejects_sub_tick_price(pools, env):
+    """审计 C1：0.001 → 成交 1 亿股（资金守恒但荒谬持仓）。价格下限 <0.01 拒。"""
+    op = _opener(env)
+    op.open_slot(['小价票'], budget=100_000, event_key='ND#PF1', code_map={'小价票': 'sh1'})
+    r = op.fill_pending(event_key='ND#PF1', open_prices={'小价票': 0.001},
+                        skip_conditions=True)
+    conn = _conn(env)
+    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    conn.close()
+    assert buys == 0, "极小价 0.001 不应成交"
+    assert _fill_blocked_count(env) == 1, "拒单应 shadow_log 留痕"
+    assert r[0]['skipped'], r
+
+
+def test_fill_rejects_dirty_zero_prev_close(pools, env):
+    """昨收=0 脏值（除权日脏数据）：falsy 短路 → 跳过 ±30% 防线裸奔成交 → 改为拒单留痕。"""
+    op = _opener(env)
+    op.open_slot(['脏昨票'], budget=100_000, event_key='ND#PF2', code_map={'脏昨票': 'sh1'})
+    op.fill_pending(event_key='ND#PF2', open_prices={'脏昨票': 10.0},
+                    prev_close_map={'脏昨票': 0.0}, skip_conditions=True)
+    conn = _conn(env)
+    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    conn.close()
+    assert buys == 0, "昨收=0 脏参照不应裸奔成交"
+    assert _fill_blocked_count(env) == 1
+
+
+def test_fill_skip_conditions_leaves_shadow_trace(pools, env):
+    """skip_conditions=True 显式后门：成交但 0 留痕 → 至少 shadow_log 留痕可审计。"""
+    op = _opener(env)
+    op.open_slot(['后门票'], budget=100_000, event_key='ND#PF3', code_map={'后门票': 'sh1'})
+    with patch.object(type(op), '_resolve_atr', return_value=None):
+        r = op.fill_pending(event_key='ND#PF3', open_prices={'后门票': 10.0},
+                            skip_conditions=True)
+    conn = _conn(env)
+    buys = conn.execute("SELECT COUNT(*) FROM positions WHERE operation='buy'").fetchone()[0]
+    traces = conn.execute("SELECT COUNT(*) FROM shadow_log WHERE kind='skip_conditions'"
+                          ).fetchone()[0]
+    conn.close()
+    assert buys == 1 and r[0]['filled'], "显式后门仍应成交（授权行为）"
+    assert traces == 1, "skip_conditions=True 使用即 shadow_log 留痕"
+
+
+# ============ F6：migrate(code=None) tech 账户 code 继承 ============
+
+def test_migrate_code_inherited_from_news_account(pools, env):
+    """审计 P2/新发现3：migrate(code=None) → tech 账户 stock_code=NULL → sell 断链。
+    应 COALESCE 继承 news 侧 code。"""
+    op = _opener(env)
+    op.open_slot(['承票'], budget=100_000, event_key='ND#PG1', code_map={'承票': 'sh600000'})
+    op.fill_pending(event_key='ND#PG1', open_prices={'承票': 10.0}, skip_conditions=True)
+    _migrator(env).migrate('承票', reason='V11')          # 不传 code
+    conn = _conn(env)
+    tech_code = conn.execute("SELECT stock_code FROM accounts WHERE stock_name='承票' "
+                             "AND grp='tech'").fetchone()
+    news_code = conn.execute("SELECT stock_code FROM accounts WHERE stock_name='承票' "
+                             "AND grp='news'").fetchone()
+    conn.close()
+    assert news_code[0] == 'sh600000'
+    assert tech_code[0] == 'sh600000', f"tech code={tech_code[0]!r}（应继承 news 侧）"
+
+    # 直接 API sell（不经 CLI _ensure_code 兜底）应走通
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(11.0)
+        acct = _trader(env).sell_stock('承票', sell_all=True, note='保护链触发')
+    assert acct.grp == 'tech'

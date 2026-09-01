@@ -33,7 +33,20 @@ def validate_stock_name(stock_name: str) -> tuple[bool, Optional[str]]:
     if results:
         # 找到匹配的股票，返回 True 和股票代码
         return True, results[0]['code']
+    # 2026-09-01 本地兜底：新浪 suggest 名称搜索服务端失效（名称一律不命中、仅代码可查），
+    # 用本地代码映射兜底，避免 validate 卡死分析报告保存链路（荣盛石化 2026-09-01 实测）。
+    fallback = _LOCAL_CODE_FALLBACK.get(stock_name)
+    if fallback:
+        return True, fallback
     return False, None
+
+
+# 本地 A 股代码映射（仅兜底用；优先走新浪 suggest，命中即不走此表）
+_LOCAL_CODE_FALLBACK = {
+    '荣盛石化': 'sz002493',
+    '国际复材': 'sz301526',
+    '中国巨石': 'sh600176',
+}
 
 
 class StockCodeSearcher:
@@ -97,16 +110,20 @@ class StockCodeSearcher:
         """
         # 使用新浪财经suggest API
         # type=11:A股, 12:港股, 13:美股, 14:概念
-        url = f"https://suggest3.sinajs.cn/suggest/type=11,12,13&key={keyword}&name=suggestdata"
+        # 2026-09-01 修复：新浪 suggest 接口现要求 GBK 编码 key（UTF-8 一律返回空），响应为 GBK 编码
+        from urllib.parse import quote
+        encoded_key = quote(str(keyword).encode('gbk', errors='ignore'))
+        url = f"https://suggest3.sinajs.cn/suggest/type=11,12,13&key={encoded_key}&name=suggestdata"
 
         try:
             response = requests.get(url, headers=self.headers, timeout=self.timeout)
-            content = response.text
+            content = response.content.decode('gbk', errors='ignore')
 
             if 'suggestdata="' in content:
                 data_str = content.split('suggestdata="')[1].split('";')[0]
 
                 results = []
+                kw = str(keyword).strip()
                 for item in data_str.split(';'):
                     if not item:
                         continue
@@ -117,6 +134,18 @@ class StockCodeSearcher:
                         stock_type = parts[1]
                         code = parts[2]
                         full_code = parts[3]
+
+                        # 2026-09-01 相关性过滤：新浪接口名称搜不到时返回50条默认热门股兜底列表
+                        # （与搜索词无关），直接取 results[0] 会错配成 sh000001 上证指数。
+                        # 仅保留名称含关键词或代码匹配的结果，全不匹配则返回空（交给调用方兜底）。
+                        if kw and not (
+                            kw in name
+                            or kw in full_code
+                            or kw == code
+                            or kw in code
+                            or kw in stock_type
+                        ):
+                            continue
 
                         type_map = {'11': 'A股', '12': '港股', '13': '美股'}
                         market = type_map.get(stock_type, '其他')

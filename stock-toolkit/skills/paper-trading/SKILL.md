@@ -52,7 +52,7 @@ ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 
 **消息组（消息池 sleeve_ledger ≤总资金 20%，20 事件坑）**
 - **L2 信号缓冲**（`strategy='NEWS'`，存池表，无交易权限）：收编扫描/晨审按 G1-G4 清单闸落库——G1 数据卫生 / G2 次新否决（上市 <40 交易日硬拒绝，`watchlist-add` 对 NEWS 硬检查）/ G3 事件键归并（键=watchlog.event_key，活跃槽并入不加坑，关闭槽再遇同催化=二波新键）/ G4 TTL 2 交易日作废。**禁设价格点/禁 conditions/禁技术档位语言**
-- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权）：每事件 1 槽、成员各挂 grp='news' 账户、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
+- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权；**M1/M2 禁用，M3 灰度开放后才可调用**）：每事件 1 槽、成员各挂 grp='news' 账户、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交（R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交 + shadow_log fill_blocked 留痕，槽保持 pending 下轮重试）；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
 - **同票双组**：accounts 以 grp 列路由（tech/news），同名双账户可并存；`allocate`/`sleeve-open` 两侧都查另一组活跃持仓，冲突进晨审人工裁决（例外处理非排序），灰度记账
 
 ```bash
@@ -62,13 +62,15 @@ taskbus watchpoint add 股票 --price 24.5 --mode buy --amount 500000 --code <�
 ptrade2 master-pool-allocate 股票 --amount 500000 --reason "建仓点触发"
 
 # ===== 消息组 =====
+# ⚠️ sleeve-* 六条写命令 M1/M2 阶段一律禁用（代码就绪、生产未投用），M3 灰度开放后才可调用；
+#    sleeve-show / sleeve-pool-init 只读与初始化，M3 前亦不投用。
 ptrade2 watchlist-add 股票 --strategy NEWS --event-key ND#293 --news-kind policy --reason "收编"
-ptrade2 sleeve-open 股票A 股票B --budget 300000 --event-key ND#293 --news-kind policy  # 开槽（等权）
-ptrade2 sleeve-fill                       # 心跳开盘后首扫：pending 按开盘价成交+挂三件套
-ptrade2 sleeve-cancel ND#293 --reason "TTL 过期停牌"   # 弃单（影子账#1）
-ptrade2 sleeve-migrate 股票 --reason "V11 资格+否决项未触发"   # 移交桥（单向，一次）
-ptrade2 sleeve-close-slot ND#293 --reason "全成员清零对账"      # 槽归档释放
-ptrade2 sleeve-show                       # 消息池+事件槽清单
+ptrade2 sleeve-open 股票A 股票B --budget 300000 --event-key ND#293 --news-kind policy  # 开槽（等权）[M3 启用]
+ptrade2 sleeve-fill                       # 心跳开盘后首扫：pending 按开盘价成交+挂三件套 [M3 启用]
+ptrade2 sleeve-cancel ND#293 --reason "TTL 过期停牌"   # 弃单（影子账#1）[M3 启用]
+ptrade2 sleeve-migrate 股票 --reason "V11 资格+否决项未触发"   # 移交桥=段转策略（单向，一次；承接注资走 master-pool-topup --source migrate）[M3 启用]
+ptrade2 sleeve-close-slot ND#293 --reason "全成员清零对账"      # 槽归档释放 [M3 启用]
+ptrade2 sleeve-show                       # 消息池+事件槽清单（只读）[M3 启用]
 ```
 
 ## 🏛️ 宪法：永久禁止名单（方案 2.6，全文）
@@ -105,13 +107,18 @@ LLM 对买卖的临场裁量判决（违三安全线一）；缓冲态超 TTL �
 > 违例 = CLI 报错 + shadow_log(kind='gate_violation') 留痕。闸门拦截：grp=news 账户的
 > conditions 写全家/buy/topup；pool strategy='NEWS' 票的直接 allocate。
 
-## 🌉 移交桥（迁移，方案 2.3）
+## 🌉 移交桥（迁移＝段转策略，方案 2.3 v4.2；**M1/M2 禁用，M3 灰度开放后才可调用**）
 
 - **资格**：技术健康 V11（收盘>MA10 且 m10 较 5 交易日前升高）+ 消息有效（无失效旗标或二波加强新闻）
 - **否决项（写死）**：10 日新高突破当日不启动；m10≥15% 追高区不启动
-- **动作**：`ptrade2 sleeve-migrate <股> --reason "<V11 依据>"`——原成本价结转、不重买不追价、
-  双 ledger 资金对转、主仓插"迁移成本"operation（FIFO 基准）、主池池行写 event_key、
+- **动作语义 v4.2＝段转策略**：`ptrade2 sleeve-migrate <股> --reason "<V11 依据>"`——成员持仓段
+  原地 strategy 'NEWS'→'L1'（段行 id 不动，成本基准/FIFO 天然连续，不重买不追价、
+  **禁插"迁移成本"operation 行**——那是 FIFO 错账源头）；同事务配套：news 账户资金结算
+  （承接成本入同名 grp=tech 账户、现金+成本回消息池）、positions/operations/conditions 行随迁
+  （保护链按原成本续挂）、pool_ledger↔sleeve_ledger 对转、主池池行写 event_key、
   槽转 migrated（topup_locked=1 加仓锁）。**单向、一次、不可回迁**；未持仓事件票走技术确认买入=永久禁止
+- **承接后治理**：转段即入主池治理（计 20 段位、受 30% 帽）；承接注资走
+  `master-pool-topup --source migrate`（豁免甜点动量检查，宪法 2.6；资金帽/段位帽/冷却不豁免）
 - **铁律**：移交票若原事件出二波 → 开新事件新槽，但**不得对已迁移持仓加仓**（锁）
 - **账本**：影子账#6 双轨（sleeve-migrate 记初始，心跳盯市记逐日），8 周配对宣判
 
@@ -120,15 +127,20 @@ LLM 对买卖的临场裁量判决（违三安全线一）；缓冲态超 TTL �
 | # | kind | 写入者/时点 | payload 要点 |
 |---|---|---|---|
 | 1 | drop_order | 晨审（TTL 过期/G4 弃单）| {reason, refund, source, ts} |
-| 2 | t5_counterfactual | 心跳盯市步（每日 open+15min 记市值，满 5 日回填）| {stock, event_key, mv, day} |
-| 3 | news_kind | sleeve-open 开槽打标 + 心跳逐日 | {stock, news_kind, ts} |
-| 4 | off10h | 心跳成交步（T+1 成交时点距 10 日高）| {stock, fill_price, high10, off10h, ts} |
-| 5 | invalidation | news-intraday/晨审设旗；心跳记"若清仓 vs 实际" | {stock, flag, counterfactual, actual} |
-| 6 | bridge_track | sleeve-migrate 记初始；心跳记逐日双轨 | {stock, qty, avg_cost, phase, ts} |
-| 7 | gap_open | 心跳成交步（gap>5% 记）| {stock, open, pre_close, gap, ts} |
-| 8 | tech_buy_all | 心跳盯市步（每事件恒记"票级全买"假想序列，含被拒/弃单票）| {event_key, members_mv, ts} |
+| 2 | t5_counterfactual | 心跳盯市步（每日 open+15min 记市值，满 5 日回填）**[M3 启用]** | {stock, event_key, mv, day} |
+| 3 | news_kind | sleeve-open 开槽打标 + 心跳逐日 **[M3 启用：心跳逐日]** | {stock, news_kind, ts} |
+| 4 | off10h | 心跳成交步（T+1 成交时点距 10 日高）**[M3 启用]** | {stock, fill_price, high10, off10h, ts} |
+| 5 | invalidation | news-intraday/晨审设旗；心跳记"若清仓 vs 实际" **[M3 启用：心跳侧]** | {stock, flag, counterfactual, actual} |
+| 6 | bridge_track | sleeve-migrate 记初始；心跳记逐日双轨 **[M3 启用：心跳逐日]** | {stock, qty, avg_cost, mode, phase, ts} |
+| 7 | gap_open | 心跳成交步（gap>5% 记）**[M3 启用]** | {stock, open, pre_close, gap, ts} |
+| 8 | tech_buy_all | 心跳盯市步（每事件恒记"票级全买"假想序列，含被拒/弃单票）**[M3 启用]** | {event_key, members_mv, ts} |
 | 9 | event_key_missing | G3 fail-open 触发时 | {stocks, reason, source, ts} |
 | — | gate_violation | CLI 闸门违例 | {capability, detail, source, ts} |
+| — | fill_blocked | sleeve-fill R7 防线（价/ATR 拒单留痕，M3 随 sleeve-fill 启用）| {stock, code, reason, ts} |
+
+> **心跳消费链阶段标注**：#1/#3(开槽)/#4/#6(初始)/#7/#9/gate_violation 的写入点在 M1 代码侧就绪；
+> **#2/#5/#8 及 #3/#6 的"心跳盯市/成交步逐日"部分需心跳 prompt 改造（M2）+ sleeve 开闸（M3）才投用**
+> ——M1/M2 阶段这些账本不会有心跳写入，属预期空账，非故障。
 
 ## 🔥 熄火判据（方案 2.8）
 

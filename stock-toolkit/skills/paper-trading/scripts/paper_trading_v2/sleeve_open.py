@@ -26,6 +26,7 @@ from paper_trading_v2.sleeve_slots import (
     news_account_id, account_remaining, NEWS_KINDS)
 
 MAX_ACTIVE_SLOTS = 20          # 20 事件坑（与主池 20 段位上限并存互不侵占）
+FILL_MAX_DEV_PREV_CLOSE = 0.30  # R7：开盘价偏离昨收 >30% 拒绝成交（脏价防线）
 
 
 class SleeveOpener:
@@ -50,8 +51,9 @@ class SleeveOpener:
         stocks = [s.strip() for s in stocks if s and s.strip()]
         if not stocks:
             raise ValueError("sleeve-open 需要至少一个成员股票")
-        if budget is None or budget <= 0:
-            raise ValueError("sleeve-open 需要 --budget（本事件槽预算，从消息池拨付）")
+        if budget is None or budget < 0:
+            raise ValueError("sleeve-open 需要 --budget（本事件槽预算，从消息池拨付；"
+                             "G3 纯归并 merge 可传 0=零拨款）")
         if news_kind is not None and news_kind not in NEWS_KINDS:
             raise ValueError(f"news_kind 必须在六类词表 {NEWS_KINDS} 内（方案 1.4）")
         code_map = code_map or {}
@@ -71,7 +73,20 @@ class SleeveOpener:
                                     (event_key,)).fetchone()
             derived_wave = None
             if existing and existing['status'] in SLOT_ACTIVE:
-                mode = 'merge'
+                # R4/B2：含已迁移成员的槽禁 merge——G3 强制开新槽（二波=新事件，永不并回迁移槽）
+                has_migrated = conn.execute(
+                    "SELECT 1 FROM event_slot_members WHERE event_key=? AND migrated_at "
+                    "IS NOT NULL LIMIT 1", (event_key,)).fetchone()
+                if has_migrated:
+                    mode = 'open'
+                    n = 2
+                    while conn.execute("SELECT 1 FROM event_slots WHERE event_key=?",
+                                       (f"{event_key}#b{n}",)).fetchone():
+                        n += 1
+                    derived_wave = f"{event_key}#b{n}"
+                    event_key = derived_wave
+                else:
+                    mode = 'merge'
             else:
                 mode = 'open'
                 if existing:
@@ -105,35 +120,44 @@ class SleeveOpener:
                     n = len(all_members)
                     total_budget = (existing['budget'] or 0.0) + budget
                     share = total_budget / n
+                    pure_merge = (budget == 0)      # R4/B1'：纯归并合法形态——零拨款，
+                    #                                 不回收既有成员、新成员 0 元起步
                     # 新成员建账户（资金 0 起步，下面补足到等权份额）+ position 段
                     for s in new_members:
                         self._ensure_member_account(conn, s, code_map.get(s), now,
                                                     reset=False, capital=0)
                     # 补足所有成员到新等权份额，实扣 = Σ缺口（等权重算，不加坑）
                     deduct = 0.0
-                    for s in all_members:
-                        aid = news_account_id(conn, s)
-                        cur_total = conn.execute(
-                            "SELECT capital_total FROM accounts WHERE id=?", (aid,)
-                        ).fetchone()[0] or 0.0
-                        if share > cur_total:
-                            deduct += share - cur_total
-                    if deduct > 0:
-                        free = ledger['free']
-                        if deduct > free:
-                            raise ValueError(f"消息池空闲不足：需 ¥{deduct:,.0f}，空闲 ¥{free:,.0f}")
-                        conn.execute("UPDATE sleeve_ledger SET free=free-?, updated_at=? "
-                                     "WHERE id=1", (deduct, now))
-                    for s in all_members:
-                        self._topup_member(conn, s, share, now)
+                    if not pure_merge:
+                        for s in all_members:
+                            aid = news_account_id(conn, s)
+                            cur_total = conn.execute(
+                                "SELECT capital_total FROM accounts WHERE id=?", (aid,)
+                            ).fetchone()[0] or 0.0
+                            if share > cur_total:
+                                deduct += share - cur_total
+                        if deduct > 0:
+                            # R2/A1：拨款=条件 UPDATE（free>=缺口），rowcount 判定
+                            cur = conn.execute(
+                                "UPDATE sleeve_ledger SET free=free-?, updated_at=? "
+                                "WHERE id=1 AND free>=?", (deduct, now, deduct))
+                            if cur.rowcount == 0:
+                                free = conn.execute(
+                                    "SELECT free FROM sleeve_ledger WHERE id=1").fetchone()[0]
+                                raise ValueError(f"消息池空闲不足：需 ¥{deduct:,.0f}，"
+                                                 f"空闲 ¥{free:,.0f}")
+                        for s in all_members:
+                            self._topup_member(conn, s, share, now)
                     for s in new_members:
                         if not conn.execute(
                             "SELECT 1 FROM position WHERE stock=? AND status='open' "
                             "AND strategy='NEWS'", (s,)).fetchone():
+                            # 段预算 0 起步、由 _topup_member 计入——避免 budget 双计
+                            # （纯归并恒 0=账户实际占用，"不超分"不变量在 merge 下同样成立）
                             conn.execute(
                                 "INSERT INTO position (stock, code, strategy, status, budget, "
-                                "topup_total, opened_at) VALUES (?,?,'NEWS','open',?,?,?)",
-                                (s, code_map.get(s), share, share, now))
+                                "topup_total, opened_at) VALUES (?,?,'NEWS','open',0,0,?)",
+                                (s, code_map.get(s), now))
                         conn.execute(
                             "INSERT OR IGNORE INTO event_slot_members (event_key, stock, weight, "
                             "joined_at) VALUES (?,?,?,?)", (event_key, s, 1.0 / n, now))
@@ -153,23 +177,34 @@ class SleeveOpener:
                                   reason or f"G3 并入成员 {stocks}", source))
                     deducted = deduct
                 else:
-                    if active_slot_count(conn) >= MAX_ACTIVE_SLOTS:
-                        raise ValueError(f"事件坑已满（{active_slot_count(conn)}/"
-                                         f"{MAX_ACTIVE_SLOTS}），需先 close-slot 释放")
-                    if budget > ledger['free']:
-                        raise ValueError(f"消息池空闲不足：需 ¥{budget:,.0f}，"
-                                         f"空闲 ¥{ledger['free']:,.0f}")
+                    if budget <= 0:
+                        raise ValueError("sleeve-open 需要 --budget（本事件槽预算，从消息池拨付）")
                     share = budget / len(stocks)
                     note = reason or ''
                     if derived_wave:
                         note = (note + ' ' if note else '') + "[二波新槽，原键已关闭]"
-                    # 槽先建（event_slot_members FK 指向它），再落成员
-                    conn.execute(
+                    # 槽先建（event_slot_members FK 指向它），再落成员。
+                    # R2/A2：20 事件坑上限=条件 INSERT（计数与写入同语句原子，
+                    # TOCTOU 免疫——并发抢不到坑即出局，不再"查-判-写"）
+                    cur = conn.execute(
                         "INSERT INTO event_slots (event_key, status, opened_at, budget, "
                         "news_kind, title, members_json, fill_status, note) "
-                        "VALUES (?,'open',?,?,?,?,?,'pending',?)",
+                        "SELECT ?, 'open', ?, ?, ?, ?, ?, 'pending', ? "
+                        "WHERE (SELECT COUNT(*) FROM event_slots WHERE status IN (?,?)) < ?",
                         (event_key, now, budget, news_kind, title,
-                         json.dumps(stocks, ensure_ascii=False), note))
+                         json.dumps(stocks, ensure_ascii=False), note,
+                         SLOT_ACTIVE[0], SLOT_ACTIVE[1], MAX_ACTIVE_SLOTS))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"事件坑已满（{active_slot_count(conn)}/"
+                                         f"{MAX_ACTIVE_SLOTS}），需先 close-slot 释放")
+                    # R2/A1：拨款=条件 UPDATE（free>=预算），rowcount 判定
+                    cur = conn.execute(
+                        "UPDATE sleeve_ledger SET free=free-?, updated_at=? "
+                        "WHERE id=1 AND free>=?", (budget, now, budget))
+                    if cur.rowcount == 0:
+                        free = conn.execute("SELECT free FROM sleeve_ledger WHERE id=1"
+                                            ).fetchone()[0]
+                        raise ValueError(f"消息池空闲不足：需 ¥{budget:,.0f}，空闲 ¥{free:,.0f}")
                     for s in stocks:
                         has_open_pos = conn.execute(
                             "SELECT 1 FROM position WHERE stock=? AND status='open' "
@@ -201,8 +236,6 @@ class SleeveOpener:
                             "INSERT OR IGNORE INTO event_slot_members (event_key, stock, weight, "
                             "joined_at) VALUES (?,?,?,?)",
                             (event_key, s, 1.0 / len(stocks), now))
-                    conn.execute("UPDATE sleeve_ledger SET free=free-?, updated_at=? WHERE id=1",
-                                 (budget, now))
                     for s in stocks:
                         self._upsert_pool_row(conn, s, code_map.get(s), event_key,
                                               news_kind, now, source)
@@ -312,9 +345,13 @@ class SleeveOpener:
         """pending 待成交单 → 按当日开盘价成交 + 挂三件套（成本保护/移动止损）。
 
         open_prices: {stock: 开盘价}；缺项触网取实时价的 open_price 字段。
-        atr: {stock: ATR}（心跳/测试注入）或标量；缺项触网算（KLine+compute_atr），
-        失败则跳过挂保护（裸奔检测会告警，atr-sync 次日补）。
-        prev_close_map/high10_map: 影子账 #7（gap>5%）/#4（off10h）数据，缺则跳过该账。
+        atr: {stock: ATR}（心跳/测试注入）或标量；缺项触网算（KLine+compute_atr）。
+        prev_close_map/high10_map: 影子账 #7（gap>5%）/#4（off10h）数据，兼作 R7 脏价防线
+        参照（缺则触网取 pre_close，再缺则放行——无参照不构成立罪证据）。
+        R7/H1/C1 防线：价 ≤0 / 偏离昨收>30% / ATR 解析失败 → 拒绝该成员成交
+        （shadow_log kind='fill_blocked'，槽保持 pending 下轮重试，禁静默裸奔）。
+        R2/A1：槽级认领+成员扣款均为事务内条件 UPDATE + rowcount 判定——
+        并发 fill/cancel 同槽时抢不到行即出局，杜绝双买入/双花。
         """
         conn = self._conn()
         now = now_iso()
@@ -327,6 +364,14 @@ class SleeveOpener:
                 args.append(event_key)
             slots = conn.execute(q, args).fetchall()
             for slot in slots:
+                # R2/A1：槽级认领（条件 UPDATE）——并发 fill/cancel 同槽时抢不到=已被处理
+                cur = conn.execute(
+                    "UPDATE event_slots SET fill_status='filled', fill_at=? "
+                    "WHERE event_key=? AND fill_status='pending'", (now, slot['event_key']))
+                if cur.rowcount == 0:
+                    summary.append({"event_key": slot['event_key'], "filled": [],
+                                    "skipped": [("槽级", "已被并发处理（非 pending），出局")]})
+                    continue
                 members = conn.execute(
                     "SELECT stock FROM event_slot_members WHERE event_key=? ORDER BY stock",
                     (slot['event_key'],)).fetchall()
@@ -351,8 +396,24 @@ class SleeveOpener:
                     price = (open_prices or {}).get(stock)
                     if price is None:
                         price = self._fetch_open_price(code)
-                    if not price:
-                        skipped.append((stock, '无开盘价（停牌顺延）'))
+                    if isinstance(price, str):
+                        price = float(price)        # 字符串注入 → ValueError 上抛（不落库）
+                    if not price or price <= 0:
+                        skipped.append((stock, '无开盘价/脏价≤0（停牌顺延）'))
+                        all_filled = False
+                        continue
+                    # R7：偏离昨收>30% 拒绝（昨收缺项触网补，仍缺则放行=无参照不立罪）
+                    pre_close = (prev_close_map or {}).get(stock)
+                    if pre_close is None:
+                        pre_close = self._fetch_pre_close(code)
+                    if pre_close and abs(price / pre_close - 1) > FILL_MAX_DEV_PREV_CLOSE:
+                        shadow_write(conn, 'fill_blocked', slot['event_key'],
+                                     {"stock": stock, "code": code, "open": price,
+                                      "pre_close": pre_close,
+                                      "dev": round(price / pre_close - 1, 4),
+                                      "reason": f"偏离昨收>{FILL_MAX_DEV_PREV_CLOSE:.0%}，拒绝成交",
+                                      "ts": now})
+                        skipped.append((stock, f'偏离昨收>30%（{price} vs 昨收 {pre_close}）'))
                         all_filled = False
                         continue
                     qty = int(cash / price)
@@ -361,6 +422,25 @@ class SleeveOpener:
                         all_filled = False
                         continue
                     amount = qty * price
+                    atr_v = self._resolve_atr(atr, stock, code)
+                    if not skip_conditions and not atr_v:
+                        # R7：ATR 解析失败 → 拒绝成交（禁静默裸奔），槽保持 pending 下轮重试
+                        shadow_write(conn, 'fill_blocked', slot['event_key'],
+                                     {"stock": stock, "code": code,
+                                      "reason": "ATR 解析失败，拒绝裸奔成交", "ts": now})
+                        skipped.append((stock, 'ATR 解析失败，拒绝裸奔成交（下轮重试）'))
+                        all_filled = False
+                        continue
+                    # R2/A1：扣款认领=条件 UPDATE（余额充足才扣），并发同成员抢不到=出局
+                    cur = conn.execute(
+                        "UPDATE accounts SET capital_available=capital_available-?, "
+                        "capital_used=capital_used+?, updated_at=? "
+                        "WHERE id=? AND capital_available>=?",
+                        (amount, amount, now, aid, amount))
+                    if cur.rowcount == 0:
+                        skipped.append((stock, '扣款未获认领（并发成交让位/资金不足）'))
+                        all_filled = False
+                        continue
                     seq = conn.execute("SELECT COALESCE(MAX(seq),-1)+1 FROM positions "
                                        "WHERE account_id=?", (aid,)).fetchone()[0]
                     conn.execute(
@@ -376,14 +456,9 @@ class SleeveOpener:
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (aid, seq, 'buy', price, qty, amount, None, None, None, now,
                          f"sleeve-fill {slot['event_key']} 开盘成交"))
-                    conn.execute("UPDATE accounts SET capital_available=capital_available-?, "
-                                 "capital_used=capital_used+?, updated_at=? WHERE id=?",
-                                 (amount, amount, now, aid))
-                    atr_v = self._resolve_atr(atr, stock, code)
-                    if not skip_conditions and atr_v:
+                    if not skip_conditions:
                         self._mount_protection(conn, aid, price, atr_v, now)
                     # 影子账 #7 高开观察（成交时记 gap）
-                    pre_close = (prev_close_map or {}).get(stock)
                     if pre_close:
                         gap = price / pre_close - 1
                         if gap > 0.05:
@@ -399,16 +474,12 @@ class SleeveOpener:
                                       "off10h": round(price / h10 - 1, 4), "ts": now})
                     filled.append({"stock": stock, "qty": qty, "price": price,
                                    "amount": amount})
-                if filled:
-                    conn.execute("UPDATE event_slots SET fill_status=?, fill_at=? "
-                                 "WHERE event_key=?",
-                                 ('filled' if all_filled else 'pending', now,
-                                  slot['event_key']))
-                    if not all_filled:
-                        conn.execute(
-                            "UPDATE event_slots SET note=COALESCE(note,'')||? WHERE event_key=?",
-                            (f" [部分成交 {len(filled)}/{len(members)} 跳过:"
-                             f"{[s[0] for s in skipped]}]", slot['event_key']))
+                if not all_filled:
+                    # 槽回 pending（下轮补齐/重试）；认领时的 fill_at 一并还原
+                    conn.execute("UPDATE event_slots SET fill_status='pending', fill_at=NULL, "
+                                 "note=COALESCE(note,'')||? WHERE event_key=?",
+                                 (f" [部分成交 {len(filled)}/{len(members)} "
+                                  f"跳过:{[s[0] for s in skipped]}]", slot['event_key']))
                 summary.append({"event_key": slot['event_key'], "filled": filled,
                                 "skipped": skipped})
             conn.commit()
@@ -423,6 +494,17 @@ class SleeveOpener:
             from paper_trading_v2.price_fetcher import StockPriceFetcher
             info = StockPriceFetcher().get_realtime_price(code)
             return info.open_price if info else None
+        except Exception:
+            return None
+
+    def _fetch_pre_close(self, code):
+        """R7 脏价防线参照：实时价的昨收（prev_close_map 缺项时触网补）。失败→None（放行）。"""
+        if not code:
+            return None
+        try:
+            from paper_trading_v2.price_fetcher import StockPriceFetcher
+            info = StockPriceFetcher().get_realtime_price(code)
+            return info.pre_close if info else None
         except Exception:
             return None
 
@@ -465,7 +547,12 @@ class SleeveOpener:
     # ---------- sleeve-cancel（弃单，影子账 #1）----------
 
     def cancel_pending(self, event_key, reason='', source='agent'):
-        """TTL 内未成交弃单：资金回消息池、成员账户清零、槽 archived（坑释放）+ 影子账#1。"""
+        """TTL 内未成交弃单：资金回消息池、成员账户清零、槽 archived（坑释放）+ 影子账#1。
+
+        R2/A1：弃单认领=事务内条件 UPDATE（WHERE fill_status='pending'）+ rowcount 判定——
+        并发 cancel/fill 同槽时抢不到行即出局，杜绝双回款（旧"读-判-写"检查在事务外=TOCTOU）。
+        认领后若发现成员已部分成交 → 异常回滚，槽还原 pending（先认领后核验仍安全）。
+        """
         conn = self._conn()
         now = now_iso()
         try:
@@ -473,10 +560,15 @@ class SleeveOpener:
                                 (event_key,)).fetchone()
             if not slot:
                 raise ValueError(f"事件槽 {event_key} 不存在")
-            if slot['fill_status'] != 'pending':
-                raise ValueError(f"事件槽 {event_key} 非 pending（fill_status="
-                                 f"{slot['fill_status']}），不能弃单")
             with conn:
+                cur = conn.execute(
+                    "UPDATE event_slots SET fill_status='cancelled', status='archived', "
+                    "closed_at=?, note=COALESCE(note,'')||? "
+                    "WHERE event_key=? AND fill_status='pending'",
+                    (now, f" [弃单:{reason}]", event_key))
+                if cur.rowcount == 0:
+                    raise ValueError(f"事件槽 {event_key} 非 pending（fill_status="
+                                     f"{slot['fill_status']}），不能弃单")
                 refund = 0.0
                 for m in conn.execute("SELECT stock FROM event_slot_members WHERE event_key=?",
                                       (event_key,)).fetchall():
@@ -498,9 +590,6 @@ class SleeveOpener:
                     conn.execute("UPDATE position SET status='closed', closed_at=?, "
                                  "close_value=0, realized_pnl=0 WHERE stock=? AND status='open' "
                                  "AND strategy='NEWS'", (now, stock))
-                conn.execute("UPDATE event_slots SET fill_status='cancelled', status='archived',"
-                             " closed_at=?, note=COALESCE(note,'')||? WHERE event_key=?",
-                             (now, f" [弃单:{reason}]", event_key))
                 conn.execute("INSERT INTO audit (timestamp, action, stock, amount, reason, source)"
                              " VALUES (?,?,?,?,?,?)",
                              (now, 'sleeve_cancel', event_key, refund,

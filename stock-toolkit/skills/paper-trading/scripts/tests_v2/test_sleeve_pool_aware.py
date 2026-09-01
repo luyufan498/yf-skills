@@ -82,29 +82,34 @@ def mpm2(ws):
     from paper_trading_v2.master_pool import MasterPoolManager
     m = MasterPoolManager(_db(ws))
     m.init_pool(10000000)                      # 主池（默认 main）
+    # M1.8/R1：sleeve init=从主池配对划拨 2M，主池 base 10M→8M（下文 main 断言同口径）
     m.init_pool(2000000, pool='sleeve')        # 消息池
     return m
+
+
+# M1.8/R1 后的主池 base（10M 注入 − 2M 划拨给消息池）
+MAIN_BASE = 8_000_000
 
 
 def test_sleeve_ledger_init_and_show(mpm2):
     d = mpm2.show(pool='sleeve')
     assert d['total'] == 2000000 and d['free'] == 2000000
-    d_main = mpm2.show()                       # 默认 main 不受影响
-    assert d_main['total'] == 10000000
+    d_main = mpm2.show()                       # 默认 main：主池已被划拨扣减
+    assert d_main['total'] == MAIN_BASE
 
 
 def test_double_ledger_no_overdraft_either_direction(mpm2, ws):
     """sleeve 花完不影响 main free；main 花完不影响 sleeve free。"""
     mpm2.allocate('sleeve成员', 1500000, reason='事件等权', pool='sleeve', grp='news')
     assert mpm2.show(pool='sleeve')['free'] == 500000
-    assert mpm2.show()['free'] == 10000000                     # 主池分文未动
+    assert mpm2.show()['free'] == MAIN_BASE                    # 主池分文未动
     with pytest.raises(ValueError, match='空闲不足'):
         mpm2.allocate('sleeve成员2', 600000, reason='超支', pool='sleeve', grp='news')
     # main 方向
     from paper_trading_v2.watchlist import Watchlist
     Watchlist(_db(ws)).add('技术票', 'sh600000', strategy='L2')
-    mpm2.allocate('技术票', 2500000, reason='建仓')             # ≤30%×总池
-    assert mpm2.show()['free'] == 7500000
+    mpm2.allocate('技术票', 2000000, reason='建仓')             # ≤30%×主池（8M×30%=2.4M）
+    assert mpm2.show()['free'] == MAIN_BASE - 2000000
     assert mpm2.show(pool='sleeve')['free'] == 500000          # 消息池分文未动
 
 
@@ -133,7 +138,7 @@ def test_main_pool_accounting_excludes_news_on_release(mpm2, ws):
     conn.commit(); conn.close()
     mpm2.release('成员A', reason='清仓', pool='sleeve')
     assert mpm2.show(pool='sleeve')['free'] == 2000000 + 100000
-    assert mpm2.show()['free'] == 10000000                      # 主池不受影响
+    assert mpm2.show()['free'] == MAIN_BASE                      # 主池不受影响
 
 
 # ---------- 闸门（grp×命令矩阵）----------
@@ -235,7 +240,7 @@ def test_auto_release_flag_off_keeps_old_behavior(mpm2, ws, monkeypatch):
     assert seg['status'] == 'closed'
     assert pool_row['strategy'] == 'L2'                    # 旧语义：降回 L2
     assert pool_row['pool_status'] == 'active'
-    assert abs(d['free'] - (10000000 - 200000 + 180000)) < 1
+    assert abs(d['free'] - (MAIN_BASE - 200000 + 180000)) < 1
 
 
 def test_auto_release_flag_on_tech_archives_not_downgrade(mpm2, ws, monkeypatch):
@@ -269,7 +274,7 @@ def test_auto_release_news_member_returns_to_sleeve_ledger(mpm2, ws, monkeypatch
     PaperTrader()._auto_release_on_clear('成员Y')
     d = mpm2.show(pool='sleeve')
     assert abs(d['free'] - (2000000 - 200000 + 240000)) < 1     # 回款进消息池
-    assert mpm2.show()['free'] == 10000000                      # 主池分文未动
+    assert mpm2.show()['free'] == MAIN_BASE                      # 主池分文未动
     conn = mpm2._conn()
     slot = conn.execute("SELECT status, realized FROM event_slots WHERE event_key='ND#77'"
                         ).fetchone()

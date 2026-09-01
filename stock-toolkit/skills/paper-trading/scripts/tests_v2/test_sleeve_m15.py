@@ -35,8 +35,13 @@ def pools(env):
     from paper_trading_v2.master_pool import MasterPoolManager
     m = MasterPoolManager(env / 'master_pool.db')
     m.init_pool(10000000)
+    # M1.8/R1：sleeve init=从主池配对划拨 2M，主池 base 10M→8M（下文 main.free 断言同口径）
     m.init_pool(2000000, pool='sleeve')
     return m
+
+
+# M1.8/R1 后的主池 base（10M 注入 − 2M 划拨给消息池）
+MAIN_BASE = 8_000_000
 
 
 def _opener(env):
@@ -183,7 +188,7 @@ def test_segment_transfer_bridge_e2e_sell_topup_release(pools, env, monkeypatch)
                              "status='open'").fetchone()[0]
     assert news_cash == 0                            # 段转承接：段现金清零（原现金 A 回消息池）
     inv1, pf1, sf1, _ = _identity(conn)
-    assert abs(pf1 - (10000000 - 100000)) < 0.01
+    assert abs(pf1 - (MAIN_BASE - 100000)) < 0.01
     assert abs(sf1 - 2000000) < 0.01
     conn.close()
     assert abs(inv1 - inv0) < 0.01                   # 守恒
@@ -236,9 +241,9 @@ def test_segment_transfer_bridge_e2e_sell_topup_release(pools, env, monkeypatch)
     assert pool_row['pool_status'] == 'archived' and pool_row['strategy'] == 'L1'
     assert pool_row['event_key'] == 'ND#B15'         # 键活槽空（键保留）
     assert slot2['status'] == 'migrated'             # 不复活 NEWS 旧槽
-    assert abs(pf5 - (10000000 - 100000 - 30000 + 150000)) < 0.01
+    assert abs(pf5 - (MAIN_BASE - 100000 - 30000 + 150000)) < 0.01
     assert abs(sf5 - 2000000) < 0.01 and acct5 == 0
-    assert inv5 == pytest.approx(12000000 + 20000, abs=0.01)    # +2 万已实现盈亏进池
+    assert inv5 == pytest.approx(MAIN_BASE + 2000000 + 20000, abs=0.01)    # +2 万已实现盈亏进池
 
 
 def test_migrated_ticket_name_addressing_resolves_tech(pools, env):
@@ -290,7 +295,7 @@ def test_release_route_dual_group_each_side_settles_own(pools, env):
     conn.close()
     assert news_seg == 'closed'
     assert abs(sleeve_free - (2000000 - 50000 + 52000)) < 1   # news 侧现金回消息池
-    assert abs(main_free - (10000000 - 100000)) < 1   # 主池未动（迁移持仓仍占）
+    assert abs(main_free - (MAIN_BASE - 100000)) < 1   # 主池未动（迁移持仓仍占）
     # tech 侧（迁移持仓）清仓：真实 sell 链（名字寻址段锚定→tech）→ 自动 release 路由
     from paper_trading_v2.models import StockInfo
     with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
@@ -303,7 +308,7 @@ def test_release_route_dual_group_each_side_settles_own(pools, env):
     main_free2 = conn.execute("SELECT free FROM pool_ledger").fetchone()[0]
     conn.close()
     assert tech_seg == 'closed'
-    assert abs(main_free2 - (10000000 - 100000 + 120000)) < 1   # 迁移持仓清仓款回主池
+    assert abs(main_free2 - (MAIN_BASE - 100000 + 120000)) < 1   # 迁移持仓清仓款回主池
     # 同票双组下池行 event_key 被二波新槽接管（_upsert_pool_row COALESCE 语义）——
     # 事件仍活跃（二波槽 open）→ 清仓走技术组 flag 语义（flag 关=降 L2），不档案化：
     conn = _conn(env)

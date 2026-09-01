@@ -37,8 +37,13 @@ def env(ws, monkeypatch):
 def sleeve_ready(env):
     from paper_trading_v2.cli import app
     _run(app, 'master-pool-init', '--amount', '10000000')
+    # M1.8/R1：sleeve-pool-init=从主池配对划拨 2M，主池 base 10M→8M（下文 main_free 断言同口径）
     _run(app, 'sleeve-pool-init', '--amount', '2000000')
     return env
+
+
+# M1.8/R1 后的主池 base（10M 注入 − 2M 划拨给消息池）
+MAIN_BASE = 8_000_000
 
 
 def test_cli_sleeve_pool_init_and_show(sleeve_ready):
@@ -234,7 +239,7 @@ def test_cli_sleeve_migrate_command(sleeve_ready):
     assert slot['status'] == 'migrated' and slot['topup_locked'] == 1
     assert slot['orig_budget'] == 100000
     assert shadow >= 1
-    assert abs(main_free - 9900000) < 1            # 主池承接 10 万成本
+    assert abs(main_free - (MAIN_BASE - 100000)) < 1   # 主池承接 10 万成本（base=8M，M1.8/R1 划拨后）
     assert abs(sleeve_free - 2000000) < 1          # 消息池回款 10 万（1.9M + 结转 0.1M）
 
 

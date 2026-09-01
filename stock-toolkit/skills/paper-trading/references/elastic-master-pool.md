@@ -53,7 +53,7 @@ ptrade2 master-pool-topup 股 --amount N --reason 依据
 ptrade2 master-pool-release 股 --reason 依据 [--source agent/manual]
 ptrade2 master-pool-records [--days N]         # 资金流水审计
 ptrade2 watchlist-list | add | remove [--archive]   # 池名单（NEWS 收编带 --event-key/--news-kind）
-ptrade2 sleeve-pool-init --amount <总池20%>     # 初始化消息池（一次性）
+ptrade2 sleeve-pool-init --amount <主池20%>     # 初始化消息池（一次性；资金从主池配对划拨，主池同事务扣减，M1.8）
 ptrade2 sleeve-show                            # 消息池状态 + 事件槽清单
 ptrade2 sleeve-open 股A 股B --budget N --event-key ND#293 --news-kind policy  # 开槽（等权）
 ptrade2 sleeve-fill [--event-key K] [--price 股=价 ...] [--atr ...]  # 开盘成交+挂三件套
@@ -61,7 +61,7 @@ ptrade2 sleeve-cancel <event_key> --reason     # 弃单（影子账#1，坑释�
 ptrade2 sleeve-migrate 股 --reason "V11 依据"   # 移交桥（单向一次）
 ptrade2 sleeve-close-slot <event_key> --reason # 槽对账归档
 ptrade2 migrate-existing                       # v1 JSON 导入（一次性，v9 起显式拒绝——账户层已退役）
-ptrade2 reconcile                              # 资金恒等式对账（U7.5，只报不拦；心跳尾步/晨审接）
+ptrade2 reconcile                              # 资金恒等式对账（U7.5，只报不拦；心跳尾步/晨审接）+ 总量守恒门（双池 Σtotal vs 注入基准 10M，M1.8）
 ```
 
 ## 五、V2 资金纪律（详见 trading-discipline.md 八、）

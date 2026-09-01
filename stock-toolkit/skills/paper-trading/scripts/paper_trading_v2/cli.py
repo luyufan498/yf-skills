@@ -176,8 +176,11 @@ def reconcile_cmd(
         + Σ 非 buy/sell/init/exright 类型 operations 金额（费税项）。
     超差 → stdout ⚠️ 告警（不拦截任何操作）；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）。
     同时逐段核对段现金恒等式：cash + FIFO成本 − realized == budget（±0.01）。
+    M1.8/R2 总量守恒门：双池 Σtotal vs 注入基准 W_BASE——init 配对划拨洞/越权直写
+    （凭空印钱路径，W 恒等式抓不到：W 与 Σtotal 同步膨胀 drift 恒=0）在此现形。
     """
     from paper_trading_v2.db import get_connection, migrate_db, grp_of_strategy
+    from paper_trading_v2.master_pool import W_BASE
     from paper_trading_v2.config import get_workspace_config
     conn = get_connection(get_workspace_config()['db_path'])
     migrate_db(conn)
@@ -209,6 +212,18 @@ def reconcile_cmd(
                        f"——账本/段现金存在未入账资金流，需人工核查（本命令只报不拦）")
         else:
             typer.echo("✅ 恒等式在容差内")
+        # M1.8/R2 总量守恒门（抓一切印钱路径，含历史）：双池 Σtotal 必须恒=注入基准 W_BASE。
+        # 旧 init 洞只 INSERT sleeve_ledger 不扣主池 → Σtotal 膨胀，但 W 同步膨胀 drift 恒=0，
+        # 上面那条 drift 门抓不到——守恒门补位（只报不拦，与 drift 告警同形式）。
+        conservation = total - W_BASE
+        typer.echo(f"   总量守恒：Σtotal(双池) ¥{total:,.2f} ｜ 注入基准 W_BASE ¥{W_BASE:,.2f}")
+        if abs(conservation) > 0.005:
+            typer.echo(f"⚠️ 超差告警：总量守恒破坏——Σtotal(双池) ¥{total:,.2f} ≠ "
+                       f"注入基准 ¥{W_BASE:,.2f}（Δ {conservation:+,.2f}）——存在未配对划拨/"
+                       f"越权直写（消息池 init 未经主池扣减或手工改账），需人工核查"
+                       f"（本命令只报不拦）")
+        else:
+            typer.echo("✅ 总量守恒（Σtotal = 注入基准 W_BASE）")
         # 段现金恒等式（U5 不变量）：cash + FIFO成本 − realized == budget
         from paper_trading_v2.sleeve_slots import account_remaining
         bad = []
@@ -366,14 +381,14 @@ def watchlist_remove(
 
 @app.command("sleeve-pool-init")
 def sleeve_pool_init(
-    amount: float = typer.Option(..., "--amount", help="消息池初始资金（=总池 20%）"),
+    amount: float = typer.Option(..., "--amount", help="消息池初始资金（≤主池 20%，从主池划拨）"),
 ):
-    """初始化消息池（一次性；pool_ledger CHECK(id=1) 挡第二行，故独立 sleeve_ledger）"""
+    """初始化消息池（一次性；资金=从主池配对划拨，主池同事务扣减，M1.8/R1）"""
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager(pool='sleeve')
     try:
         mpm.init_pool(amount)
-        typer.echo(f"✅ 消息池初始化成功：¥{amount:,.0f}（上限 20% 总资金）")
+        typer.echo(f"✅ 消息池初始化成功：¥{amount:,.0f}（从主池划拨，上限 20% 主池）")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)

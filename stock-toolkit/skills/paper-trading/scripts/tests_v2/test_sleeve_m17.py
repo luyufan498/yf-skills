@@ -39,8 +39,13 @@ def pools(env):
     from paper_trading_v2.master_pool import MasterPoolManager
     m = MasterPoolManager(env / 'master_pool.db')
     m.init_pool(10000000)
+    # M1.8/R1：sleeve init=从主池配对划拨 2M，主池 base 10M→8M（下文 main.free 断言同口径）
     m.init_pool(2000000, pool='sleeve')
     return m
+
+
+# M1.8/R1 后的主池 base（10M 注入 − 2M 划拨给消息池）
+MAIN_BASE = 8_000_000
 
 
 def _opener(env):
@@ -233,9 +238,9 @@ def test_migrate_concurrent_no_double_transfer(pools, env):
     migrated = conn.execute("SELECT COUNT(*) FROM event_slots WHERE status='migrated'"
                             ).fetchone()[0]
     conn.close()
-    # 恒等式：1,000 万 + 200 万（迁移是等额对转）
-    assert abs(pool_free + sleeve_free + acct - 12_000_000) < 0.01, \
-        f"双重对转 Δ={pool_free + sleeve_free + acct - 12_000_000:+,.2f}"
+    # 恒等式：主池 800 万 + 消息池 200 万（M1.8/R1 划拨后主池 base；迁移是等额对转）
+    assert abs(pool_free + sleeve_free + acct - (MAIN_BASE + 2_000_000)) < 0.01, \
+        f"双重对转 Δ={pool_free + sleeve_free + acct - (MAIN_BASE + 2_000_000):+,.2f}"
     assert tech and abs(tech[0] - 100_000) < 0.01, f"承接段 budget={tech[0] if tech else None}"
     assert bridge == 1, f"bridge_track={bridge}"
     assert buys == 1, f"buy 行={buys}"
@@ -276,7 +281,7 @@ def test_allocate_same_stock_concurrent_single_segment(pools, env):
     assert seg_rows <= 1, f"同票多段行={seg_rows}"
     ok = [v for v in results.values() if isinstance(v, bool) and v]
     assert len(ok) == 1, f"成功数={len(ok)}（恰 1）"
-    assert abs(pool_free - 9_500_000) < 0.01, f"池扣款 main.free={pool_free}"
+    assert abs(pool_free - (MAIN_BASE - 500_000)) < 0.01, f"池扣款 main.free={pool_free}"
     assert abs(acct - 500_000) < 0.01, f"Σ账户={acct}"
 
 
@@ -306,8 +311,8 @@ def test_topup_concurrent_no_lost_update(pools, env):
     seg = conn.execute("SELECT budget FROM position WHERE stock='注票Y' AND status='open'"
                        ).fetchone()
     conn.close()
-    # 两笔注资都合法成立：池扣两次（9,000,000−500,000）、账户/段同步加两次
-    assert abs(pool_free - 8_500_000) < 0.01, f"丢失更新 main.free={pool_free}"
+    # 两笔注资都合法成立：池扣两次（8,000,000−1,000,000−500,000）、账户/段同步加两次
+    assert abs(pool_free - (MAIN_BASE - 1_500_000)) < 0.01, f"丢失更新 main.free={pool_free}"
     assert abs(acct - 1_500_000) < 0.01, f"Σ账户={acct}"
     assert seg and abs(seg[0] - 1_500_000) < 0.01, f"段预算={seg[0] if seg else None}"
     assert all(isinstance(v, bool) and v for v in results.values()), results
@@ -343,7 +348,7 @@ def test_release_concurrent_no_double_refund(pools, env):
     audits = conn.execute("SELECT COUNT(*) FROM audit WHERE action='release' AND "
                           "stock='放票Z'").fetchone()[0]
     conn.close()
-    assert abs(pool_free - 10_000_000) < 0.01, f"双回款 main.free={pool_free}"
+    assert abs(pool_free - MAIN_BASE) < 0.01, f"双回款 main.free={pool_free}"
     assert audits == 1, f"release audit 行={audits}"
     ok = [v for v in results.values() if isinstance(v, bool) and v]
     assert len(ok) == 1, f"成功数={len(ok)}（恰 1）: {results}"
@@ -379,7 +384,8 @@ def _trader(env):
 
 
 def _w_delta(env):
-    """普适资金守恒：free(双池)+Σavail+ΣFIFO成本−Σ已实现盈亏 vs 常数 12,000,000。"""
+    """普适资金守恒：free(双池)+Σavail+ΣFIFO成本−Σ已实现盈亏 vs 常数 10,000,000
+    （M1.8/R1：sleeve init 从主池划拨后双池 Σtotal=主池 8M+消息池 2M=注入基准 10M）。"""
     conn = _conn(env)
     pool_free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
     sleeve_free = conn.execute("SELECT free FROM sleeve_ledger WHERE id=1").fetchone()[0]
@@ -394,7 +400,7 @@ def _w_delta(env):
     for (aid,) in conn.execute("SELECT DISTINCT account_id FROM trades").fetchall():
         fifo += account_remaining(conn, aid)[1]
     conn.close()
-    return pool_free + sleeve_free + avail + fifo - rpnl - 12_000_000
+    return pool_free + sleeve_free + avail + fifo - rpnl - 10_000_000
 
 
 @pytest.mark.parametrize('sell_price,expected_pnl', [(12.0, 40_000), (8.0, -40_000)])

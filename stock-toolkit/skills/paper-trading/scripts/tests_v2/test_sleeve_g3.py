@@ -34,8 +34,13 @@ def pools(ws):
     from paper_trading_v2.master_pool import MasterPoolManager
     m = MasterPoolManager(ws / 'master_pool.db')
     m.init_pool(10000000)
+    # M1.8/R1：sleeve init=从主池配对划拨 2M，主池 base 10M→8M（下文 main.free 断言同口径）
     m.init_pool(2000000, pool='sleeve')
     return m
+
+
+# M1.8/R1 后的主池 base（10M 注入 − 2M 划拨给消息池）
+MAIN_BASE = 8_000_000
 
 
 def _opener(ws):
@@ -159,7 +164,7 @@ def test_migrate_fifo_cost_basis_and_ledger_conservation(pools, ws):
     # 资金守恒：主池 -66670，消息池 +（现金 43329 + 结转 66670）
     main_free = pools.show()['free']
     sleeve_free = pools.show(pool='sleeve')['free']
-    assert abs(main_free - (10000000 - 66670)) < 1
+    assert abs(main_free - (MAIN_BASE - 66670)) < 1
     assert abs(sleeve_free - (2000000 - 100000 + 43329.0 + 66670.0)) < 1
 
 

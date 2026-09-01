@@ -18,9 +18,16 @@ LEDGER_TABLES = {'main': 'pool_ledger', 'sleeve': 'sleeve_ledger'}
 # 主池段统计/段位上限的排除口径：sleeve 成员段（strategy='NEWS'）归消息池，不侵占主池
 _MAIN_SEG_FILTER = "COALESCE(strategy,'') != 'NEWS'"
 
+# M1.8/R2 总资金注入基准（总行初始注入常量，写死）：生产 pool_ledger id=1 于 2026-08-10
+# init 注入 10,000,000（audit 表 id=1 有 init 行为证）。此后一切合法资金路径都不得改变
+# 双池 Σtotal——消息池 init 只能从主池划拨（init_pool 配对扣减，M1.8/R1）。
+# reconcile 以此抓一切印钱路径（含历史遗留：未配对直写/越权 INSERT）。
+W_BASE = 10_000_000.0
+
 
 class MasterPoolManager:
-    """总池账本：total 固定，free 被 allocate/topup/release 驱动，审计留痕。
+    """总池账本：total 只被 init 驱动（消息池 init 从主池划拨扣减，M1.8/R1），
+    free 被 allocate/topup/release 驱动，审计留痕。
 
     pool='main'：趋势池（pool_ledger，id=1）。pool='sleeve'：消息池（sleeve_ledger，id=1）。
     """
@@ -53,19 +60,57 @@ class MasterPoolManager:
         pool = pool or self.pool
         table = self._ledger(pool)
         conn = self._conn()
+        now = datetime.now().isoformat()
         try:
             with conn:
                 row = conn.execute(f"SELECT * FROM {table} WHERE id=1").fetchone()
                 if row:
                     raise ValueError(f"{self._label(pool)}已初始化 total={row['total']}，"
                                      f"需删除数据库重置")
-                conn.execute(f"INSERT INTO {table} (id, total, free, updated_at) "
-                             "VALUES (1, ?, ?, ?)",
-                             (total, total, datetime.now().isoformat()))
-                conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
-                             "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (datetime.now().isoformat(), 'init', None, total, 0, total,
-                              f"初始化{self._label(pool)}", source))
+                if pool == 'sleeve':
+                    # M1.8/R1 配对划拨：消息池资金=从主池划拨（用户裁决 800万/200万），
+                    # 同一事务内主池条件扣减——只 INSERT sleeve_ledger 不动主池 = 凭空印钱。
+                    # 20% 门落实 docstring 承诺（cli --help "=总池 20%" 此前无代码强制）。
+                    main_row = conn.execute(
+                        "SELECT total, free FROM pool_ledger WHERE id=1").fetchone()
+                    if not main_row:
+                        raise ValueError("主池未初始化：消息池资金须从主池划拨，请先 init 主池")
+                    cap = 0.2 * main_row['total']
+                    if total > cap + 0.005:
+                        raise ValueError(
+                            f"消息池初始化超主池 20% 上限：¥{total:,.0f} > "
+                            f"20%×¥{main_row['total']:,.0f}（上限 ¥{cap:,.0f}）")
+                    # 主池条件扣减（M1.7/F4 同款相对条件写）：total/free 同步 -X，
+                    # rowcount≠1（含并发丢失）即出局回滚——扣减与建账同事务，不许单边落库
+                    cur = conn.execute(
+                        "UPDATE pool_ledger SET total=total-?, free=free-?, updated_at=? "
+                        "WHERE id=1 AND total>=? AND free>=?",
+                        (total, total, now, total, total))
+                    if cur.rowcount != 1:
+                        raise ValueError(f"主池资金不足（配对划拨失败）：需 ¥{total:,.0f}，"
+                                         f"主池空闲 ¥{main_row['free']:,.0f}")
+                    main_free_after = main_row['free'] - total
+                    conn.execute(f"INSERT INTO {table} (id, total, free, updated_at) "
+                                 "VALUES (1, ?, ?, ?)", (total, total, now))
+                    # audit 两行：主池 -X（free_before/after 真实）+ 消息池 +X，均注明划拨出处
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) "
+                                 "VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'sleeve_init_transfer', None, -total,
+                                  main_row['free'], main_free_after,
+                                  "消息池初始化：从主池划拨", source))
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'init', None, total, 0, total,
+                                  f"初始化{self._label(pool)}（从主池划拨）", source))
+                else:
+                    conn.execute(f"INSERT INTO {table} (id, total, free, updated_at) "
+                                 "VALUES (1, ?, ?, ?)",
+                                 (total, total, now))
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'init', None, total, 0, total,
+                                  f"初始化{self._label(pool)}", source))
             return True
         finally:
             conn.close()

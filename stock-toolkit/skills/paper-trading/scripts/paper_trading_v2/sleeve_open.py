@@ -566,6 +566,33 @@ class SleeveOpener:
 
     # ---------- sleeve-cancel（弃单，影子账 #1）----------
 
+    def set_invalidation(self, event_key, flag='news_invalidated', reason='', source='agent'):
+        """论点失效设旗（灰度=影子记账，不执行卖出；方案 2.3/影子账#3）：
+        槽级 invalidation 列 + shadow_log kind='invalidation'。sleeve-migrate 门禁消费此旗。
+        幂等：已设旗再设=拒绝覆盖（换旗/撤旗人工核验后走 SQL，防误改审计链）。"""
+        conn = self._conn()
+        now = now_iso()
+        with conn:
+            slot = conn.execute("SELECT * FROM event_slots WHERE event_key=?",
+                                (event_key,)).fetchone()
+            if not slot:
+                raise ValueError(f"事件槽 {event_key} 不存在")
+            if slot['status'] not in SLOT_ACTIVE:
+                raise ValueError(f"槽 {event_key} 非活跃（status={slot['status']}），不能设旗")
+            if slot['invalidation']:
+                raise ValueError(f"槽 {event_key} 已设旗：{slot['invalidation']}（覆盖需人工核验）")
+            cur = conn.execute(
+                "UPDATE event_slots SET invalidation=? WHERE event_key=? AND invalidation IS NULL",
+                (f"{flag}|{reason}"[:200], event_key))
+            if cur.rowcount != 1:
+                raise ValueError(f"设旗失败（并发已设），{event_key} 未改动")
+            conn.execute(
+                "INSERT INTO shadow_log (kind,key,payload,created_at) VALUES (?,?,?,?)",
+                ('invalidation', event_key,
+                 json.dumps({'flag': flag, 'reason': reason, 'source': source,
+                             'at': now}, ensure_ascii=False), now))
+        return {'event_key': event_key, 'flag': flag, 'shadow': 'invalidation 已记'}
+
     def cancel_pending(self, event_key, reason='', source='agent'):
         """TTL 内未成交弃单：资金回消息池、成员账户清零、槽 archived（坑释放）+ 影子账#1。
 

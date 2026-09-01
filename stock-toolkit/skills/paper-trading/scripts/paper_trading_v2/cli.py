@@ -579,6 +579,23 @@ def sleeve_cancel(
         raise typer.Exit(1)
 
 
+@app.command("news-invalidated")
+def news_invalidated(
+    event_key: str = typer.Argument(...),
+    flag: str = typer.Option("news_invalidated", "--flag", help="旗标类型"),
+    reason: str = typer.Option("", "--reason", help="失效依据（newsdb 事件/imp/证据）"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """论点失效设旗（灰度影子记账，不执行卖出；sleeve-migrate 消费此旗否决迁移）"""
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    try:
+        r = SleeveOpener().set_invalidation(event_key, flag=flag, reason=reason, source=source)
+        typer.echo(f"✅ 设旗 {r['event_key']} [{flag}]（{r['shadow']}；灰度=不卖出）")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command("sleeve-migrate")
 def sleeve_migrate(
     stock: str = typer.Argument(...),

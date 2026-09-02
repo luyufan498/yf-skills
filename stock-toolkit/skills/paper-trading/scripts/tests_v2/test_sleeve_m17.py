@@ -281,7 +281,8 @@ def test_allocate_same_stock_concurrent_single_segment(pools, env):
     assert seg_rows <= 1, f"同票多段行={seg_rows}"
     ok = [v for v in results.values() if isinstance(v, bool) and v]
     assert len(ok) == 1, f"成功数={len(ok)}（恰 1）"
-    assert abs(pool_free - (MAIN_BASE - 500_000)) < 0.01, f"池扣款 main.free={pool_free}"
+    # v11 信封化：allocate 不搬 cash——认领语义改锁"承诺唯一"（段≤1、Σbudget 恰一笔）
+    assert abs(pool_free - MAIN_BASE) < 0.01, f"信封化 main.free={pool_free}（free 不该动）"
     assert abs(acct - 500_000) < 0.01, f"Σ账户={acct}"
 
 
@@ -311,8 +312,9 @@ def test_topup_concurrent_no_lost_update(pools, env):
     seg = conn.execute("SELECT budget FROM position WHERE stock='注票Y' AND status='open'"
                        ).fetchone()
     conn.close()
-    # 两笔注资都合法成立：池扣两次（8,000,000−1,000,000−500,000）、账户/段同步加两次
-    assert abs(pool_free - (MAIN_BASE - 1_500_000)) < 0.01, f"丢失更新 main.free={pool_free}"
+    # 两笔注资都合法成立（v11 信封加码）：承诺两次累加（Σbudget=1,500,000）；
+    # 旧"池扣两次"语义由 buy 拨付取代——free 不动=信封化本身
+    assert abs(pool_free - MAIN_BASE) < 0.01, f"free 不该被动={pool_free}"
     assert abs(acct - 1_500_000) < 0.01, f"Σ账户={acct}"
     assert seg and abs(seg[0] - 1_500_000) < 0.01, f"段预算={seg[0] if seg else None}"
     assert all(isinstance(v, bool) and v for v in results.values()), results

@@ -15,6 +15,11 @@ from paper_trading_v2.db import get_connection, migrate_db
 
 LEDGER_TABLES = {'main': 'pool_ledger', 'sleeve': 'sleeve_ledger'}
 
+# v11 池模型常量（方案 2026-09-02：预算/现金分离 + 80% 轮换门 + 20% floor 单点）
+COMMITMENT_GATE = 0.80      # Σ段预算/total > 80% → 新段须轮换伴配
+FLOOR_RATIO = 0.20          # 物理 floor = 20%×total（只在入场 buy 单点，换仓缓冲）
+MAX_OPEN_ROTATIONS = 1      # 未平仓轮换义务 ≤1（超出=拒）
+
 # 主池段统计/段位上限的排除口径：sleeve 成员段（strategy='NEWS'）归消息池，不侵占主池
 _MAIN_SEG_FILTER = "COALESCE(strategy,'') != 'NEWS'"
 
@@ -132,13 +137,28 @@ class MasterPoolManager:
                 occupied = conn.execute(
                     f"SELECT COALESCE(SUM(budget),0) s FROM position "
                     f"WHERE status='open' AND {_MAIN_SEG_FILTER}").fetchone()['s']
-                realized = ledger['free'] + occupied - ledger['total']
+                # v11 水位三口径：承诺率（计划层 Σbudget/total）、真实率（物理层
+                # Σ净持仓成本/total）、floor 水位（20%×total，入场 buy 单点门）。
+                # realized_pnl 换物理口径（分池恒等式移项，迁移前后同值）：
+                # realized = free + Σ段cash + Σ净成本 − total（旧式 free+Σbudget−total
+                # 在信封制下把承诺当钱显示=假盈亏）
+                seg_cash_sum = conn.execute(
+                    f"SELECT COALESCE(SUM(cash),0) FROM position WHERE status='open' "
+                    f"AND {_MAIN_SEG_FILTER}").fetchone()[0]
+                real_cost = self._real_net_cost(conn)
+                realized = (ledger['free'] + seg_cash_sum + real_cost
+                            - ledger['total'])
                 return {
                     "total": ledger['total'], "free": ledger['free'],
                     "occupied": occupied,
                     "usage_rate": occupied / ledger['total'] if ledger['total'] else 0,
                     "realized_pnl": realized,
                     "open_segments": open_count,
+                    "commitment_rate": occupied / ledger['total'] if ledger['total'] else 0,
+                    "real_rate": real_cost / ledger['total'] if ledger['total'] else 0,
+                    "real_cost": real_cost,
+                    "floor": FLOOR_RATIO * ledger['total'],
+                    "commitment_gate": COMMITMENT_GATE,
                 }
             # sleeve：槽视角对账（占用=活跃槽预算；realized=Σ槽 realized）
             occupied = conn.execute(
@@ -180,15 +200,188 @@ class MasterPoolManager:
 
     # ---------- allocate ----------
 
-    def allocate(self, stock, amount, reason, source="agent", code=None, pool=None,
-                 grp=None):
-        """开持仓段：从 free 拨 budget，段吸收现金（v9 段即账户），记 audit。段与池同事务。
+    def _v11_commitment(self, conn):
+        """承诺率（v11 计划层）：Σ 技术 open 段 budget / total（可>1，诚实稀缺信号）。"""
+        total = conn.execute("SELECT total FROM pool_ledger WHERE id=1").fetchone()[0]
+        occupied = conn.execute(
+            f"SELECT COALESCE(SUM(budget),0) FROM position WHERE status='open' "
+            f"AND {_MAIN_SEG_FILTER}").fetchone()[0]
+        return (occupied / total if total else 0.0), total
 
-        pool='main'（默认）：主池 allocate，行为与改造前一致（组由段 strategy='L1' 推导=tech）。
-        pool='sleeve'：消息池成员拨款——段 strategy='NEWS'（组=news 由 strategy 推导，U2
-        不设 grp 列）、不改池档位（消息组 L1 实体是事件槽，非池档位）。
+    @staticmethod
+    def _real_net_cost(conn):
+        """Σ 技术组净持仓成本（物理层，trades FIFO 现算——不依赖段列）。"""
+        from paper_trading_v2.sleeve_slots import account_remaining
+        cost = 0.0
+        for (sid,) in conn.execute(
+                f"SELECT id FROM position WHERE status='open' AND {_MAIN_SEG_FILTER}"):
+            cost += account_remaining(conn, sid)[1]
+        return cost
+
+    @staticmethod
+    def _is_v11_native(conn, seg, stock):
+        """v11 原生段判据（buy/sell/topup 路径共用，单一真源）：
+        段列 source 非空（v11 allocate 建段 / pool_publicize 盖章）或该票已有
+        v11 资金流水（pool_grant/pool_return/v11_publicize）。
+
+        ⚠ 刻意排除移交桥承接段与 v11 前存量段：它们按 v9 物理现金模型装配
+        （allocate 已搬 cash / 桥段 available 由 [段转随迁] 标记重建式维护），
+        grant/return/信封接线会造成双重记账（m17 F1 幻影现金防线）。这些段的
+        buy/sell/topup/release 保持旧行为逐字不变，直到 pool_publicize 公开化
+        盖章（cash→free + source='v11_publicized'）后转入信封制。"""
+        if seg is None or (seg['strategy'] or '') == 'NEWS':
+            return False
+        cols = seg.keys()
+        if 'source' in cols and (seg['source'] or ''):
+            return True
+        return conn.execute(
+            "SELECT 1 FROM audit WHERE stock=? AND action IN "
+            "('pool_grant','pool_return','v11_publicize') LIMIT 1",
+            (stock,)).fetchone() is not None
+
+    def entry_gate_and_grant(self, stock, required, conn_pool_db=None):
+        """v11 买路径单点（entry/topup buy 门 + 自动拨付）。仅 v11 原生技术段生效；
+        旧段（source IS NULL 且无 v11 流水）/ NEWS 段 / 无池库 → 直通（旧行为）。
+
+        门矩阵（方案 2026-09-02）：
+        - 首仓（qty 0→n，normal）：pool.free − cost < floor(20%×total) → 拒（真实口径）
+        - rotation 段：floor 豁免，但未平仓轮换义务 > MAX_OPEN_ROTATIONS → 拒
+        - topup（qty>0 再买）：floor 豁免（机动资金本意）
+        - source=manual：全豁免（L1 人工特权同款）
+        段 cash 不足 → 事务内条件拨付差额（audit 'pool_grant'）；池不足=物理硬拒。
+        """
+        import re
+        from paper_trading_v2.storage import resolve_account
+        from paper_trading_v2.sleeve_slots import account_remaining
+        conn = self._conn()
+        now = datetime.now().isoformat()
+        try:
+            seg = resolve_account(conn, stock)
+            if seg is None or (seg['strategy'] or '') == 'NEWS':
+                return                                  # 无段/NEWS 段=旧路径（红线：零改动）
+            if not self._is_v11_native(conn, seg, stock):
+                return                                  # 旧段/桥段：v9 物理现金模型不动
+            ledger = conn.execute("SELECT total, free FROM pool_ledger WHERE id=1").fetchone()
+            if ledger is None:
+                return
+            total, free = ledger['total'], ledger['free']
+            floor = FLOOR_RATIO * total
+            qty, _ = account_remaining(conn, seg['id'])
+            is_entry = qty <= 0
+            manual = (seg['source'] or '') == 'manual'
+            entry_mode = seg['entry_mode'] or 'normal'
+            if is_entry and not manual:
+                if entry_mode == 'rotation':
+                    # 轮换义务帽：未平仓义务（audit rotation_in 且其 rotation_out 标的
+                    # 技术段仍有持仓=ROTATION_EXIT 未销账）不含本段 >1 → 拒
+                    open_obs = []
+                    for r in conn.execute("SELECT stock, reason FROM audit WHERE "
+                                          "action='rotation_in'").fetchall():
+                        if r['stock'] == stock:
+                            continue
+                        m = re.search(r"rotation_out=(\S+)", r['reason'] or '')
+                        if not m:
+                            continue
+                        target = m.group(1).rstrip('|')
+                        tseg = conn.execute(
+                            "SELECT id FROM position WHERE stock=? AND status='open' "
+                            "AND COALESCE(strategy,'')!='NEWS' ORDER BY id DESC "
+                            "LIMIT 1", (target,)).fetchone()
+                        if tseg and account_remaining(conn, tseg['id'])[0] > 0:
+                            open_obs.append(target)
+                    if len(open_obs) >= MAX_OPEN_ROTATIONS:
+                        raise ValueError(
+                            f"轮换义务帽：已有 {len(open_obs)} 笔未平仓轮换义务"
+                            f"（{', '.join(open_obs)} 尚未换出），同时只允许 "
+                            f"{MAX_OPEN_ROTATIONS} 笔——先完成上一轮换（卖出换出票）再来")
+                else:
+                    if free - required < floor:
+                        raise ValueError(
+                            f"物理穿底（真实口径）：成交后池现金 ¥{free - required:,.0f} "
+                            f"< floor ¥{floor:,.0f}（20%×total，换仓期缓冲）。free 低是"
+                            f"真实持仓吃掉现金，不是预算假稀缺——入场拒（§8.2.3：等 sell "
+                            f"回款/降信封/走轮换伴配 entry_mode=rotation）")
+            cash = conn.execute("SELECT cash FROM position WHERE id=?",
+                                (seg['id'],)).fetchone()[0] or 0.0
+            deficit = required - cash
+            if deficit <= 0:
+                return                                  # 段现金足覆：先段后池，pool 不动
+            with conn:
+                cur = conn.execute(
+                    "UPDATE pool_ledger SET free=free-?, updated_at=? WHERE id=1 AND free>=?",
+                    (deficit, now, deficit))
+                if cur.rowcount == 0:
+                    raise ValueError(
+                        f"物理硬拒：池空闲 ¥{free:,.0f} 不足拨付差额 ¥{deficit:,.0f}"
+                        f"（成交需 ¥{required:,.0f}，段现金 ¥{cash:,.0f}）")
+                cur2 = conn.execute(
+                    "UPDATE position SET cash=cash+? WHERE id=? AND status='open'",
+                    (deficit, seg['id']))
+                if cur2.rowcount == 0:
+                    raise ValueError(f"{stock} 段已被并发关闭，拨付中止")
+                conn.execute(
+                    "INSERT INTO audit (timestamp, action, stock, amount, free_before, "
+                    "free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                    (now, 'pool_grant', stock, deficit, free, free - deficit,
+                     f"buy 自动拨付（成交 ¥{required:,.0f} − 段现金 ¥{cash:,.0f}）", 'pool'))
+            return True
+        finally:
+            conn.close()
+
+    def sell_return_to_pool(self, stock, amount, note=''):
+        """v11 sell 回池单点（trading.sell_stock 在 save_account 之后调用）。
+
+        仅 v11 原生技术段生效（entry_mode/source 段列或本段已有 v11 流水）：
+        回款从段 cash 条件扣出 → pool.free += amount（audit 'pool_return'），
+        段.cash 不留存回款（流动性归公；残留 ≈0 由 release 清）。
+        旧段/NEWS 段/迁移桥票据 → False（旧行为零变化）。同额重放=两笔真实卖出
+        （trades 流水为真源，卖出主链本身无重放路径）。"""
+        from paper_trading_v2.storage import resolve_account
+        conn = self._conn()
+        now = datetime.now().isoformat()
+        try:
+            seg = resolve_account(conn, stock)
+            if not self._is_v11_native(conn, seg, stock):
+                return False
+            if amount is None or amount <= 0:
+                return True
+            with conn:
+                # 段现金认领：条件扣减（cash>=amount），扣不到=并发已被他路径结算，出局不双计
+                cur = conn.execute(
+                    "UPDATE position SET cash=cash-? WHERE id=? AND status='open' AND cash>=?",
+                    (amount, seg['id'], amount))
+                if cur.rowcount == 0:
+                    return False
+                conn.execute(
+                    "UPDATE pool_ledger SET free=free+?, updated_at=? WHERE id=1",
+                    (amount, now))
+                free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO audit (timestamp, action, stock, amount, free_before, "
+                    "free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                    (now, 'pool_return', stock, amount, free - amount, free,
+                     f"sell 回款直接回池（v11 流动性归公）{('：' + note) if note else ''}",
+                     'pool'))
+            return True
+        finally:
+            conn.close()
+
+    def allocate(self, stock, amount, reason, source="agent", code=None, pool=None,
+                 grp=None, entry_mode='normal', rotation_out=None):
+        """开持仓段（v11 信封化：只动 budget 承诺，不从 pool 搬 cash——段.cash=0 常态，
+        物理钱只在 entry buy 瞬间经 pool_grant 出池）。段与审计同事务。
+
+        v11 门（pool='main'，宪法禁 LLM 裁量，全部机械判据）：
+        - 承诺率门：Σ段预算/total > 80% 且 entry_mode='normal' 且非 manual → 拒，
+          话术引 §8.2.3（须先做轮换评估：候选 vs 场内低价值），除非 --rotation-out CODE
+          伴配（CODE 必须有技术组 open 段，否则拒；audit rotation_out/rotation_in 行
+          + task_bus ROTATION_EXIT 事件，跨包失败降级：stdout 警告+audit 留痕，
+          入场不回滚——事件可晨审补挂）。
+        - 30% 单股帽/20 段位帽/冷却/同票互斥：保留（相对条件写+rowcount 认领不变）。
+
+        pool='sleeve'：消息池成员拨款——**段 cash 模型分毫不动（红线：明早 9:30
+        sleeve-fill 是 8 周灰度锚）**，仍从 sleeve_ledger 搬 cash 进段。
         grp 参数保留兼容签名；v9 组恒由 strategy 推导，传入值忽略。
-        sleeve-open（多成员原子开槽）走 sleeve_open.SleeveOpener，不经本方法。
         v9 变更：不再建/重置 accounts 行（表已退役）；旧段操作不再归档清空——
         旧段（closed）自带全部 trades/operations 历史（段即账户，历史天然分段）。
         """
@@ -218,7 +411,7 @@ class MasterPoolManager:
                 raise ValueError(f"{self._label(pool)}未初始化，请先 init（pool={pool}）")
             if amount <= 0:
                 raise ValueError("分配金额必须 > 0")
-            if amount > free:
+            if pool == 'sleeve' and amount > free:
                 raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
             already_open = conn.execute(
                 "SELECT id FROM position WHERE stock=? AND status='open' "
@@ -226,10 +419,37 @@ class MasterPoolManager:
                 (stock,)).fetchone()
             if already_open:
                 raise ValueError(f"{stock} 已有 open 段，需先 release 再重新 allocate")
+            rotation_out_code = None
             if pool == 'main':
                 total = conn.execute(f"SELECT total FROM {table} WHERE id=1").fetchone()[0]
                 if amount > 0.3 * total:
                     raise ValueError(f"单股分配超过总池 30%：¥{amount:,.0f} > 30%×{total:,.0f}")
+                # ---- v11 承诺率门（信封可超售，假稀缺退场；真约束=入场 floor 门） ----
+                if entry_mode not in ('normal', 'rotation'):
+                    raise ValueError(f"未知 entry-mode {entry_mode!r}（可选 normal/rotation）")
+                if entry_mode == 'rotation' and not rotation_out:
+                    raise ValueError("轮换换入必须伴配 --rotation-out CODE（禁无伴配轮换入，"
+                                     "否则承诺率门被空转）")
+                if rotation_out:
+                    trow = conn.execute(
+                        "SELECT code FROM position WHERE stock=? AND status='open' "
+                        "AND COALESCE(strategy,'')!='NEWS' ORDER BY id DESC LIMIT 1",
+                        (rotation_out,)).fetchone()
+                    if trow is None:
+                        raise ValueError(
+                            f"--rotation-out {rotation_out} 不存在（无技术组 open 段）——"
+                            f"伪造伴配拒；轮换对象必须是场内真实持仓段")
+                    rotation_out_code = trow['code']
+                commitment, _t = self._v11_commitment(conn)
+                if commitment > COMMITMENT_GATE and entry_mode == 'normal' \
+                        and source != 'manual':
+                    raise ValueError(
+                        f"承诺率门：Σ段预算/total = {commitment*100:.1f}% > "
+                        f"{COMMITMENT_GATE*100:.0f}%（诚实稀缺信号，非假稀缺）——新入场须先做"
+                        f"轮换评估（候选 vs 场内低价值，机械分，纪律 §8.2.3）：确认候选价值"
+                        f"高于场内垫底持仓后，用 --entry-mode rotation --rotation-out CODE "
+                        f"伴配入场（CODE=拟换出票，将插 ROTATION_EXIT 事件限 T+1 挂出）；"
+                        f"人工裁决可 --source manual（L1 特权同款）")
                 strat, pool_code = self._get_strategy(conn, stock)
                 if code is None:
                     code = pool_code
@@ -253,52 +473,145 @@ class MasterPoolManager:
                 if code is None:
                     code = pool_code['code'] if pool_code else None
             with conn:
-                # M1.7/F4：资金认领=相对条件扣减（`free=free-? WHERE free>=?` + rowcount），
-                # 丢失更新在写入瞬间出局（旧 `SET free=绝对值` 会覆盖并发方的相对写）
-                cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
-                                   "WHERE id=1 AND free>=?", (amount, now, amount))
-                if cur.rowcount == 0:
-                    raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
-                                     f"空闲 ¥{free:,.0f}")
-                new_free = free - amount
-                # M1.7/F4：段认领=条件 INSERT（同票活跃段互斥 + 主池 20 段位帽，
-                # 计数与写入同语句原子——并发同票第二个 allocate 在此出局）
-                pos_strategy = 'NEWS' if pool == 'sleeve' else 'L1'
-                seg_filter = _MAIN_SEG_FILTER if pool == 'main' else "strategy='NEWS'"
-                cap_guard = ("AND (SELECT COUNT(*) FROM position WHERE status='open' "
-                             f"AND {_MAIN_SEG_FILTER}) < 20" if pool == 'main' else "")
-                cur = conn.execute(
-                    "INSERT INTO position (stock, code, strategy, status, budget, "
-                    "topup_total, opened_at, cash, fifo_index, fifo_offset) "
-                    "SELECT ?,?,?, 'open', ?, 0, ?, ?, -1, 0 "
-                    f"WHERE NOT EXISTS (SELECT 1 FROM position WHERE stock=? AND "
-                    f"status='open' AND {seg_filter}) {cap_guard}",
-                    (stock, code, pos_strategy, amount, now, amount, stock))
-                if cur.rowcount == 0:
-                    raise ValueError(f"{stock} 已有 open 段（或段位已满），"
-                                     f"需先 release 再重新 allocate")
-                seg_id = cur.lastrowid
-                conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
-                             "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (now, 'allocate' if pool == 'main' else 'sleeve_allocate',
-                              stock, amount, free, new_free, reason, source))
-                # v9：段即账户——段吸收现金（cash=拨款），init 流水行键到段
-                conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
-                             "note) VALUES (?,0,'init',?,?,'初始化资金池（段直建）')",
-                             (seg_id, amount, now))
-                # 分配预算 → 档位自动升 L1（仅主池；消息组档位是槽，不动池 strategy）
                 if pool == 'main':
+                    # v11 信封化：pool.free 分文不动（budget=计划层承诺，可超售）；
+                    # 段认领=条件 INSERT（同票活跃段互斥 + 20 段位帽，原子守卫保留）
+                    pos_strategy = 'L1'
+                    cap_guard = ("AND (SELECT COUNT(*) FROM position WHERE status='open' "
+                                 f"AND {_MAIN_SEG_FILTER}) < 20")
+                    cur = conn.execute(
+                        "INSERT INTO position (stock, code, strategy, status, budget, "
+                        "topup_total, opened_at, cash, fifo_index, fifo_offset, "
+                        "entry_mode, source) "
+                        "SELECT ?,?,?, 'open', ?, 0, ?, 0, -1, 0, ?, ? "
+                        "WHERE NOT EXISTS (SELECT 1 FROM position WHERE stock=? AND "
+                        "status='open' AND COALESCE(strategy,'') != 'NEWS') "
+                        + cap_guard,
+                        (stock, code, pos_strategy, amount, now, entry_mode, source,
+                         stock))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{stock} 已有 open 段（或段位已满），"
+                                         f"需先 release 再开新段")
+                    seg_id = cur.lastrowid
+                    conn.execute(
+                        "INSERT INTO audit (timestamp, action, stock, amount, free_before, "
+                        "free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                        (now, 'allocate', stock, amount, free, free,
+                         f"v11 信封（承诺，不动现金）entry_mode={entry_mode}"
+                         + (f" rotation_out={rotation_out}" if rotation_out else ""),
+                         source))
+                    if rotation_out:
+                        pair_note = (f"轮换伴配：入 {stock}（¥{amount:,.0f}） ↔ 换出 "
+                                     f"{rotation_out}|rotation_out={rotation_out}")
+                        conn.execute(
+                            "INSERT INTO audit (timestamp, action, stock, amount, "
+                            "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                            (now, 'rotation_out', rotation_out, None, free, free,
+                             pair_note, source))
+                        conn.execute(
+                            "INSERT INTO audit (timestamp, action, stock, amount, "
+                            "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                            (now, 'rotation_in', stock, None, free, free,
+                             pair_note, source))
+                    # 分配预算 → 档位自动升 L1（仅主池；消息组档位是槽，不动池 strategy）
                     conn.execute("UPDATE pool SET strategy='L1' WHERE stock=? AND pool_status='active'",
                                  (stock,))
+                else:
+                    # ---- NEWS 池旧路径（红线：v11 零改动）----
+                    # M1.7/F4：资金认领=相对条件扣减（`free=free-? WHERE free>=?` + rowcount），
+                    # 丢失更新在写入瞬间出局（旧 `SET free=绝对值` 会覆盖并发方的相对写）
+                    cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
+                                       "WHERE id=1 AND free>=?", (amount, now, amount))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
+                                         f"空闲 ¥{free:,.0f}")
+                    new_free = free - amount
+                    # M1.7/F4：段认领=条件 INSERT（同票活跃段互斥 + 主池 20 段位帽，
+                    # 计数与写入同语句原子——并发同票第二个 allocate 在此出局）
+                    seg_filter = "strategy='NEWS'"
+                    cur = conn.execute(
+                        "INSERT INTO position (stock, code, strategy, status, budget, "
+                        "topup_total, opened_at, cash, fifo_index, fifo_offset) "
+                        "SELECT ?,?, 'NEWS', 'open', ?, 0, ?, ?, -1, 0 "
+                        f"WHERE NOT EXISTS (SELECT 1 FROM position WHERE stock=? AND "
+                        f"status='open' AND {seg_filter})",
+                        (stock, code, amount, now, amount, stock))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{stock} 已有 open 段（或段位已满），"
+                                         f"需先 release 再开新段")
+                    seg_id = cur.lastrowid
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'sleeve_allocate', stock, amount, free, new_free,
+                                  reason, source))
+                    # v9：段即账户——段吸收现金（cash=拨款），init 流水行键到段
+                    conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
+                                 "note) VALUES (?,0,'init',?,?,'初始化资金池（段直建）')",
+                                 (seg_id, amount, now))
+            # 跨包 task_bus ROTATION_EXIT 事件（事务外：事件失败不回滚入场——降级合同）
+            if pool == 'main' and rotation_out:
+                self._emit_rotation_exit(rotation_out, rotation_out_code, stock, reason)
             return True
         finally:
             conn.close()
+
+    @staticmethod
+    def _emit_rotation_exit(rotation_out, code, inbound, reason):
+        """ROTATION_EXIT 事件（task_bus）：消费者=心跳认领→挂卖出 watchpoint（T+1 内
+        可成交限价）→done。跨包 import 失败降级：stdout 警告 + audit 'rotation_exit_pending'
+        留痕，入场不回滚（事件可晨审补挂）。"""
+        payload = {"stock": rotation_out, "code": code, "source": "rotation_gate",
+                   "reason": (f"轮换伴配换出（换入 {inbound}）"
+                              + (f"：{reason}" if reason else ""))}
+        try:
+            from task_bus import db as taskbus_db
+        except ImportError:
+            taskbus_db = None
+            try:
+                import sys
+                _here = os.path.dirname(os.path.realpath(__file__))
+                _tb = os.path.realpath(os.path.join(_here, '..', '..', '..',
+                                                    'task-bus', 'scripts'))
+                if os.path.isdir(os.path.join(_tb, 'task_bus')) and _tb not in sys.path:
+                    sys.path.insert(0, _tb)
+                from task_bus import db as taskbus_db
+            except ImportError:
+                taskbus_db = None
+        if taskbus_db is not None:
+            try:
+                taskbus_db.add("ROTATION_EXIT", rotation_out, source="rotation_gate",
+                               priority=1, payload=payload)
+                return
+            except Exception as e:
+                print(f"⚠️ ROTATION_EXIT 事件插入失败（入场不回滚，晨审补挂）：{e}")
+        else:
+            print("⚠️ task_bus 包不可 import（ROTATION_EXIT 降级 audit 留痕，晨审补挂）")
+        try:
+            conn = MasterPoolManager()._conn()
+            now = datetime.now().isoformat()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO audit (timestamp, action, stock, amount, reason, "
+                        "source) VALUES (?,?,?,?,?,?)",
+                        (now, 'rotation_exit_pending', rotation_out, None,
+                         f"task_bus 不可达，ROTATION_EXIT 待晨审补挂（换入 {inbound}）",
+                         'rotation_gate'))
+            finally:
+                conn.close()
+        except Exception as e2:
+            print(f"⚠️ ROTATION_EXIT 降级 audit 留痕也失败（不阻断入场）：{e2}")
 
     # ---------- topup ----------
 
     def topup(self, stock, amount, reason, source="agent", pool=None):
         pool = pool or self.pool
-        """段内注资：从 free 拨差额进段现金（v9 段即账户），同步加 budget/topup_total。同事务。
+        """段内注资（v11 信封加码：主池只加 budget/topup_total，**不搬段 cash**——
+        机动权利非预支现金，钱仍在 pool，buy 时经 pool_grant 拨付）。同事务。
+
+        v11：主池 free 不扣（预算=计划层）；≤30% 帽保留（floor 豁免是 buy 侧语义，
+        topup buy（qty>0 再买）floor 豁免=机动资金本意）。
+        pool='sleeve'：**旧行为原样**（从 sleeve_ledger 搬 cash 进段——红线不动）。
 
         闸门：消息组加仓锁死（灰度）——NEWS 段与迁移票（topup_locked）一律拒绝。
         """
@@ -313,7 +626,7 @@ class MasterPoolManager:
                 raise ValueError(f"{self._label(pool)}未初始化")
             if amount <= 0:
                 raise ValueError("注资金额必须 > 0")
-            if amount > free:
+            if pool == 'sleeve' and amount > free:
                 raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，空闲 ¥{free:,.0f}")
             if pool == 'main':
                 seg = conn.execute(
@@ -331,23 +644,37 @@ class MasterPoolManager:
                 if not seg:
                     raise ValueError(f"{stock} 没有消息池 open 段，需先 sleeve-open")
             with conn:
-                # M1.7/F4：资金认领=相对条件扣减 + rowcount（丢失更新在写入瞬间出局）
-                cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
-                                   "WHERE id=1 AND free>=?", (amount, now, amount))
-                if cur.rowcount == 0:
-                    raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
-                                     f"空闲 ¥{free:,.0f}")
-                new_free = free - amount
-                # 段预算/段现金同步=相对累加 + status 守卫（段已被并发关闭则出局回滚）
-                cur = conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+?, "
-                                   "cash=cash+? WHERE id=? AND status='open'",
-                                   (amount, amount, amount, seg['id']))
-                if cur.rowcount == 0:
-                    raise ValueError(f"{stock} 段已被并发关闭，注资中止")
-                conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
-                             "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
-                             (now, 'topup' if pool == 'main' else 'sleeve_topup',
-                              stock, amount, free, new_free, reason, source))
+                if pool == 'main' and self._is_v11_native(conn, seg, stock):
+                    # v11 信封加码：free 不动；段预算=相对累加 + status 守卫（并发关段出局）
+                    cur = conn.execute("UPDATE position SET budget=budget+?, "
+                                       "topup_total=topup_total+? "
+                                       "WHERE id=? AND status='open'",
+                                       (amount, amount, seg['id']))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{stock} 段已被并发关闭，注资中止")
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'topup', stock, amount, free, free,
+                                  f"v11 信封加码（机动权利，不动现金）：{reason}", source))
+                else:
+                    # ---- 旧物理路径（NEWS 池红线 + v11 前存量段/桥段：v11 零改动）----
+                    # M1.7/F4：资金认领=相对条件扣减 + rowcount（丢失更新在写入瞬间出局）
+                    cur = conn.execute(f"UPDATE {table} SET free=free-?, updated_at=? "
+                                       "WHERE id=1 AND free>=?", (amount, now, amount))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{self._label(pool)}空闲不足：需 ¥{amount:,.0f}，"
+                                         f"空闲 ¥{free:,.0f}")
+                    new_free = free - amount
+                    # 段预算/段现金同步=相对累加 + status 守卫（段已被并发关闭则出局回滚）
+                    cur = conn.execute("UPDATE position SET budget=budget+?, topup_total=topup_total+?, "
+                                       "cash=cash+? WHERE id=? AND status='open'",
+                                       (amount, amount, amount, seg['id']))
+                    if cur.rowcount == 0:
+                        raise ValueError(f"{stock} 段已被并发关闭，注资中止")
+                    conn.execute("INSERT INTO audit (timestamp, action, stock, amount, "
+                                 "free_before, free_after, reason, source) VALUES (?,?,?,?,?,?,?,?)",
+                                 (now, 'topup' if pool == 'main' else 'sleeve_topup',
+                                  stock, amount, free, new_free, reason, source))
             return True
         finally:
             conn.close()
@@ -406,6 +733,12 @@ class MasterPoolManager:
             if qty > 0:
                 raise ValueError(f"{stock} 仍有持仓 {qty} 股，先清仓再 release")
             value = acct.capital_pool.available
+            # v11 信封段：卖出回款已随 pool_return 归池（残留 value≈0），
+            # realized_pnl 真相=bump_segment_realized 逐笔累计（release 不得再用
+            # value−budget 重写——旧物理模型公式在信封制下失真）。旧段/桥段公式原样。
+            v11_native = self._is_v11_native(conn, seg, stock)
+            realized_final = (seg['realized_pnl'] or 0.0) if v11_native \
+                else value - seg['budget']
             with conn:
                 # M1.7/F4：段认领=条件 UPDATE（`status='open'` 才能关段）——
                 # 双 release / release×清仓竞态第二遍在此出局，杜绝双回款
@@ -414,7 +747,7 @@ class MasterPoolManager:
                     "UPDATE position SET status='closed', closed_at=?, close_value=?, "
                     "realized_pnl=?, cooldown_until=?, cash=0, fifo_index=-1, fifo_offset=0 "
                     "WHERE id=? AND status='open'",
-                    (now, value, value - seg['budget'],
+                    (now, value, realized_final,
                      (datetime.now() + timedelta(days=7)).isoformat(), seg['id']))
                 if cur.rowcount == 0:
                     raise ValueError(f"{stock} 段已被并发释放，不能重复 release")

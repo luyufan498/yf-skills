@@ -36,6 +36,19 @@ class PaperTrader:
 
         self.price_fetcher = StockPriceFetcher()
 
+        # v11 买/卖路径单点钩子（信封制段的 grant/return）：库层自带 v11-native 探测，
+        # 旧段（v11 前存量）/NEWS 段/无池库 → 直通（旧行为逐字节不变，红线）。
+        # 函数级 import 防环（master_pool.release 反向函数级 import trading）。
+        self._v11_grant_hook = None
+        self._v11_return_hook = None
+        try:
+            from paper_trading_v2.master_pool import MasterPoolManager
+            _mpm = MasterPoolManager(db_path=getattr(self.storage, 'db_path', None))
+            self._v11_grant_hook = _mpm.entry_gate_and_grant
+            self._v11_return_hook = _mpm.sell_return_to_pool
+        except Exception:
+            pass
+
     def init_account(
         self,
         stock_name: str,
@@ -133,7 +146,14 @@ class PaperTrader:
                     if getattr(account, 'segment_status', 'open') == 'open' else 0.0)
         operations = self.storage.load_operations(stock_name)
         ops = operations.operations if operations else []
-        if any((op.note or '').find(SEGMENT_TRANSFER_MARK) >= 0 for op in ops):
+        # v11 原生段（信封制）：cash 是 transient 拨付缓冲（grant 进、buy 耗、sell 出），
+        # 现金流重建公式失真（baseline−Σbuy+Σsell 会 −grant+return 双重记账）。
+        # 真值=列本身（grant/buy/sell 事务直写，段即账本）；closed 段=0（release 已清零）。
+        v11_native = (getattr(account, 'segment_status', 'open') == 'open'
+                      and getattr(self.storage, 'has_v11_flows', lambda n: False)(stock_name))
+        if v11_native:
+            expected_available = account.capital_pool.available   # 列即真值，不重建
+        elif any((op.note or '').find(SEGMENT_TRANSFER_MARK) >= 0 for op in ops):
             realized_after = sum(
                 (op.amount or 0) - (op.cost or 0) for op in ops
                 if op.type == OperationType.SELL
@@ -211,6 +231,19 @@ class PaperTrader:
             raise ValueError("请指定 quantity 或 amount 参数")
 
         required = trade_qty * current_price
+        # v11 买路径单点：entry/topup 门 + 段 cash 不足自动从 pool 拨付差额（pool_grant）。
+        # 旧段/NEWS 段/无池库 = entry_gate_and_grant 直通（旧行为，红线零变化）。
+        grant = getattr(self, '_v11_grant_hook', None)
+        if grant is not None:
+            try:
+                grant(stock_name, required)
+                _reread = self.get_account(stock_name)   # 拨付后重读（cash 列已入账）
+                if _reread is not None:
+                    account = _reread
+            except ValueError:
+                raise
+            except Exception as e:
+                print(f"[v11-grant] {stock_name} 拨付钩子异常（回退旧路径）: {e}")
         if not account.capital_pool.withdraw(required):
             shortage = required - account.capital_pool.available
             raise ValueError(f"资金不足。需要：¥{required:,.2f}，可用：¥{account.capital_pool.available:,.2f}，缺口：¥{shortage:,.2f}")
@@ -340,6 +373,20 @@ class PaperTrader:
 
         # 同步条件：卖出后更新成本保护或暂停条件
         self._sync_conditions_after_sell(stock_name, account)
+
+        # v11 sell 回池（save 之后执行，防 get_account 重建覆盖未落盘回款）：
+        # v11 原生技术段的回款直接进 pool.free（audit pool_return），段.cash 不留存
+        #（流动性归公；信封权利不变——再买仍可拨付）。
+        # 旧段/NEWS 段/迁移桥票据 = hook 判非 v11 原生 → 不动（旧行为逐字不变）。
+        ret = getattr(self, '_v11_return_hook', None)
+        if ret is not None:
+            try:
+                if ret(stock_name, trade_amount, note):
+                    _r = self.get_account(stock_name)
+                    if _r is not None:
+                        account = _r
+            except Exception as e:
+                print(f"[v11-return] {stock_name} 回池钩子异常（不阻断卖出）: {e}")
 
         # 2026-08-27 修复：清仓后自动 release（position 标 closed + 资金回 free + 档位降 L2）
         # 下沉到 CLI 层——避免 agent 漏调 master-pool-release（中芯 8/27 事故根因）

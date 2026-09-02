@@ -105,11 +105,12 @@ def test_double_ledger_no_overdraft_either_direction(mpm2, ws):
     assert mpm2.show()['free'] == MAIN_BASE                    # 主池分文未动
     with pytest.raises(ValueError, match='空闲不足'):
         mpm2.allocate('sleeve成员2', 600000, reason='超支', pool='sleeve', grp='news')
-    # main 方向
+    # main 方向（v11 信封化：allocate 只立承诺不搬 cash——互不透支语义=承诺与现金两轨独立）
     from paper_trading_v2.watchlist import Watchlist
     Watchlist(_db(ws)).add('技术票', 'sh600000', strategy='L2')
     mpm2.allocate('技术票', 2000000, reason='建仓')             # ≤30%×主池（8M×30%=2.4M）
-    assert mpm2.show()['free'] == MAIN_BASE - 2000000
+    assert mpm2.show()['free'] == MAIN_BASE                     # 信封化：free 不动
+    assert mpm2.show()['occupied'] == 2000000                   # 承诺加码照常
     assert mpm2.show(pool='sleeve')['free'] == 500000          # 消息池分文未动
 
 
@@ -240,7 +241,8 @@ def test_auto_release_flag_off_keeps_old_behavior(mpm2, ws, monkeypatch):
     assert seg['status'] == 'closed'
     assert pool_row['strategy'] == 'L2'                    # 旧语义：降回 L2
     assert pool_row['pool_status'] == 'active'
-    assert abs(d['free'] - (MAIN_BASE - 200000 + 180000)) < 1
+    # v11 信封化：allocate 不扣 free（旧=MAIN_BASE−200000）；release 回残留 18 万
+    assert abs(d['free'] - (MAIN_BASE + 180000)) < 1
 
 
 def test_auto_release_flag_on_tech_archives_not_downgrade(mpm2, ws, monkeypatch):

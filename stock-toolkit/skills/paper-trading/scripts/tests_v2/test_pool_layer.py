@@ -62,7 +62,8 @@ def test_allocate_release_roundtrip(mpm, ws):
     Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L2', source='agent')
     mpm.allocate('赛力斯', 2000000, reason='右侧建仓')
     d = mpm.show()
-    assert d['free'] == 8000000
+    # v11 信封化：allocate 只立承诺（occupied/budget），不搬 cash——free 不动
+    assert d['free'] == 10000000
     assert d['open_segments'] == 1
     mpm.release('赛力斯', reason='空仓释放')
     d = mpm.show()
@@ -72,7 +73,8 @@ def test_allocate_release_roundtrip(mpm, ws):
 
 
 def test_allocate_over_budget(mpm):
-    with pytest.raises(ValueError, match="空闲不足"):
+    # v11：free 可超售（承诺≠现金）——超支的机械门=30% 单股帽（99,999,999 远超）
+    with pytest.raises(ValueError, match="30%"):
         mpm.allocate('某股', 99999999, reason='超支')
 
 
@@ -99,11 +101,12 @@ def test_topup(mpm, ws):
     mpm.allocate('英维克', 500000, reason='建仓')
     mpm.topup('英维克', 300000, reason='补弹药')
     d = mpm.show()
-    assert d['free'] == 10000000 - 500000 - 300000
+    # v11 信封化：allocate/topup 只加码承诺（budget），不搬 cash——free 不动
+    assert d['free'] == 10000000
     from paper_trading_v2.storage import SqlStorage
     acct = SqlStorage(ws / 'master_pool.db').load_account('英维克')
     assert acct.capital_pool.total == 800000
-    assert acct.capital_pool.available == 800000
+    assert acct.capital_pool.available == 0        # 段 cash=0 常态（预算≠现金）
 
 
 def test_topup_enforces_cumulative_30pct(mpm, ws):
@@ -139,12 +142,14 @@ def test_reallocate_after_release_resets_account(mpm, ws):
     mpm.allocate('赛力斯', 800000, reason='第二段')
     acct = SqlStorage(ws / 'master_pool.db').load_account('赛力斯')
     assert acct.capital_pool.total == 800000
-    assert acct.capital_pool.available == 800000
+    # v11 信封化：新段 cash=0（旧语义 available==budget——预算不再预支现金）
+    assert acct.capital_pool.available == 0
+    # v11：信封段不再落 init operations 行（段无现金注入事件；trades/operations 纯现金流）
     ops = SqlStorage(ws / 'master_pool.db').load_operations('赛力斯')
-    assert len(ops.operations) == 1 and ops.operations[0].type == 'init'
+    assert ops is None or len(ops.operations) == 0
     conn = mpm._conn()
     # v9：旧段（closed）自带历史（段即账户，重入归档机制废除）；
-    # 新 open 段只有自己的 init 流水
+    # v11：新 open 段（信封）无 init 现金行（operations 纯现金流真源）
     n_seg_ops = conn.execute(
         "SELECT o.type FROM operations o JOIN position p ON p.id=o.account_id "
         "WHERE p.stock='赛力斯' AND p.status='open' ORDER BY o.seq").fetchall()
@@ -152,7 +157,7 @@ def test_reallocate_after_release_resets_account(mpm, ws):
         "SELECT id FROM position WHERE stock='赛力斯' AND status='closed' "
         "ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
-    assert [r[0] for r in n_seg_ops] == ['init']
+    assert [r[0] for r in n_seg_ops] == []
     assert old_seg is not None
 
 
@@ -195,7 +200,11 @@ def test_l1_allocate_requires_manual(mpm, ws):
 
 
 def test_show_reflects_realized_pnl(mpm, ws):
-    """释放盈利段后 free > total，show 的 occupied 应为 0、realized_pnl 反映盈亏"""
+    """释放盈利段后 free > total，show 的 occupied 应为 0、realized_pnl 反映盈亏。
+
+    v11 注：直改段 cash +50 万模拟「段滞留回款」形态——release 把残留 cash 回池
+    （v11 release 语义：清残留），free=total+50 万在 v9/v11 两口径下同值。
+    """
     from paper_trading_v2.watchlist import Watchlist
     Watchlist(ws / 'master_pool.db').add('英维克', 'sz000301', strategy='L2', source='agent')
     mpm.allocate('英维克', 2000000, reason='建仓')

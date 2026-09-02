@@ -7,7 +7,7 @@ ENV = "STOCK_TASKS_DB"
 DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
-TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL"]
+TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT"]
 STATUSES = ["pending", "processing", "done", "failed"]
 
 SCHEMA = """

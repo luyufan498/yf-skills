@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 9  # 与 migrate_db 实际最高版同步（v9: 账户层退役，2026-09-01 M1.6）
+SCHEMA_VERSION = 10  # 与 migrate_db 实际最高版同步（v10: v11 池模型列，2026-09-02）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -550,6 +550,24 @@ def migrate_db(conn: sqlite3.Connection):
             if fk_was_on:
                 conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("UPDATE schema_meta SET version=9")
+        conn.commit()
+    if current < 10:
+        # v10: v11 池模型（预算/现金分离）段列——entry_mode: normal|rotation
+        # （入场门矩阵：rotation=轮换换入，floor 豁免+义务帽校验）；source: 建段来源
+        # （'manual'=L1 人工特权全豁免；NULL=旧段=v11 前存量，按 agent 口径）。
+        # 只加列零行改写（资金零挪动——cash→free 的一次性搬运归 pool_publicize.py，
+        # 不进 migrate_db：schema 与账务搬运分离，搬运须人工 --execute 窗口）。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(position)").fetchall()]
+        if cols:  # 合成 schema 容错：无 position 表（最小库）→ 无处加列，只推版本号
+            for col, decl in (('entry_mode', "TEXT DEFAULT 'normal'"),
+                              ('source', 'TEXT')):
+                if col not in cols:
+                    try:
+                        conn.execute(f"ALTER TABLE position ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError as e:
+                        if 'duplicate column' not in str(e).lower():
+                            raise
+        conn.execute("UPDATE schema_meta SET version=10")
         conn.commit()
 
 

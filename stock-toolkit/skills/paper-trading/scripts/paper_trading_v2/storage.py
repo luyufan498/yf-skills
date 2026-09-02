@@ -252,6 +252,29 @@ class SqlStorage(StorageBackend):
         ops.operations.append(operation)
         return self.save_operations(stock_name, ops)
 
+    def has_v11_flows(self, stock_name: str) -> bool:
+        """v11 原生段探测（buy/sell 路径据此决定 grant/return 接线，与
+        master_pool._is_v11_native 同判据）：段列 source 非空（v11 allocate 建段或
+        pool_publicize 盖章）或该票已有 v11 资金流水。
+
+        ⚠ 移交桥承接段（[段转随迁] 标记）刻意**不**在此列：其 available 由标记重建
+        公式（baseline−FIFO+迁移后已实现）维护，grant/return 接线会与现金流重建双重
+        记账（m17 F1 幻影现金防线）。桥票 topup/sell 走旧物理路径直到 release——
+        桥是兼容层活路径，语义以 v9 重建式为准。"""
+        conn = self._conn()
+        try:
+            row = resolve_account(conn, stock_name)
+            if row is None:
+                return False
+            if ('source' in row.keys() and (row['source'] or '')):
+                return True
+            return conn.execute(
+                "SELECT 1 FROM audit WHERE stock=? AND action IN "
+                "('pool_grant','pool_return','v11_publicize') LIMIT 1",
+                (stock_name,)).fetchone() is not None
+        finally:
+            conn.close()
+
     def bump_segment_realized(self, stock_name: str, profit_delta: float) -> None:
         """段已实现盈亏增量落列（v9 段现金恒等式 runtime 维护）。
 

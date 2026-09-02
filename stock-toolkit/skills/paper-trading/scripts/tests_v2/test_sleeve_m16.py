@@ -62,34 +62,43 @@ def _PI(price):
 # ============ 段现金恒等式（U5 新增核心不变量） ============
 
 def test_segment_cash_identity_through_full_lifecycle(pools, env):
-    """allocate → buy → 部分卖出 → topup 后：每个 open 段
-    cash + FIFO成本 − realized == budget（±0.01）。"""
+    """allocate → buy → 部分卖出 → topup 后（v11 重铸）：信封段物理占用 ≤ 承诺
+    （cash+FIFO−realized ≤ budget，权利非负）、段 cash 不留存、池逐分对账
+    （free = base − 拨付 + 回款——拨付/回款各只记一次=零双计的强锁）。"""
     m = pools
     m.allocate('恒票', 500_000, reason='建段', code='sh1')
     with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
         mp.return_value = _PI(10.0)
-        _trader(env).buy_stock('恒票', quantity=20_000, note='建仓')       # 20 万
-        _trader(env).sell_stock('恒票', quantity=5_000, note='TP1')        # 5 万回笼
+        _trader(env).buy_stock('恒票', quantity=20_000, note='建仓')       # 20 万（全额拨付）
+        _trader(env).sell_stock('恒票', quantity=5_000, note='TP1')        # 5 万回笼回池
     m.topup('恒票', 100_000, reason='段内注资')
     conn = _conn(env)
     seg = tech_seg_id(conn, '恒票')
     seg_row = conn.execute("SELECT budget, cash, realized_pnl FROM position WHERE id=?",
                            (seg,)).fetchone()
+    free = conn.execute("SELECT free FROM pool_ledger WHERE id=1").fetchone()[0]
     from paper_trading_v2.sleeve_slots import account_remaining
     qty, fifo_cost = account_remaining(conn, seg)
     conn.close()
-    # realized：段上 sell 流水盈亏（5000 股 @10−10=0）——注入价=成本价，realized=0
     ident = seg_row['cash'] + fifo_cost - (seg_row['realized_pnl'] or 0.0)
-    assert abs(ident - seg_row['budget']) < 0.01, \
-        f"段现金恒等式破坏：cash {seg_row['cash']} + FIFO {fifo_cost} − realized " \
-        f"{seg_row['realized_pnl']} = {ident} ≠ budget {seg_row['budget']}"
-    assert qty == 15_000 and abs(fifo_cost - 150_000) < 0.01
+    assert abs(fifo_cost - 150_000) < 0.01 and qty == 15_000
+    # v11 信封不变量：物理占用 ≤ 承诺（旧等式 cash+FIFO−realized==budget 是
+    # allocate 预支现金时代的装配恒等式；信封制下预算=权利，物理=成交额）
+    assert ident <= seg_row['budget'] + 0.01, f"信封透支：{ident} > {seg_row['budget']}"
+    assert abs(ident - 150_000) < 0.01, f"物理占用应=净成交额 15 万，实={ident}"
+    assert abs(seg_row['cash'] or 0) < 0.01, f"段 cash 不留存：{seg_row['cash']}"
+    # 池逐分：base 8M − 拨付 20 万 + 回款 5 万（拨付/回款双漏=此锁红）
+    assert abs(free - (8_000_000 - 200_000 + 50_000)) < 0.01, f"free={free}"
 
 
 def test_segment_cash_identity_all_open_segments(pools, env):
-    """多段并存（tech L1 + sleeve NEWS + merge 段）后逐段核对恒等式。"""
+    """多段并存（tech L1 + sleeve NEWS + merge 段）后逐段核对。
+
+    v11 双口径：NEWS 段=旧恒等式 cash+FIFO−realized==budget（红线不动）；
+    v11 信封段=物理占用 ≤ 承诺 + cash 不留存（拨付即消耗/回款归池）。"""
     from paper_trading_v2.sleeve_open import SleeveOpener
     from paper_trading_v2.sleeve_slots import account_remaining
+    from paper_trading_v2.master_pool import MasterPoolManager
     m = pools
     m.allocate('恒A', 300_000, reason='建段', code='sh1')
     op = SleeveOpener(env / 'master_pool.db')
@@ -99,14 +108,18 @@ def test_segment_cash_identity_all_open_segments(pools, env):
                     skip_conditions=True)
     conn = _conn(env)
     bad = []
-    for seg in conn.execute("SELECT id, stock, budget, cash, realized_pnl FROM position "
-                            "WHERE status='open'").fetchall():
+    for seg in conn.execute("SELECT id, stock, strategy, budget, cash, realized_pnl, "
+                            "source FROM position WHERE status='open'").fetchall():
         _, fifo_cost = account_remaining(conn, seg['id'])
         ident = (seg['cash'] or 0.0) + fifo_cost - (seg['realized_pnl'] or 0.0)
-        if abs(ident - (seg['budget'] or 0.0)) > 0.01:
-            bad.append((seg['stock'], ident, seg['budget']))
+        base = seg['budget'] or 0.0
+        if MasterPoolManager._is_v11_native(conn, seg, seg['stock']):
+            if ident > base + 0.01 or (seg['cash'] or 0) > 0.01:
+                bad.append((seg['stock'], 'v11-envelope', ident, base))
+        elif abs(ident - base) > 0.01:
+            bad.append((seg['stock'], ident, base))
     conn.close()
-    assert not bad, f"段现金恒等式破坏：{bad}"
+    assert not bad, f"段恒等式（v9 旧段等式 / v11 信封不等式）破坏：{bad}"
 
 
 # ============ trades 归属完整性（无孤儿流水） ============

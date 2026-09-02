@@ -90,24 +90,40 @@ def master_pool_show(
     typer.echo(f"   已实现盈亏（进池）：¥{d['realized_pnl']:,.0f} ｜ 活跃段：{d['open_segments']}")
     if pool == 'sleeve':
         typer.echo(f"   活跃事件槽：{d['active_slots']}/20 ｜ 待成交单：{d['pending_slots']}")
+    else:
+        typer.echo(f"   v11 水位：承诺率 {d['commitment_rate']*100:.1f}%"
+                   f"（门 {d['commitment_gate']*100:.0f}%）｜ 真实率 {d['real_rate']*100:.2f}%"
+                   f"（净持仓 ¥{d['real_cost']:,.0f}）｜ floor ¥{d['floor']:,.0f}"
+                   f" ｜ free {'≥' if d['free'] >= d['floor'] else '<'} floor"
+                   f" {'✅' if d['free'] >= d['floor'] else '⚠️（入场门收紧）'}")
 
 
 @app.command("master-pool-allocate")
 def master_pool_allocate(
     stock: str = typer.Argument(...),
-    amount: float = typer.Option(..., "--amount", help="分配金额"),
+    amount: float = typer.Option(..., "--amount", help="分配金额（v11=承诺信封，不搬现金）"),
     reason: str = typer.Option("", "--reason", help="原因（审计）"),
-    source: str = typer.Option("agent", "--source", help="agent/manual"),
+    source: str = typer.Option("agent", "--source", help="agent/manual（manual=承诺率与 floor 全豁免）"),
     code: Optional[str] = typer.Option(None, "--code", help="股票代码（可选）"),
+    entry_mode: str = typer.Option("normal", "--entry-mode",
+                                   help="normal|rotation（rotation=轮换换入：floor 豁免，"
+                                        "必须伴配 --rotation-out）"),
+    rotation_out: Optional[str] = typer.Option(
+        None, "--rotation-out",
+        help="承诺率>80% 时的伴配换出票 CODE（须有技术组 open 段；插 ROTATION_EXIT 事件，"
+             "T+1 内挂出）"),
 ):
-    """开持仓段（从 free 拨 budget；--code 缺失时自动查码补全）"""
+    """开持仓段（v11 信封化：只立 budget 承诺不动现金；--code 缺失时自动查码补全）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.master_pool import MasterPoolManager
     mpm = MasterPoolManager()
     try:
         code = _ensure_code(stock, code)
-        mpm.allocate(stock, amount, reason, source=source, code=code)
-        typer.echo(f"✅ 分配 {stock} ¥{amount:,.0f} ({code})")
+        mpm.allocate(stock, amount, reason, source=source, code=code,
+                     entry_mode=entry_mode, rotation_out=rotation_out)
+        typer.echo(f"✅ 分配 {stock} ¥{amount:,.0f} ({code})"
+                   + (f"（轮换换入，换出 {rotation_out}——ROTATION_EXIT 事件已排队）"
+                      if rotation_out else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -170,17 +186,23 @@ def master_pool_records(
 def reconcile_cmd(
     detail: bool = typer.Option(False, "--detail", help="逐段列出段现金恒等式核对"),
 ):
-    """U7.5 资金恒等式对账（只报不拦）：主池free+消息池free+Σopen段budget vs 总资金。
+    """v11 资金恒等式对账（只报不拦）：每池 free + Σ段cash + Σ净持仓成本 − Σ已实现 == total。
 
-    容差 = |Σ closed 段 cash|（滞留在死壳段、未回池的资金，如沃森生物费用损失）
-        + Σ 非 buy/sell/init/exright 类型 operations 金额（费税项）。
-    超差 → stdout ⚠️ 告警（不拦截任何操作）；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）。
-    同时逐段核对段现金恒等式：cash + FIFO成本 − realized == budget（±0.01）。
-    M1.8/R2 总量守恒门：双池 Σtotal vs 注入基准 W_BASE——init 配对划拨洞/越权直写
-    （凭空印钱路径，W 恒等式抓不到：W 与 Σtotal 同步膨胀 drift 恒=0）在此现形。
+    v11 重铸（方案 2026-09-02）：旧 W=free+Σbudget 门把"承诺"当物理钱——信封化后
+    budget 可超售、不再入账，恒等式改物理口径，**分池各自成立**：
+      主池：pool_ledger.free + Σ技术段 cash + Σ技术段净持仓成本 − Σ技术段已实现 == 主池 total
+      消息池：sleeve_ledger.free + ΣNEWS 段 cash + ΣNEWS 段净持仓成本 − ΣNEWS 段已实现 == 消息池 total
+    已实现=operations sell (amount−cost) 全史（含段转随迁行——桥对转已按此口径守恒）。
+    容差 = |Σ closed 段 cash|（死壳滞留，如沃森生物费用损失）+ Σ 非 buy/sell/init/exright
+    operations 金额（费税项）。超差 → ⚠️ 告警（只报不拦）。
+    哨兵（v11 漂移探测）：技术 open 段 cash>0 → WARN（信封制常态 cash≈0；公开化窗口
+    前属预期滞留）。旧段（非 v11 原生）段现金恒等式（cash+FIFO−realized==budget）照旧
+    逐段核对；v11 原生段以分池重铸式接管（信封段该式按设计不成立），计数分列。
+    M1.8/R2 总量守恒门保留：双池 Σtotal vs 注入基准 W_BASE（抓印钱路径）。
     """
     from paper_trading_v2.db import get_connection, migrate_db, grp_of_strategy
     from paper_trading_v2.master_pool import W_BASE
+    from paper_trading_v2.sleeve_slots import account_remaining
     from paper_trading_v2.config import get_workspace_config
     conn = get_connection(get_workspace_config()['db_path'])
     migrate_db(conn)
@@ -189,32 +211,56 @@ def reconcile_cmd(
                             or {'total': 0.0, 'free': 0.0})
         main = ledger('pool_ledger')
         sleeve = ledger('sleeve_ledger')
-        open_budget = conn.execute(
-            "SELECT COALESCE(SUM(budget),0) FROM position WHERE status='open'").fetchone()[0]
         closed_cash = conn.execute(
             "SELECT COALESCE(SUM(cash),0) FROM position WHERE status='closed'").fetchone()[0]
         odd_ops = conn.execute(
             "SELECT COALESCE(SUM(ABS(COALESCE(amount,0))),0) FROM operations WHERE type NOT IN "
             "('buy','sell','init','exright_bonus','exright_dividend')").fetchone()[0]
-        total = main['total'] + sleeve['total']
-        w = main['free'] + sleeve['free'] + open_budget
-        drift = w - total
         tolerance = abs(closed_cash) + (odd_ops or 0.0)
-        typer.echo("🔍 资金恒等式对账（U7.5，只报不拦）")
+
+        def pool_identity(name, table, seg_filter, realized_filter):
+            """单池物理恒等式：free + Σopen段cash + Σopen净成本 − Σopen已实现 == total。
+
+            realized 限定 **open 段**：closed 段的历史已实现早已随 release/调平沉入
+            free 台账（如沃森 −9,270.80 经 reconcile_fix 回补）——再减=双重记账；
+            closed 段的滞留残值由容差（closed cash + closed |realized|）吸收，
+            兼容生产遗留未调平历史（与旧 W 门容差语义一致）。"""
+            led = ledger(table)
+            cash = conn.execute(
+                f"SELECT COALESCE(SUM(cash),0) FROM position WHERE status='open' "
+                f"AND {seg_filter}").fetchone()[0]
+            fifo = 0.0
+            for (sid,) in conn.execute(
+                    f"SELECT id FROM position WHERE status='open' AND {seg_filter}"):
+                fifo += account_remaining(conn, sid)[1]
+            realized = conn.execute(
+                f"SELECT COALESCE(SUM(COALESCE(o.amount,0)-COALESCE(o.cost,0)),0) "
+                f"FROM operations o JOIN position p ON p.id=o.account_id "
+                f"WHERE o.type='sell' AND p.status='open' AND {realized_filter}").fetchone()[0]
+            w = led['free'] + cash + fifo - realized
+            drift = w - led['total']
+            typer.echo(f"   {name}分池恒等式：free ¥{led['free']:,.2f} + Σ段cash ¥{cash:,.2f} "
+                       f"+ Σ净持仓 ¥{fifo:,.2f} − Σ已实现(open段) ¥{realized:,.2f} = ¥{w:,.2f} "
+                       f"｜ total ¥{led['total']:,.2f} ｜ drift ¥{drift:,.2f}")
+            return abs(drift) > tolerance + 0.005, drift
+
+        typer.echo("🔍 资金恒等式对账（v11 分池物理口径，只报不拦）")
         typer.echo(f"   主池 total/free: ¥{main['total']:,.2f} / ¥{main['free']:,.2f} ｜ "
                    f"消息池 total/free: ¥{sleeve['total']:,.2f} / ¥{sleeve['free']:,.2f}")
-        typer.echo(f"   Σ open 段 budget: ¥{open_budget:,.2f}")
-        typer.echo(f"   W = free(双池) + Σopen段budget = ¥{w:,.2f} ｜ 总资金 = ¥{total:,.2f}")
-        typer.echo(f"   偏差 drift = ¥{drift:,.2f} ｜ 容差 = ¥{tolerance:,.2f} "
-                   f"（closed 段滞留现金 ¥{closed_cash:,.2f} + 费税项 ¥{odd_ops or 0:,.2f}）")
-        if abs(drift) > tolerance + 0.005:
-            typer.echo(f"⚠️ 超差告警：|drift| {abs(drift):,.2f} > 容差 {tolerance:,.2f}"
-                       f"——账本/段现金存在未入账资金流，需人工核查（本命令只报不拦）")
+        typer.echo(f"   容差 = ¥{tolerance:,.2f}（closed 段滞留现金 ¥{closed_cash:,.2f} "
+                   f"+ 费税项 ¥{odd_ops or 0:,.2f}）")
+        bad1, d1v = pool_identity("主池", 'pool_ledger',
+                                  "COALESCE(strategy,'') != 'NEWS'",
+                                  "COALESCE(p.strategy,'') != 'NEWS'")
+        bad2, d2v = pool_identity("消息池", 'sleeve_ledger',
+                                  "strategy='NEWS'", "p.strategy='NEWS'")
+        if bad1 or bad2:
+            typer.echo(f"⚠️ 超差告警：|drift| 主池 {d1v:+,.2f} / 消息池 {d2v:+,.2f} 超容差 "
+                       f"{tolerance:,.2f}——账本/段现金存在未入账资金流，需人工核查（本命令只报不拦）")
         else:
-            typer.echo("✅ 恒等式在容差内")
+            typer.echo("✅ 恒等式在容差内（分池各自成立）")
         # M1.8/R2 总量守恒门（抓一切印钱路径，含历史）：双池 Σtotal 必须恒=注入基准 W_BASE。
-        # 旧 init 洞只 INSERT sleeve_ledger 不扣主池 → Σtotal 膨胀，但 W 同步膨胀 drift 恒=0，
-        # 上面那条 drift 门抓不到——守恒门补位（只报不拦，与 drift 告警同形式）。
+        total = main['total'] + sleeve['total']
         conservation = total - W_BASE
         typer.echo(f"   总量守恒：Σtotal(双池) ¥{total:,.2f} ｜ 注入基准 W_BASE ¥{W_BASE:,.2f}")
         if abs(conservation) > 0.005:
@@ -224,30 +270,68 @@ def reconcile_cmd(
                        f"（本命令只报不拦）")
         else:
             typer.echo("✅ 总量守恒（Σtotal = 注入基准 W_BASE）")
-        # 段现金恒等式（U5 不变量）：cash + FIFO成本 − realized == budget
-        from paper_trading_v2.sleeve_slots import account_remaining
+        # v11 哨兵：技术 open 段 cash>0（信封制常态 cash≈0——漂移探测器；公开化前属预期）
+        from paper_trading_v2.master_pool import MasterPoolManager
+        drifting = conn.execute(
+            "SELECT id, stock, cash FROM position WHERE status='open' "
+            "AND COALESCE(strategy,'') != 'NEWS' AND COALESCE(cash,0) > 0.005 "
+            "ORDER BY cash DESC").fetchall()
+        if drifting:
+            total_stay = sum(r['cash'] for r in drifting)
+            typer.echo(f"   ⚠️ WARN 哨兵：{len(drifting)} 个技术 open 段滞留现金 "
+                       f"¥{total_stay:,.2f}（信封制 cash≈0——未公开化段跑 "
+                       f"python -m paper_trading_v2.pool_publicize）")
+            if detail:
+                for r in drifting:
+                    typer.echo(f"     ⚠️ 段#{r['id']} {r['stock']}: cash ¥{r['cash']:,.2f}")
+        else:
+            typer.echo("   哨兵：技术 open 段 cash 滞留=0 ✅（信封制目标态）")
+        # 段现金恒等式（v9 U5 不变量，仅旧段适用）：cash + FIFO成本 − realized == budget。
+        # v11 原生段（信封段）按设计不满足（cash 拨付即消耗/回款归池），计数分列不判坏。
         bad = []
+        n_native = 0
         for seg in conn.execute("SELECT id, stock, strategy, status, budget, cash, "
                                 "realized_pnl FROM position ORDER BY id"):
+            if seg['status'] != 'open':
+                continue
+            if MasterPoolManager._is_v11_native(conn, seg, seg['stock']):
+                n_native += 1
+                continue
             qty, fifo_cost = account_remaining(conn, seg['id'])
             realized = seg['realized_pnl'] or 0.0
             ident = (seg['cash'] or 0.0) + fifo_cost - realized
             base = seg['budget'] or 0.0
-            if seg['status'] == 'open' and abs(ident - base) > 0.01:
+            if abs(ident - base) > 0.01:
                 bad.append((seg['id'], seg['stock'], ident, base, seg['cash'], fifo_cost))
-        typer.echo(f"   段现金恒等式（open 段 cash+FIFO−realized==budget）："
-                   f"{'全部成立 ✅' if not bad else f'{len(bad)} 段破恒等 ❌'}")
+        typer.echo(f"   段现金恒等式（旧段 cash+FIFO−realized==budget；v11 信封段 {n_native} "
+                   f"个由分池重铸式接管）：{'全部成立 ✅' if not bad else f'{len(bad)} 段破恒等 ❌'}")
         for seg_id, stock, ident, base, cash, fifo in bad:
             typer.echo(f"     ❌ 段#{seg_id} {stock}: cash ¥{cash:,.2f} + FIFO ¥{fifo:,.2f} "
                        f"− realized = ¥{ident:,.2f} ≠ budget ¥{base:,.2f}")
+        # v11 水位（承诺率/真实率/floor——晨审口径）
+        if main['total']:
+            committed = conn.execute(
+                "SELECT COALESCE(SUM(budget),0) FROM position WHERE status='open' "
+                "AND COALESCE(strategy,'') != 'NEWS'").fetchone()[0]
+            net_cost = 0.0
+            for (sid,) in conn.execute("SELECT id FROM position WHERE status='open' "
+                                       "AND COALESCE(strategy,'') != 'NEWS'"):
+                net_cost += account_remaining(conn, sid)[1]
+            floor = 0.20 * main['total']
+            typer.echo(f"   v11 水位：承诺率 {committed / main['total'] * 100:.1f}%"
+                       f"（门 80%）｜ 真实率 {net_cost / main['total'] * 100:.2f}% ｜ "
+                       f"floor ¥{floor:,.2f} ｜ free ¥{main['free']:,.2f} "
+                       f"{'≥' if main['free'] >= floor else '<'} floor")
         if detail:
             typer.echo("   —— 逐段明细 ——")
             for seg in conn.execute("SELECT id, stock, strategy, status, budget, cash, "
                                     "realized_pnl FROM position ORDER BY id"):
                 qty, fifo_cost = account_remaining(conn, seg['id'])
+                native = MasterPoolManager._is_v11_native(conn, seg, seg['stock'])
                 typer.echo(f"     段#{seg['id']:<3} {seg['stock']:<6} {grp_of_strategy(seg['strategy']):<4} "
                            f"{seg['status']:<6} budget ¥{seg['budget'] or 0:,.0f} ｜ cash ¥{seg['cash'] or 0:,.2f} "
-                           f"｜ FIFO {qty}股/¥{fifo_cost:,.2f} ｜ realized ¥{seg['realized_pnl'] or 0:,.2f}")
+                           f"｜ FIFO {qty}股/¥{fifo_cost:,.2f} ｜ realized ¥{seg['realized_pnl'] or 0:,.2f}"
+                           f"{' ｜v11信封' if native else ''}")
     finally:
         conn.close()
 

@@ -52,7 +52,7 @@ ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 
 **消息组（消息池 sleeve_ledger ≤总资金 20%，20 事件坑）**
 - **L2 信号缓冲**（`strategy='NEWS'`，存池表，无交易权限）：收编扫描/晨审按 G1-G4 清单闸落库——G1 数据卫生 / G2 次新否决（上市 <40 交易日硬拒绝，`watchlist-add` 对 NEWS 硬检查）/ G3 事件键归并（键=watchlog.event_key，活跃槽并入不加坑，关闭槽再遇同催化=二波新键）/ G4 TTL 2 交易日作废。**禁设价格点/禁 conditions/禁技术档位语言**
-- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权；**M1/M2 禁用，M3 灰度开放后才可调用**）：每事件 1 槽、成员各建 NEWS 段（strategy='NEWS'，组由段 strategy 推导）、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交（R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交 + shadow_log fill_blocked 留痕，槽保持 pending 下轮重试）；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
+- **L1 事件槽**（`ptrade2 sleeve-open` 建槽，成员等权；**M3 已于 2026-09-02 开闸投用**，首批 3 槽灰度）：**每槽成员帽 `MAX_SLOT_MEMBERS=3`（9/2 用户裁决：一般 1-2 只即够，sleeve_open.py commit b9ad53e）**——开槽与 G3 并入两条路径都校验"活跃成员（exited_at 非 NULL 不占额）+ 新增 ≤3"，超出 ValueError 拒绝（不建槽不扣钱），**--force 不豁免**（策略硬帽，不同于同票双组冲突的人工放行）；超帽候选留 NEWS 缓冲或按新 event_key 另开独立槽。一事件多只是设计如此（等权稀释：预算整篮共享 ÷ 成员数，篮子总敞口天然封顶；"簇内选最强代表"已回测证伪——被丢成员均值 +2.9% > 代表 +2.2%）。每事件 1 槽、成员各建 NEWS 段（strategy='NEWS'，组由段 strategy 推导）、保护链三件套（sleeve-fill 开盘成交时挂载，与 atr-sync 同源常量）。晨审判定 → sleeve-open 建**待成交单（pending）**→ 心跳开盘后首扫（≥9:30）`sleeve-fill` 按当日开盘价统一成交（R7 防线：价≤0/偏离昨收>30%/ATR 解析失败 → 拒绝成交 + shadow_log fill_blocked 留痕，槽保持 pending 下轮重试）；TTL 内未成交（停牌等）→ `sleeve-cancel` 弃单进影子账#1。退出三条腿：①保护链自然退出 ②论点失效旗标（灰度=影子，不执行卖出）③移交桥 → 技术组。**槽占用 = event_slots.status∈(open,partial) 行数（20 坑）；全部成员清零 → 槽 closed 释放（`sleeve-close-slot` 对账归档）**
 - **同票双组**：同票两个 open 段并存（L1 段 + NEWS 段），组由段 strategy 推导（'NEWS'⟺news，其余⟺tech，v9 无 grp 列）；`allocate`/`sleeve-open` 两侧都查另一组活跃持仓，冲突进晨审人工裁决（例外处理非排序），灰度记账
 
 ```bash
@@ -284,6 +284,10 @@ ptrade2 migrate-existing
 # 容差=closed 段滞留现金+费税项；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）
 ptrade2 reconcile [--detail]
 ```
+
+**closed 壳幽灵现金调平（9/2 沃森 -9,270.80 案例）**：reconcile drift 非零且来源=closed 段残留 cash 时——cp 备份 db → 钉 `STOCK_ANALYSIS_WORKSPACE` 直写生产库：`pool_ledger.free` 回补 + 壳 `cash=0` + audit 留痕 `action='reconcile_fix'`；**realized_pnl 绝不动**（真实亏损须留在盈亏报表口径，调的只是钱挂错位置）。调平后 drift/tolerance 恒=0，再非 0 = 新增未解释缺口须人工查。
+
+**ptrade2 测试基线（tests_v2，9/2 实测）**：跑法 = 仓库 scripts 目录 `uv run pytest tests_v2/`（daily-stock-workspace venv 无 pytest）。存在**存量失败 7 例**（test_pool_layer L3 旧档位语义×5 + test_cli watchlist + test_cli_alignment operations）——旧三档语义重构遗留，与 sleeve 无关；改 sleeve 后全量若见这批红，**先 `git stash push <改动文件>` 重跑对照确认是存量再继续**，勿误判 self-broken；sleeve 专项须 `-k "sleeve or cap"` 全绿。改生产代码前确认 HEAD 干净（editable 安装，commit 即生产）。
 
 详细文档：[弹性组合总池（V2）](references/elastic-master-pool.md)、[V2 资金纪律](references/trading-principles.md)
 

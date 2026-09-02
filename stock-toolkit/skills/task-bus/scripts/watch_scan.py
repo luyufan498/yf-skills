@@ -664,7 +664,9 @@ def check_sleeve_pending() -> list[str]:
     """sleeve 槽状态可见性（cron-audit P0 根修，2026-09-02）：
     交易日 ≥9:30 且有 pending 槽 → 持久输出 [SLEEVE] 行 → monitor 必唤醒直到成交/弃单。
     字节稳定（开槽日/预算/留痕计数，无价格）；成交后行消失→确认唤醒。
-    T+1 口径：开槽日=今日的槽只报'禁fill'，隔夜 pending 才是'必跑 sleeve-fill'。"""
+    成交时点口径（2026-09-02 earliest_fill 改造）：today ≥ earliest_fill 的槽报
+    '必跑 sleeve-fill'；未到期的只报'禁fill'。earliest 解析失败 fail-closed
+    回退旧口径（开槽日次一交易日才可成交）。"""
     if not os.path.exists(POOL_DB) or not is_trading_day() or now_hhmm() < "09:30":
         return []
     today = datetime.now().strftime("%Y-%m-%d")
@@ -683,14 +685,75 @@ def check_sleeve_pending() -> list[str]:
     out = []
     for s in slots:
         od = str(s["opened_at"])[:10]
-        if od >= today:
-            out.append(f"[SLEEVE] {s['event_key']} 今日开槽→次日(T+1)才可成交，本轮禁fill")
-        else:
+        if _earliest_fill_allowed(s["event_key"], od, today):
             out.append(f"[SLEEVE] {s['event_key']} 待成交 开槽{od} "
                        f"预算¥{s['budget']:,.0f} → 本轮必跑 sleeve-fill")
+        else:
+            out.append(f"[SLEEVE] {s['event_key']} 未到最早成交日→到期才可成交，本轮禁fill")
     if slots and blocked:
         out.append(f"[SLEEVE] 今日 fill_blocked 留痕 {blocked} 条（R7 拒单，读 shadow_log 核验，禁绕防线）")
     return out
+
+
+def _earliest_fill_allowed(event_key: str, opened_date: str, today: str) -> bool:
+    """today ≥ earliest_fill 才可成交。真源=paper_trading_v2.earliest_fill（与
+    sleeve-fill CLI 同一解析）；import 失败 fail-closed 回退旧口径（开槽日<今日）。"""
+    try:
+        from paper_trading_v2 import earliest_fill as ef
+        res = ef.resolve_earliest_fill(event_key, opened_date)
+        return today >= str(res.date)
+    except Exception:
+        return opened_date < today
+
+
+def check_sleeve_fill_event() -> list[str]:
+    """SLEEVE_FILL 事件化（2026-09-02 earliest_fill 改造）：
+    交易日 ≥9:30 且存在到期（today ≥ earliest_fill）pending 槽 → 向 taskbus 插
+    type=SLEEVE_FILL 事件（payload 含 event_keys/slot_count）。
+    同日已有同型 pending/processing/done 事件 → 不重复插（同日单事件；次日仍
+    pending 会再插）。[SLEEVE] 行保留（check_sleeve_pending=唤醒层，不动）。
+    earliest 解析失败 fail-closed：该槽视为未到期（CLI 侧有 audit fallback 留痕）。"""
+    if not os.path.exists(POOL_DB) or not is_trading_day() or now_hhmm() < "09:30":
+        return []
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        slots = conn.execute(
+            "SELECT event_key,opened_at FROM event_slots "
+            "WHERE fill_status='pending' AND status IN ('open','partial') "
+            "ORDER BY event_key").fetchall()
+    finally:
+        conn.close()
+    due = [s["event_key"] for s in slots
+           if _earliest_fill_allowed(s["event_key"], str(s["opened_at"])[:10], today)]
+    if not due:
+        return []
+    _ensure_task_table()
+    pconn = sqlite3.connect(TASKS_DB)
+    try:
+        # 同日去重（规格口径）：已有 pending/processing 同型事件 → 不重复插。
+        # done/failed 不算——槽仍到期 pending 说明成交没完成，下一 tick 重插=唤醒层
+        # 持续施压直到 filled（[SLEEVE] 行同样持续唤醒，无失控风险）。
+        same = pconn.execute(
+            "SELECT 1 FROM task_events WHERE type='SLEEVE_FILL' AND status IN "
+            "('pending','processing') LIMIT 1").fetchone()
+        if same:
+            return []
+        payload = json.dumps({
+            "event_keys": due, "slot_count": len(due), "date": today,
+            "action": "到期 pending 槽成交：跑 ptrade2 sleeve-fill（禁 --allow-same-day 绕门）",
+        }, ensure_ascii=False)
+        pconn.execute(
+            "INSERT INTO task_events (type, entity, source, priority, payload) "
+            "VALUES ('SLEEVE_FILL', '消息组槽', 'heartbeat-scan', 1, ?)",
+            (payload,),
+        )
+        pconn.commit()
+    finally:
+        pconn.close()
+    return [f"📌 SLEEVE_FILL 事件入队：{len(due)} 个到期 pending 槽 "
+            f"({', '.join(due)}) → sleeve-fill"]
 
 
 def check_calendar() -> list[str]:
@@ -828,6 +891,7 @@ def main() -> int:
         if len(tasks) > 3:
             lines.append(f"  … 其余 {len(tasks)-3} 个（按优先级逐一 claim 处理，单轮≤3 个防截断）")
     lines.extend(atr_sync_daily())
+    lines.extend(check_sleeve_fill_event())   # SLEEVE_FILL 事件入队（到期 pending 槽）
     lines.extend(check_sleeve_pending())
     lines.extend(check_price_triggers())
     lines.extend(check_naked_conditions())

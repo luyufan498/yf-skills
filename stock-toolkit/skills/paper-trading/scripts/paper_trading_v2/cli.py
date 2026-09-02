@@ -522,28 +522,50 @@ def sleeve_fill(
 
     opener = SleeveOpener()
     if not allow_same_day:
-        from datetime import date as _date
-        _today = _date.today().isoformat()
+        # 成交时点硬门（2026-09-02 P+2 改造）：earliest_fill = next_trading_day(
+        # newsdb events.created_at 入库日)；newsdb 不可达/键解析失败 fail-closed
+        # 回退 opened_at+1 交易日（旧 T+1 行为）+ audit 留痕。--allow-same-day 豁免。
+        from paper_trading_v2 import earliest_fill as ef
+        _today = ef.today_str()
         _c = opener._conn()
         try:
             pend = _c.execute(
                 "SELECT event_key, opened_at FROM event_slots "
                 "WHERE fill_status='pending' AND status IN ('open','partial') "
-                "ORDER BY event_key").fetchall()
+                "AND (?='' OR event_key=?) ORDER BY event_key",
+                (event_key or "", event_key or "")).fetchall()
+            eligible, blocked = [], []
+            for s in pend:
+                res = ef.resolve_earliest_fill(s['event_key'], s['opened_at'])
+                if not ef.gate_allowed(res, _today):
+                    blocked.append(s['event_key'])
+                    if res.source == 'fallback' and not ef.already_audited(
+                            _c, 'sleeve_fill_gate_fallback', s['event_key'], _today):
+                        # fail-closed 回退留痕（旧行为口径=开槽日+1 交易日）
+                        ef.audit_gate(_c, 'sleeve_fill_gate_fallback', s['event_key'],
+                                      f"newsdb 不可达/键解析失败，fallback "
+                                      f"earliest_fill={res.date}（开槽日+1 交易日旧口径）")
+                        _c.commit()
+                else:
+                    # 放行留痕每尝试一行：成交成功槽转 filled 不再重入；部分失败槽
+                    # 保持 pending 下轮重试=R7 设计语义，重试再留一行=真实尝试审计
+                    ef.audit_gate(_c, 'sleeve_fill_earliest', s['event_key'],
+                                  f"earliest_fill={res.date} source={res.source} "
+                                  f"放行成交")
+                    _c.commit()
+                    eligible.append(s['event_key'])
         finally:
             _c.close()
-        eligible = [s['event_key'] for s in pend if str(s['opened_at'])[:10] < _today]
-        blocked = [s['event_key'] for s in pend if str(s['opened_at'])[:10] >= _today]
         if event_key is not None:
             if event_key in blocked:
-                typer.echo(f"❌ {event_key} 今日开槽，T+1 门拒绝成交（--allow-same-day 可豁免，"
-                           f"仅测试/事故补跑用）", err=True)
+                typer.echo(f"❌ {event_key} 未到最早成交日，成交时点门拒绝"
+                           f"（--allow-same-day 可豁免，仅测试/事故补跑用）", err=True)
                 raise typer.Exit(1)
         else:
             for k in blocked:
-                typer.echo(f"⏭ T+1 门跳过 {k}（今日开槽，明日成交）")
+                typer.echo(f"⏭ 成交时点门跳过 {k}（未到 earliest_fill，到期日成交）")
             if not eligible:
-                typer.echo("无隔夜 pending 槽可成交（今日开槽的槽按 T+1 明日成交）")
+                typer.echo("无到期 pending 槽可成交（未到期槽按 earliest_fill 到期成交）")
                 return
             _report([r for k in eligible for r in opener.fill_pending(
                 event_key=k, open_prices=_kv(price), atr=atr_arg,

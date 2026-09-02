@@ -28,6 +28,7 @@ from paper_trading_v2.sleeve_slots import (
 MAX_ACTIVE_SLOTS = 20          # 20 事件坑（与主池 20 段位上限并存互不侵占）
 FILL_MAX_DEV_PREV_CLOSE = 0.30  # R7：开盘价偏离昨收 >30% 拒绝成交（脏价防线）
 FILL_MIN_PRICE = 0.01          # M1.7/F5：价格下限（A股最小报价单位；<0.01=脏价）
+FILL_DIVE_THRESHOLD = -0.03    # 影子观察：开盘较昨收 ≤-3% → shadow_log dive_open（不拦截）
 
 
 class SleeveOpener:
@@ -503,6 +504,15 @@ class SleeveOpener:
                         shadow_write(conn, 'off10h', slot['event_key'],
                                      {"stock": stock, "fill_price": price, "high10": h10,
                                       "off10h": round(price / h10 - 1, 4), "ts": now})
+                    # 影子账 dive_open 跳水观察（2026-09-02）：开盘较昨收 ≤-3% → 记录。
+                    # 纯观察不执法（帽/带不上生产的裁决）——照成交不拦截。
+                    if pre_close and pre_close > 0:
+                        dip = price / pre_close - 1
+                        if dip <= FILL_DIVE_THRESHOLD:
+                            shadow_write(conn, 'dive_open', slot['event_key'],
+                                         {"stock": stock, "fill_price": price,
+                                          "prev_close": pre_close,
+                                          "dip": round(dip, 4), "ts": now})
                     filled.append({"stock": stock, "qty": qty, "price": price,
                                    "amount": amount})
                 if not all_filled:

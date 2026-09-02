@@ -393,13 +393,16 @@ def test_sleeve_open_conflict_rejected_by_default(sleeve_ready):
     conn.close()
 
 
-def test_cli_sleeve_fill_t1_gate(sleeve_ready):
-    """T+1 硬门回归锁（cron-audit 2026-09-02 P1）：
-    今日开槽批量跳过/指定键拒绝/隔夜槽放行成交。"""
+def test_cli_sleeve_fill_t1_gate(sleeve_ready, monkeypatch):
+    """T+1 硬门回归锁（cron-audit 2026-09-02 P1，2026-09-02 earliest_fill 改造后
+    语义保留）：newsdb 不可达 fail-closed 回退旧口径——今日开槽批量跳过/指定键
+    拒绝/隔夜槽放行成交。
+    （STOCK_NEWS_DB 指向不存在路径=锁死 fallback 旧行为路径，不依赖真实 newsdb。）"""
     from paper_trading_v2.cli import app
     from paper_trading_v2.db import get_connection
     from paper_trading_v2.sleeve_open import SleeveOpener
     from unittest.mock import patch as _patch
+    monkeypatch.setenv('STOCK_NEWS_DB', '/nonexistent/news_for_t1_gate.db')
     SleeveOpener(_db(sleeve_ready)).open_slot(['T1票'], budget=100000,
                                               event_key='ND#960', news_kind='policy')
     kl = [{'date': '2026-08-01', 'open': 10, 'high': 11, 'low': 9,
@@ -408,14 +411,14 @@ def test_cli_sleeve_fill_t1_gate(sleeve_ready):
     with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
                 return_value=kl):
         r = _run(app, 'sleeve-fill', '--price', 'T1票=10.0')
-    assert r.exit_code == 0 and 'T+1 门跳过 ND#960' in r.output, r.output
+    assert r.exit_code == 0 and '成交时点门跳过 ND#960' in r.output, r.output
     conn = get_connection(_db(sleeve_ready))
     assert conn.execute("SELECT fill_status FROM event_slots WHERE event_key='ND#960'"
                         ).fetchone()[0] == 'pending'
     conn.close()
     # ② 指定 event-key 打今日槽：拒绝退出码 1
     r = _run(app, 'sleeve-fill', '--event-key', 'ND#960', '--price', 'T1票=10.0')
-    assert r.exit_code == 1 and 'T+1 门拒绝' in r.output
+    assert r.exit_code == 1 and '成交时点门拒绝' in r.output
     # ③ opened_at 回填为昨日（=隔夜槽）：批量 fill 正常成交（明晨真实路径）。
     # ATR 显式注入：mock 常量价 K 线 TR=0 → R7 判 ATR 解析失败拒单，与本锁无关
     conn = get_connection(_db(sleeve_ready))

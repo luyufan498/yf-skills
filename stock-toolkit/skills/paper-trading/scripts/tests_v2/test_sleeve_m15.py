@@ -377,12 +377,13 @@ def test_segment_invariant_budget_equals_account_allocation(pools, env):
     """全流程（open/等权 merge/纯归并/fill）后：每个 open NEWS 段 budget == 成员账户
     capital_total；sleeve_ledger.free + Σ open NEWS 段预算 == 消息池 total（不超分，
     验收门 4 从机制保证变为可测断言）。槽 budget 口径=累计拨款（M1 偏差 D8：merge
-    等权重算后段预算和≠槽 budget，槽列为事件拨款账，不变量锚定在段↔账户）。"""
+    等权重算后段预算和≠槽 budget，槽列为事件拨款账，不变量锚定在段↔账户）。
+    9/2 成员帽（MAX_SLOT_MEMBERS=3）重构：原 4 成员（变A-D 含纯归并变D）场景超帽被拒——
+    等权 merge 与纯归并覆盖压缩到 3 成员内（open 1 → 等权 merge 1 → 纯归并 1）。"""
     op = _opener(env)
-    op.open_slot(['变A', '变B'], budget=300000, event_key='ND#I15',
-                 code_map={'变A': 'sh1', '变B': 'sh2'})
-    op.open_slot(['变C'], budget=60000, event_key='ND#I15', code_map={'变C': 'sh3'})  # merge
-    op.open_slot(['变D'], budget=0, event_key='ND#I15', code_map={'变D': 'sh4'})      # 纯归并
+    op.open_slot(['变A'], budget=150000, event_key='ND#I15', code_map={'变A': 'sh1'})
+    op.open_slot(['变B'], budget=150000, event_key='ND#I15', code_map={'变B': 'sh2'})  # 等权 merge
+    op.open_slot(['变C'], budget=0, event_key='ND#I15', code_map={'变C': 'sh3'})       # 纯归并（0 拨款）
     op.fill_pending(event_key='ND#I15', open_prices={'变A': 10.0, '变B': 20.0},
                     skip_conditions=True)
     conn = _conn(env)

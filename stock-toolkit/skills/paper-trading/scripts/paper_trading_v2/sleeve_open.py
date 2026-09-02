@@ -26,6 +26,7 @@ from paper_trading_v2.sleeve_slots import (
     news_account_id, account_remaining, NEWS_KINDS)
 
 MAX_ACTIVE_SLOTS = 20          # 20 事件坑（与主池 20 段位上限并存互不侵占）
+MAX_SLOT_MEMBERS = 3           # 每事件槽成员帽（9/2 用户裁决：一般 1-2 只即够，>3=事件逻辑铺太开）
 FILL_MAX_DEV_PREV_CLOSE = 0.30  # R7：开盘价偏离昨收 >30% 拒绝成交（脏价防线）
 FILL_MIN_PRICE = 0.01          # M1.7/F5：价格下限（A股最小报价单位；<0.01=脏价）
 FILL_DIVE_THRESHOLD = -0.03    # 影子观察：开盘较昨收 ≤-3% → shadow_log dive_open（不拦截）
@@ -104,6 +105,25 @@ class SleeveOpener:
                         n += 1
                     derived_wave = f"{event_key}#b{n}"
                     event_key = derived_wave
+
+            # 成员帽（9/2 用户裁决 MAX_SLOT_MEMBERS=3）：活跃成员+新增 ≤ 帽，超出拒绝
+            # （不建槽不扣钱不并入）——事件篮子 1-2 只即够，>3 = 事件逻辑铺太开；
+            # 策略硬帽，--force 不豁免（超帽候选留 NEWS 缓冲，或按新事件另开独立槽）。
+            if mode == 'merge':
+                active_now = [r['stock'] for r in conn.execute(
+                    "SELECT stock FROM event_slot_members WHERE event_key=? "
+                    "AND exited_at IS NULL", (event_key,)).fetchall()]
+                projected = list(dict.fromkeys(active_now + stocks))
+                if len(projected) > MAX_SLOT_MEMBERS:
+                    raise ValueError(
+                        f"槽成员帽（{MAX_SLOT_MEMBERS}）：{event_key} 活跃成员 {active_now}"
+                        f" + 新增 {stocks} = {len(projected)} 超帽——本槽不并入；"
+                        f"新票按新 event_key 另开独立槽，或留 NEWS 缓冲等下一波")
+            elif len(stocks) > MAX_SLOT_MEMBERS:
+                raise ValueError(
+                    f"开槽成员帽（{MAX_SLOT_MEMBERS}）：本次开槽 {stocks} = "
+                    f"{len(stocks)} 只超帽——每事件槽 1-{MAX_SLOT_MEMBERS} 只核心直接受益，"
+                    f"扩散票留缓冲或独立事件另开槽")
 
             # 同票双组冲突（方案 第四.8）：默认拒绝——成员另有技术组 open 段即同票双组
             # 暴露，CLI 层直接出局（不建槽不扣钱）；--force 降级为提示放行（晨审人工

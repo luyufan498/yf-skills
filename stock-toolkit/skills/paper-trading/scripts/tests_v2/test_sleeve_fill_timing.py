@@ -435,6 +435,45 @@ def test_watch_scan_sleeve_fill_not_due_no_event(sleeve_ready, newsdb, cal, cloc
     assert n == 0
 
 
+def test_watch_scan_sleeve_fill_after_close_no_event(sleeve_ready, newsdb, cal,
+                                                     clock, ws_scan):
+    """收盘上限回归锁（2026-09-02）：now>15:05 有到期 pending 槽 → 不插 SLEEVE_FILL
+    （fill 只在开盘窗口有意义，收盘后插事件=心跳空转去跑注定失败的 fill）；
+    now=09:35 同槽仍插（防改过头把开盘窗口也挡掉）。"""
+    mod, tasks = ws_scan
+    _seed_news(newsdb, 703, '2026-09-01 20:00:00')
+    _, conn = _open_pending(sleeve_ready, '收盘票', 'ND#703')
+    _set_opened_at(conn, 'ND#703', '2026-09-02T01:49:00')
+    conn.close()
+
+    def _count():
+        if not os.path.exists(tasks):
+            return 0
+        c = sqlite3.connect(tasks)
+        try:
+            return c.execute("SELECT COUNT(*) FROM task_events "
+                             "WHERE type='SLEEVE_FILL'").fetchone()[0]
+        finally:
+            c.close()
+
+    # 收盘后 19:00：到期 pending 槽在手 → 必须不插事件（现 bug：会插）
+    clock.set(_REAL_DT(2026, 9, 2, 19, 0))
+    assert mod.check_sleeve_fill_event() == []
+    assert _count() == 0, "收盘后(>15:05)不得插入 SLEEVE_FILL 事件"
+    # 15:05 整（尾巴边界）：仍允许（TRADE_END=15:00 + 5 分钟尾巴）
+    clock.set(_REAL_DT(2026, 9, 2, 15, 5))
+    mod.check_sleeve_fill_event()
+    assert _count() == 1, "15:05 边界仍应可插（防改过头）"
+    # 已插 pending 事件在 → 同日去重不重复插；清掉后回到开盘窗口 09:35 仍插
+    clock.set(_REAL_DT(2026, 9, 2, 9, 35))
+    c = sqlite3.connect(tasks)
+    c.execute("DELETE FROM task_events WHERE type='SLEEVE_FILL'")   # 清场重测
+    c.commit()
+    c.close()
+    mod.check_sleeve_fill_event()
+    assert _count() == 1, "09:35 开盘窗口到期槽必须照常插（防改过头）"
+
+
 def test_watch_scan_sleeve_pending_line_kept(sleeve_ready, newsdb, cal, clock,
                                              ws_scan):
     """[SLEEVE] 唤醒行保留不动（改造只加事件化，不删行）：到期 pending → 行含

@@ -712,8 +712,12 @@ def check_sleeve_fill_event() -> list[str]:
     type=SLEEVE_FILL 事件（payload 含 event_keys/slot_count）。
     同日已有同型 pending/processing/done 事件 → 不重复插（同日单事件；次日仍
     pending 会再插）。[SLEEVE] 行保留（check_sleeve_pending=唤醒层，不动）。
-    earliest 解析失败 fail-closed：该槽视为未到期（CLI 侧有 audit fallback 留痕）。"""
-    if not os.path.exists(POOL_DB) or not is_trading_day() or now_hhmm() < "09:30":
+    earliest 解析失败 fail-closed：该槽视为未到期（CLI 侧有 audit fallback 留痕）。
+    收盘上限（2026-09-02 修复）：now > 15:05（TRADE_END+5 分钟尾巴）不插——fill 只在
+    开盘窗口有意义，收盘后插事件=心跳被唤醒去跑注定失败的 fill。"""
+    if not os.path.exists(POOL_DB) or not is_trading_day():
+        return []
+    if now_hhmm() < TRADE_START or now_hhmm() > "15:05":
         return []
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)

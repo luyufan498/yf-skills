@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS events (
     started_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     resolved_at       TEXT,
-    msg_count         INTEGER NOT NULL DEFAULT 0
+    msg_count         INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT DEFAULT ''             -- 入库时刻真源（2026-09-02；与 ALTER 存量路径统一为常量默认 ''，真实戳由触发器 ai_events_created_at 盖——SQLite ALTER 禁非常量默认）
 );
 
 CREATE TABLE IF NOT EXISTS event_tags (
@@ -144,12 +145,51 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 """
 
 
+def _migrate_events_created_at(conn):
+    """events.created_at（入库时刻真源）幂等迁移（2026-09-02）。
+
+    背景：earliest_fill 成交门读 events.created_at，但生产库是旧 schema 无此列，
+    storage.py INSERT 也不显式写。任意库（新旧）经本迁移后 created_at 可用：
+    1. 无列 → ALTER ADD COLUMN TEXT DEFAULT ''（SQLite 禁非常量默认，已实测）；
+    2. 历史回填 COALESCE(started_at, updated_at, now)——语义=能追到的最早时间戳，
+       旧事件均早于任何成交门 → 门对其自动失效（放行），可接受；
+    3. 触发器 ai_events_created_at：新事件自动盖 datetime('now','localtime')，
+       只补 NULL/''（显式传入的非空值不覆写；storage.py 不改）。
+    events 表不存在（全新库尚未建表）→ 跳过，init_db() 建表后会再调一次。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(events)")]
+    if not cols:
+        return                                   # 尚无 events 表（全新库）
+    if 'created_at' not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN created_at TEXT DEFAULT ''")
+    conn.execute(
+        "UPDATE events SET created_at=COALESCE(started_at, updated_at,"
+        " datetime('now','localtime')) "
+        "WHERE created_at='' OR created_at IS NULL")
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS ai_events_created_at
+        AFTER INSERT ON events
+        BEGIN
+            UPDATE events SET created_at=datetime('now','localtime')
+            WHERE id=NEW.id AND (created_at IS NULL OR created_at='');
+        END;
+    """)
+    conn.commit()
+
+
 def connect(db_path):
-    """打开（必要时创建）数据库连接，返回 row_factory=Row 的连接。"""
+    """打开（必要时创建）数据库连接，返回 row_factory=Row 的连接。
+
+    附带 events.created_at 幂等迁移（旧库补列+回填+触发器；见
+    _migrate_events_created_at）。"""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    try:
+        _migrate_events_created_at(conn)
+    except sqlite3.OperationalError:
+        pass  # 库损坏/锁竞争等异常不阻塞 connect（旧行为：connect 从不 fail）
     return conn
 
 
@@ -186,6 +226,9 @@ def init_db(conn):
         conn.execute("ALTER TABLE events ADD COLUMN info_type TEXT NOT NULL DEFAULT 'news'")
     except sqlite3.OperationalError:
         pass  # 列已存在
+    # events.created_at：全新库路径（connect 时 events 表还不存在会跳过迁移），
+    # 建表后立即补触发器/回填（幂等，重复调无害）
+    _migrate_events_created_at(conn)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS event_tags (
             event_id INTEGER NOT NULL,

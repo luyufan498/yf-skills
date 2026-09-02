@@ -666,8 +666,13 @@ def check_sleeve_pending() -> list[str]:
     字节稳定（开槽日/预算/留痕计数，无价格）；成交后行消失→确认唤醒。
     成交时点口径（2026-09-02 earliest_fill 改造）：today ≥ earliest_fill 的槽报
     '必跑 sleeve-fill'；未到期的只报'禁fill'。earliest 解析失败 fail-closed
-    回退旧口径（开槽日次一交易日才可成交）。"""
-    if not os.path.exists(POOL_DB) or not is_trading_day() or now_hhmm() < "09:30":
+    回退旧口径（开槽日次一交易日才可成交）。
+    收盘上限（2026-09-02 主代理补，与事件层 747ee9a 对齐）：now > 15:05 不输出——
+    fill 只在开盘窗口有意义；若 wake 层收盘后仍报'必跑'，心跳任何变更唤醒都会
+    触发 sleeve-fill 按**收盘价**成交（口径污染）。当日漏成交归次日晨审处置。"""
+    if not os.path.exists(POOL_DB) or not is_trading_day():
+        return []
+    if now_hhmm() < "09:30" or now_hhmm() > "15:05":
         return []
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)

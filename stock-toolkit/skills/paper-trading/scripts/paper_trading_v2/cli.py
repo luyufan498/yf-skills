@@ -312,9 +312,12 @@ def watchlist_add(
     pin: Optional[bool] = typer.Option(None, "--pin/--no-pin", help="设置/清除名单保护（pin=1 禁删除可降级）"),
     event_key: Optional[str] = typer.Option(None, "--event-key", help="消息组 G3 事件键（NEWS 收编必带，如 ND#293）"),
     news_kind: Optional[str] = typer.Option(None, "--news-kind", help="六类词表：price_cycle/policy/earnings/company_event/tech_catalyst/sentiment/other"),
+    force: bool = typer.Option(False, "--force/--no-force", help="跳过 NEWS 入池硬门"
+                               "（第四.8 守卫A抢档/守卫B断链；watchlog 留痕，人工裁决后使用）"),
 ):
     """入池/调整档位（--pin 名单保护；--code 自动查码；NEWS 收编带 --event-key/--news-kind
-    并过 G2 次新否决：上市 <40 交易日硬拒绝）"""
+    并过 G2 次新否决：上市 <40 交易日硬拒绝；NEWS 另过入池硬门：技术组 open 段/已在活跃槽
+    默认拒绝，--force 豁免留痕）"""
     stock = normalize_stock_name(stock)
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
@@ -330,7 +333,7 @@ def watchlist_add(
                 raise typer.Exit(1)
             typer.echo(f"ℹ️ {detail}（技术组仅提示）")
         w.add(stock, code, strategy, source, reason, pin,
-              event_key=event_key, news_kind=news_kind)
+              event_key=event_key, news_kind=news_kind, force=force)
         typer.echo(f"✅ 入池 {stock} ({strategy})" + (" 🔒pin" if pin else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -440,9 +443,12 @@ def sleeve_open(
     reason: str = typer.Option("", "--reason", help="判定依据（审计）"),
     source: str = typer.Option("agent", "--source", help="agent/manual"),
     code: list[str] = typer.Option(None, "--code", help="成员代码，顺序对应成员（可多次）"),
+    force: bool = typer.Option(False, "--force/--no-force", help="放行同票双组冲突"
+                               "（第四.8；默认拒绝，人工裁决后使用，audit 留痕）"),
 ):
     """消息组 L1 建仓事务：sleeve_ledger 扣款→成员账户(grp=news)→pending 待成交单→开槽
-    （G3 归并：活跃槽并入等权不加坑；关闭槽二波=新键开新槽）"""
+    （G3 归并：活跃槽并入等权不加坑；关闭槽二波=新键开新槽）
+    （同票双组冲突默认拒绝——成员另有技术组 open 段即出局，--force 豁免留痕）"""
     stocks = [normalize_stock_name(s) for s in stocks]
     from paper_trading_v2.sleeve_open import SleeveOpener
     code_map = {}
@@ -459,7 +465,8 @@ def sleeve_open(
                 except ValueError:
                     pass
         r = op.open_slot(stocks, budget, event_key=event_key, news_kind=news_kind,
-                         source=source, reason=reason, title=title, code_map=code_map)
+                         source=source, reason=reason, title=title, code_map=code_map,
+                         force=force)
         typer.echo(f"✅ sleeve-open [{r['mode']}] {r['event_key']}  成员 {r['members']}  "
                    f"等权份额 ¥{r['share']:,.0f}")
         if r.get('derived_wave'):

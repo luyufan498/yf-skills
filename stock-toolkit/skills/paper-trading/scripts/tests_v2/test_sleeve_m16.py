@@ -148,7 +148,10 @@ def test_dual_segment_addressing_sell_topup_conditions(pools, env):
         mp.return_value = _PI(10.0)
         _trader(env).buy_stock('双段票', quantity=10_000, note='技术组买入')
     op = SleeveOpener(env / 'master_pool.db')
-    op.open_slot(['双段票'], budget=100_000, event_key='ND#M16C', code_map={'双段票': 'sh1'})
+    # force=True：本测试正主=同票双段并存寻义零歧义（U5），双段并存是前置态；
+    # 第四.8 升级为默认拒绝后，force 造前置态不伤原意图（寻址断言全部保留）
+    op.open_slot(['双段票'], budget=100_000, event_key='ND#M16C', code_map={'双段票': 'sh1'},
+                 force=True)
     op.fill_pending(event_key='ND#M16C', open_prices={'双段票': 10.0}, skip_conditions=True)
     conn = _conn(env)
     seg_tech = tech_seg_id(conn, '双段票')

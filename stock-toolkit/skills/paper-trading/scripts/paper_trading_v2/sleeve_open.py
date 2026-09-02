@@ -45,8 +45,13 @@ class SleeveOpener:
     # ---------- sleeve-open ----------
 
     def open_slot(self, stocks, budget, event_key=None, news_kind=None, source='agent',
-                  reason='', title=None, code_map=None):
-        """开槽（可多成员等权）。返回摘要 dict。开新槽全程单事务。"""
+                  reason='', title=None, code_map=None, force=False):
+        """开槽（可多成员等权）。返回摘要 dict。开新槽全程单事务。
+
+        同票双组冲突（第四.8）默认拒绝：成员另有技术组 open 段 → ValueError（不建槽
+        不扣钱）；force=True（CLI --force）降级为提示放行（晨审人工裁决口径），
+        审计 audit.reason 追加 [force] 留痕。
+        """
         if isinstance(stocks, str):
             stocks = [stocks]
         stocks = [s.strip() for s in stocks if s and s.strip()]
@@ -99,7 +104,9 @@ class SleeveOpener:
                     derived_wave = f"{event_key}#b{n}"
                     event_key = derived_wave
 
-            # 同票双组冲突提示（方案 第四.8：两侧都查另一组活跃持仓，晨审人工裁决）
+            # 同票双组冲突（方案 第四.8）：默认拒绝——成员另有技术组 open 段即同票双组
+            # 暴露，CLI 层直接出局（不建槽不扣钱）；--force 降级为提示放行（晨审人工
+            # 裁决口径），audit.reason 带 [force] 留痕。
             conflicts = []
             for s in stocks:
                 n_tech = conn.execute(
@@ -107,8 +114,17 @@ class SleeveOpener:
                     "AND COALESCE(strategy,'')!='NEWS'", (s,)).fetchone()[0]
                 if n_tech:
                     conflicts.append(s)
+            if conflicts and not force:
+                raise ValueError(
+                    f"同票双组冲突（第四.8）：{conflicts} 主池另有 open 段，"
+                    f"sleeve-open 默认拒绝——技术组段持有者走 ④动量/甜点加仓；"
+                    f"晨审人工裁决确需双组暴露用 --force")
             for s in conflicts:
-                print(f"⚠️ {s} 主池另有 open 段（同票双组暴露）——按第四.8 须晨审人工裁决")
+                print(f"⚠️ {s} 主池另有 open 段（同票双组暴露）——force 放行，按第四.8 "
+                      f"仍须晨审人工裁决")
+            if conflicts:
+                reason = (reason + ' ' if reason else '') + \
+                    "[force 放行同票双组冲突（第四.8）]"
 
             share = None
             with conn:

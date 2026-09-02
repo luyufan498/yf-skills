@@ -275,7 +275,10 @@ def test_release_route_dual_group_each_side_settles_own(pools, env):
     op.fill_pending(event_key='ND#D15', open_prices={'双组票': 10.0}, skip_conditions=True)
     mg.migrate('双组票', reason='V11', code='sh1')
     # 二波新槽（迁移票不重复建仓的是已迁移持仓；二波=新事件新槽）
-    op.open_slot(['双组票'], budget=50000, event_key='ND#D15B', code_map={'双组票': 'sh1'})
+    # force=True：迁移后 L1 open 段与新 NEWS 槽=同票双组暴露，第四.8 升级后默认拒绝；
+    # 本测试意图是 release 路由（news/tech 各回各池），双组只是前置态——force 造前置态
+    op.open_slot(['双组票'], budget=50000, event_key='ND#D15B', code_map={'双组票': 'sh1'},
+                 force=True)
     op.fill_pending(event_key='ND#D15B', open_prices={'双组票': 20.0}, skip_conditions=True)
     from paper_trading_v2.trading import PaperTrader
     trader = PaperTrader()

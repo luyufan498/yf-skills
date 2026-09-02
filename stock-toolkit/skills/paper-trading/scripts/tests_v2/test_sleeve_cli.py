@@ -266,6 +266,133 @@ def test_cli_sleeve_cancel_drop_order(sleeve_ready):
     assert abs(free - 2000000) < 1
 
 
+# ============ NEWS 入池硬门 + 同票双组默认拒绝（第四.8，CLI 全路径覆盖） ============
+# 密闭约定：只走 STOCK_ANALYSIS_WORKSPACE（env/sleeve_ready），绝不设 STOCK_POOL_DB
+# （历史上该变量不被 CLI 解析，曾把测试写进生产库）。
+
+_KLINES_60 = [{'date': '2026-01-05', 'open': 1, 'high': 1, 'low': 1,
+               'close': 1}] * 60
+
+
+def _news_add(app, stock, code, event_key, kind='policy', *extra):
+    """NEWS 收编 CLI（G2 次新否决需日K ≥41 根 → 注入 60 根常量 K 线，不触网）。"""
+    from unittest.mock import patch as _patch
+    with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
+                return_value=_KLINES_60):
+        return _run(app, 'watchlist-add', stock, '--code', code, '--strategy', 'NEWS',
+                    '--event-key', event_key, '--news-kind', kind, *extra)
+
+
+def test_watchlist_add_news_rejected_when_tech_open_segment(sleeve_ready):
+    """守卫 A（抢档）：技术组有 open 段 → NEWS 收编默认拒绝（第四.8）。
+
+    技术组 open 段持有者走 ④动量/甜点加仓，不走消息组；--force 才放行。
+    """
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    r = _run(app, 'watchlist-add', '抢档票', '--code', 'sh600010', '--strategy', 'L2')
+    assert r.exit_code == 0, r.output
+    r = _run(app, 'master-pool-allocate', '抢档票', '--amount', '100000', '--reason', '建仓')
+    assert r.exit_code == 0, r.output                       # allocate 即升 L1 + open 段
+    r = _news_add(app, '抢档票', 'sh600010', 'ND#A1')
+    assert r.exit_code == 1, r.output
+    assert '第四.8' in r.output and '有 open 段禁 NEWS 收编' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    strat = conn.execute("SELECT strategy FROM pool WHERE stock='抢档票'").fetchone()[0]
+    conn.close()
+    assert strat == 'L1'                                    # 拒绝=零副作用，档位未动
+    # force 豁免：显式 --force 放行且 watchlog 留痕
+    r = _news_add(app, '抢档票', 'sh600010', 'ND#A1', 'policy', '--force')
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    reason = conn.execute("SELECT reason FROM watchlog WHERE stock='抢档票' "
+                          "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert 'force' in (reason or '')
+
+
+def test_watchlist_add_news_allowed_without_segment(sleeve_ready):
+    """放行态不变：L2 行无 open 段 → NEWS 入池成功（逐字节原行为）。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    r = _run(app, 'watchlist-add', '无段观察票', '--code', 'sh600011', '--strategy', 'L2')
+    assert r.exit_code == 0, r.output
+    r = _news_add(app, '无段观察票', 'sh600011', 'ND#A2')
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    row = dict(conn.execute("SELECT * FROM pool WHERE stock='无段观察票'").fetchone())
+    conn.close()
+    assert row['strategy'] == 'NEWS' and row['event_key'] == 'ND#A2'
+
+
+def test_watchlist_add_news_dup_blocked_when_in_slot(sleeve_ready):
+    """守卫 B（重复入池/断链）：NEWS active 且已在活跃槽 → 再次 NEWS 入池拒绝；
+    --force 放行且 watchlog reason 带 force。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    r = _news_add(app, '槽内票', 'sh600012', 'ND#A3')
+    assert r.exit_code == 0, r.output
+    r = _run(app, 'sleeve-open', '槽内票', '--budget', '100000', '--event-key', 'ND#A3',
+             '--news-kind', 'policy', '--code', 'sh600012')
+    assert r.exit_code == 0, r.output
+    r = _news_add(app, '槽内票', 'sh600012', 'ND#A3B')      # 换新键再来=断链
+    assert r.exit_code == 1, r.output
+    assert '已在槽' in r.output and '派生波' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    key = conn.execute("SELECT event_key FROM pool WHERE stock='槽内票'").fetchone()[0]
+    conn.close()
+    assert key == 'ND#A3'                                   # 拒绝未改键
+    r = _news_add(app, '槽内票', 'sh600012', 'ND#A3B', 'policy', '--force')
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    reason = conn.execute("SELECT reason FROM watchlog WHERE stock='槽内票' "
+                          "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    assert 'force' in (reason or '')
+
+
+def test_watchlist_add_news_allowed_not_in_slot(sleeve_ready):
+    """M3 晨审合法路径不变：NEWS active 但无槽 → 重复 watchlist-add 放行、event_key 更新。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    assert _news_add(app, '晨审票', 'sh600013', 'ND#A4').exit_code == 0
+    r = _news_add(app, '晨审票', 'sh600013', 'ND#A4B')      # 催化换键（无槽）
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    row = dict(conn.execute("SELECT strategy, event_key FROM pool WHERE stock='晨审票'")
+               .fetchone())
+    conn.close()
+    assert row == {'strategy': 'NEWS', 'event_key': 'ND#A4B'}
+
+
+def test_sleeve_open_conflict_rejected_by_default(sleeve_ready):
+    """sleeve-open 同票双组冲突：默认拒绝（第四.8），--force 才开槽。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+    assert _run(app, 'watchlist-add', '双组冲突票', '--code', 'sh600014',
+                '--strategy', 'L2').exit_code == 0
+    r = _run(app, 'master-pool-allocate', '双组冲突票', '--amount', '100000',
+             '--reason', '技术组建段')
+    assert r.exit_code == 0, r.output
+    r = _run(app, 'sleeve-open', '双组冲突票', '--budget', '100000', '--event-key',
+             'ND#A5', '--news-kind', 'policy', '--code', 'sh600014')
+    assert r.exit_code == 1, r.output
+    assert '第四.8' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    assert conn.execute("SELECT COUNT(*) FROM event_slots WHERE event_key='ND#A5'"
+                        ).fetchone()[0] == 0                # 拒绝=不建槽
+    free = conn.execute("SELECT free FROM sleeve_ledger").fetchone()[0]
+    conn.close()
+    assert abs(free - 2000000) < 1                          # 拒绝=不扣钱
+    r = _run(app, 'sleeve-open', '双组冲突票', '--budget', '100000', '--event-key',
+             'ND#A5', '--news-kind', 'policy', '--code', 'sh600014', '--force')
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    assert conn.execute("SELECT COUNT(*) FROM event_slots WHERE event_key='ND#A5'"
+                        ).fetchone()[0] == 1
+    conn.close()
+
+
 def test_cli_sleeve_fill_t1_gate(sleeve_ready):
     """T+1 硬门回归锁（cron-audit 2026-09-02 P1）：
     今日开槽批量跳过/指定键拒绝/隔夜槽放行成交。"""

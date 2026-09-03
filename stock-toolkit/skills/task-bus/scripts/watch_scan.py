@@ -846,20 +846,24 @@ def _news_event_codes(nconn: sqlite3.Connection, event_id: int) -> list[str]:
 
 
 def _news_already_emitted(event_key: str, emitted: set[str]) -> bool:
-    """检出留痕三查：kv emitted / taskbus 同键 NEWS_CANDIDATE / NEWS_ORDER（任意状态）。
+    """检出留痕三查：taskbus 同键 NEWS_CANDIDATE / NEWS_ORDER 状态、kv emitted。
 
-    任意状态（含 done/failed）都不重发——晨审/重判 done 掉的事件若下 tick 复发=死循环。"""
-    if event_key in emitted:
-        return True
+    v12-patch/E13：同 event_key 仅剩 failed 记录 → 放行重检重发（消费失败不该
+    永久封死一条消息链路——fail 多为环境性：锚价取不到/消费端崩）；pending/
+    processing/done 任一存在 → 不重发（done 且槽已开在 _pool_event_keys 一层
+    再挡一道，防双开）。taskbus 无任何同键记录时 kv 留痕兜底（防任务表清理后
+    done 事件复发=死循环）。"""
     conn = sqlite3.connect(TASKS_DB)
     try:
-        row = conn.execute(
-            "SELECT 1 FROM task_events WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER') "
-            "AND payload LIKE ? LIMIT 1",
-            (f'%"event_key": "{event_key}"%',)).fetchone()
-        return row is not None
+        rows = conn.execute(
+            "SELECT status FROM task_events WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER') "
+            "AND payload LIKE ?",
+            (f'%"event_key": "{event_key}"%',)).fetchall()
     finally:
         conn.close()
+    if rows:
+        return any(r[0] != "failed" for r in rows)
+    return event_key in emitted
 
 
 def check_news_events() -> list[str]:
@@ -973,6 +977,121 @@ def run_news_scope() -> int:
     lines = []
     lines.extend(check_news_events())
     lines.extend(news_pending_lines())
+    if not lines:
+        print("IDLE")
+        return 0
+    print("\n".join(lines))
+    return 0
+
+
+# ---------- 4.7 v12 挂单槽价格扫描：price scope（v12-patch E1/E12/E6） ----------
+def in_price_scan_window() -> bool:
+    """E12：--scope price 交易时段闸（精确）：交易日 + 9:30-11:30 / 13:00-14:57。
+
+    不含 9:00-9:29 集合竞价（伪价不进挂单检测）、不含 14:58+ 收盘集合竞价
+    （集中撮合价不宜作检测价）。比 legacy in_trade_hours（15:00 止）更严——
+    挂单检测价/成交判定窗口收口；保护链扫描（E6，check_price_triggers）仍按
+    legacy 自己的 in_trade_hours 窗口到 15:00。
+    """
+    if not is_trading_day():
+        return False
+    hhmm = now_hhmm()
+    return ("09:30" <= hhmm <= "11:30") or ("13:00" <= hhmm <= "14:57")
+
+
+def _slot_member_code(event_key: str) -> str | None:
+    """挂单槽取价对象 code（首成员）：event_slot_members JOIN position 段——
+    与 paper_trading_v2.sleeve_order._first_member_code 同口径（E9 核价/E2 payload
+    同源，取价对象唯一）。取不到 → None（调用方输出取价失败行）。"""
+    if not os.path.exists(POOL_DB):
+        return None
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT p.code FROM event_slot_members m "
+            "LEFT JOIN position p ON p.stock=m.stock AND p.status='open' "
+            "AND p.strategy='NEWS' WHERE m.event_key=? AND p.code IS NOT NULL "
+            "ORDER BY m.joined_at LIMIT 1", (event_key,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None  # 缺表/缺列（旧库）→ 视为无成员段
+    finally:
+        conn.close()
+
+
+def _parse_order_ttl(ts) -> "datetime | None":
+    """挂单 TTL 宽松解析（T/空格分隔 ISO）。解析失败返回 None——扫描侧不阻塞
+    （成交/弃单 CLI 侧 fail-closed 复验 TTL，是最终防线）。"""
+    try:
+        return datetime.fromisoformat(str(ts)[:19].replace(" ", "T"))
+    except (TypeError, ValueError):
+        return None
+
+
+def check_price_orders() -> list[str]:
+    """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测。
+
+    每拍扫 event_slots status='pending_order'（**不是** legacy 的
+    fill_status='pending' AND status IN ('open','partial')——那是旧 sleeve-fill 的），
+    对每槽 fetch_price_any 取现价（首成员 code，_slot_member_code）：
+    - 价 ∈ [band_min,band_max] → 触带行（消费方 sleeve-order-fill --price 检测价）
+    - 价 < band_min → 破带行（sleeve-order-expire --reason band_break）
+    - now > order_ttl → 过期行（--reason expired；TTL 优先于价格——挂单已死）
+    - 取价失败 → 明确失败行（不静默：不成交不弃单，下一拍重试）
+    现价 > band_max：未触带未破带（挂单等回落）→ 无动作不输出（防每拍空唤醒，
+    TTL 到期自然走 expired）；band 缺失（异常态）→ fail-closed 行不动作。
+    本函数只输出触发行不执行——fill/expire CLI 是执行与最终防线（带内判定、
+    TTL fail-closed、E3 行情防线、E9 band_break 核价都在那边复验）。
+    持久输出语义同 [SLEEVE] 行：动作完成前每拍重复 → monitor 持续唤醒直到闭环。
+    """
+    if not os.path.exists(POOL_DB) or not in_price_scan_window():
+        return []
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        slots = conn.execute(
+            "SELECT event_key, band_min, band_max, order_ttl FROM event_slots "
+            "WHERE status='pending_order' ORDER BY event_key").fetchall()
+    finally:
+        conn.close()
+    now = datetime.now()
+    out = []
+    for s in slots:
+        event_key = s["event_key"]
+        if s["band_min"] is None or s["band_max"] is None:
+            out.append(f"[PRICE-ORDER] {event_key} 挂单带缺失（band_min/max=NULL，异常态）"
+                       f"→ fail-closed 本轮跳过（不成交不弃单）")
+            continue
+        ttl_dt = _parse_order_ttl(s["order_ttl"])
+        if ttl_dt is not None and now > ttl_dt:
+            out.append(f"[PRICE-ORDER] {event_key} 挂单已过期 ttl={s['order_ttl']} "
+                       f"→ 跑 ptrade2 sleeve-order-expire {event_key} --reason expired")
+            continue
+        code = _slot_member_code(event_key)
+        px = fetch_price_any(code) if code else None
+        if px is None:
+            out.append(f"[PRICE-ORDER] {event_key} 取价失败（code={code or '无成员段'}）"
+                       f"→ 本轮跳过，不成交不弃单（fail-closed，下一拍重试）")
+            continue
+        if s["band_min"] <= px <= s["band_max"]:
+            out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} ∈ 带"
+                       f"[¥{s['band_min']:.2f},¥{s['band_max']:.2f}] → 跑 ptrade2 "
+                       f"sleeve-order-fill {event_key} --price {px:.2f}")
+        elif px < s["band_min"]:
+            out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} < "
+                       f"band_min¥{s['band_min']:.2f} → 跑 ptrade2 "
+                       f"sleeve-order-expire {event_key} --reason band_break")
+    return out
+
+
+def run_price_scope() -> int:
+    """price scope 主流程（v12 C1 price-watch 心跳 monitor）：E1 挂单槽四态扫描
+    + E6 保护链扫描（承接 legacy check_price_triggers 全账户扫，含 strategy='NEWS'
+    成员段——成交后保护链归属的延续监督，触发写 WATCH_ALERT 供 C1 消费执行）。
+    静默 news 检出/任务列举/atr/异动/大盘等——专用心跳只看价格输出，防串唤醒。"""
+    lines = []
+    lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
+    lines.extend(check_price_triggers())    # E6：保护链（全账户含 NEWS 段）
     if not lines:
         print("IDLE")
         return 0
@@ -1102,6 +1221,7 @@ def cleanup_tabs_auto(max_keep: int = 4, trigger: int = 10):
 def main() -> int:
     # v12 scope 分流（方案 review 修订#7）：
     #   --scope news   → 消息挂单专用心跳 monitor（只检 newsdb 新事件，静默 SLEEVE 与一切 legacy 检测）
+    #   --scope price  → 挂单执行心跳 monitor（v12-patch/E1：挂单槽四态扫描 + E6 保护链）
     #   --scope legacy（默认，兼容现网 cron 无参调用）→ 旧全量逻辑原样，含 SLEEVE_FILL/[SLEEVE]
     scope = "legacy"
     args = sys.argv[1:]
@@ -1110,11 +1230,13 @@ def main() -> int:
             scope = args[i + 1]
         elif a.startswith("--scope="):
             scope = a.split("=", 1)[1]
-    if scope not in ("news", "legacy"):
-        print(f"❌ --scope 应为 news / legacy（收到 {scope!r}）", file=sys.stderr)
+    if scope not in ("news", "legacy", "price"):
+        print(f"❌ --scope 应为 news / legacy / price（收到 {scope!r}）", file=sys.stderr)
         return 2
     if scope == "news":
         return run_news_scope()
+    if scope == "price":
+        return run_price_scope()
     # CDP tab 自动清理（>10 保留 4，从最早开始关）——纯副作用，不唤醒 LLM
     cleanup_tabs_auto()
     lines = []

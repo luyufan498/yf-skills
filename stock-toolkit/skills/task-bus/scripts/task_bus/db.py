@@ -8,14 +8,14 @@ DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
 TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
-         # v12 消息挂单链路（方案 v12-news-order-20260903）：news-watch 专属三类型
+         # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
          "NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE"]
 STATUSES = ["pending", "processing", "done", "failed"]
 
-# v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='news-watch'）可认领；
+# v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='msg-watch'）可认领；
 # 存量类型不在本集合内 → 不校验（向后兼容，晨审/旧心跳照常 claim）。
 NEWS_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
-NEWS_CONSUMER = "news-watch"
+NEWS_CONSUMER = "msg-watch"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
@@ -79,7 +79,7 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
     """原子认领：pending → processing。认领失败（已被抢/状态不对/不存在）返回 None。
 
     v12 claim 硬门：news 三类型（NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE）仅
-    consumer='news-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
+    consumer='msg-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
     缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。存量类型不校验（向后
     兼容：晨审/旧心跳无 --consumer 照常 claim）。consumer 传入时写进 payload
     （claimed_by）供审计。
@@ -93,8 +93,8 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
         if row["type"] in NEWS_TYPES and consumer != NEWS_CONSUMER:
             who = consumer or "(未提供 --consumer)"
             raise PermissionError(
-                f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=news-watch"
-                f"（专用心跳 stock-news-watch）；当前 consumer={who}。"
+                f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=msg-watch"
+                f"（专用心跳 stock-msg-watch）；当前 consumer={who}。"
                 f"旧心跳/晨审请跳过 NEWS_* 类型（review 修订#5：唯一消费者保证）")
         cur = conn.execute(
             "UPDATE task_events SET status='processing', claimed_at=datetime('now','localtime') "

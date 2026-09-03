@@ -190,7 +190,7 @@ def check_tasks() -> list[dict]:
     """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。
 
     v12：NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE 也不列——消息挂单三类型唯一消费者
-    =专用心跳 news-watch（claim 硬门见 task_bus/db.py），legacy 心跳只发现不消费，
+    =专用心跳 msg-watch（claim 硬门见 task_bus/db.py），legacy 心跳只发现不消费，
     排除防止旧心跳被唤醒误 claim（prompt 热换前的双保险）。"""
     if not os.path.exists(TASKS_DB):
         return []
@@ -925,7 +925,7 @@ def check_news_events() -> list[str]:
                 "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "action": "消息专用心跳消费：G1-G4 闸→值得→watchlist-add NEWS + "
                           "sleeve-open→sleeve-order-place（band=[anchor×0.95, anchor×1.05]）；"
-                          "不值得→done 注明（claimed_by 必须=news-watch）",
+                          "不值得→done 注明（claimed_by 必须=msg-watch）",
             }, ensure_ascii=False)
             conn = sqlite3.connect(TASKS_DB)
             try:
@@ -939,7 +939,7 @@ def check_news_events() -> list[str]:
                 conn.close()
             new_emitted.append(event_key)
             out.append(f"📰 NEWS_CANDIDATE #{tid} {event_key} imp={e['importance']} "
-                       f"锚¥{anchor:.2f}「{e['title'][:40]}」→ claim --consumer news-watch")
+                       f"锚¥{anchor:.2f}「{e['title'][:40]}」→ claim --consumer msg-watch")
     finally:
         nconn.close()
     if new_emitted:
@@ -966,7 +966,7 @@ def news_pending_lines() -> list[str]:
     finally:
         conn.close()
     return [f"[NEWS] #{r['id']} [{r['type']}] {r['entity']} p{r['priority']} "
-            f"{r['status']} → taskbus claim {r['id']} --consumer news-watch"
+            f"{r['status']} → taskbus claim {r['id']} --consumer msg-watch"
             for r in rows]
 
 

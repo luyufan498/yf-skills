@@ -64,11 +64,11 @@ def claim_event(
     consumer: Optional[str] = typer.Option(
         None, "--consumer",
         help="消费者标识（写入 payload.claimed_by 供审计）。NEWS_CANDIDATE/NEWS_ORDER/"
-             "NEWS_REJUDGE 三类必须传 'news-watch'（专用心跳），否则拒绝认领"),
+             "NEWS_REJUDGE 三类必须传 'msg-watch'（专用心跳），否则拒绝认领"),
 ):
     """原子认领事件（pending→processing）。已被认领返回失败。
 
-    v12 硬门：news 挂单三类型仅 consumer=news-watch 可认领（唯一消费者保证）；
+    v12 硬门：news 挂单三类型仅 consumer=msg-watch 可认领（唯一消费者保证）；
     存量类型（CANDIDATE/CALENDAR/REVIEW/SLEEVE_FILL…）不校验，晨审/旧心跳照常 claim。
     """
     try:

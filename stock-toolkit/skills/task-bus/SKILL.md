@@ -158,6 +158,18 @@ pending ──claim──▶ processing ──done──▶ done
 - `claim` 是**原子认领**（`UPDATE ... WHERE status='pending'`）：串行消费 + 认领失败跳过，双保险防抢事件/重复消费
 - `recover` 把卡死（agent 崩溃）的 processing 重置回 pending，默认超时 2 小时
 
+### 📰 v12 消息挂单三类型与 claim 硬门（2026-09-03，方案 v12-news-order-20260903）
+
+| 类型 | 含义 | 生产者 | 唯一消费者 |
+|------|------|--------|-----------|
+| `NEWS_CANDIDATE` | newsdb 新事件检出（imp≥4 bullish、入库 24h 内、未入池；payload 含 event_key/anchor_price=检出时刻实时价/event_title） | `watch_scan.py --scope news` | 专用心跳 stock-news-watch |
+| `NEWS_ORDER` | 带内挂单（band=[anchor×95%, anchor×105%]，TTL=下一节收盘） | 专用心跳（G1-G4 过闸后） | 专用心跳 stock-news-watch |
+| `NEWS_REJUDGE` | 弃单/破带后重判 | watch_scan/paper_trading_v2（expire 路径） | 专用心跳 stock-news-watch |
+
+- **claim 硬门**：`taskbus claim <id> --consumer <name>`——上述三类型仅 `--consumer news-watch` 可认领，其余（含缺省）一律拒绝（exit 3，提示消费者归属）；**存量类型不校验**（晨审/旧心跳无 `--consumer` 照常 claim，向后兼容）。consumer 写入 payload `claimed_by` 供审计。
+- **legacy 心跳隔离**：`check_tasks` 的 NOT IN 清单已加这三类型——旧心跳连 `[EVENT]` 列表都看不到，配合 prompt 断根句双保险。
+- **`--scope` 分流**：`watch_scan.py --scope news`（专用心跳 monitor：只检 newsdb 新事件 + 列 `[NEWS]` 待办，**静默** SLEEVE_FILL/[SLEEVE] 与一切 legacy 检测）；缺省/`--scope legacy` = 旧全量逻辑原样（SLEEVE 链路保留可回滚）。
+
 ## CLI 命令
 
 ```bash

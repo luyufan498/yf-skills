@@ -59,13 +59,28 @@ def list_events(
 
 
 @app.command("claim")
-def claim_event(task_id: int = typer.Argument(..., help="事件 ID")):
-    """原子认领事件（pending→processing）。已被认领返回失败。"""
-    row = db.claim(task_id)
+def claim_event(
+    task_id: int = typer.Argument(..., help="事件 ID"),
+    consumer: Optional[str] = typer.Option(
+        None, "--consumer",
+        help="消费者标识（写入 payload.claimed_by 供审计）。NEWS_CANDIDATE/NEWS_ORDER/"
+             "NEWS_REJUDGE 三类必须传 'news-watch'（专用心跳），否则拒绝认领"),
+):
+    """原子认领事件（pending→processing）。已被认领返回失败。
+
+    v12 硬门：news 挂单三类型仅 consumer=news-watch 可认领（唯一消费者保证）；
+    存量类型（CANDIDATE/CALENDAR/REVIEW/SLEEVE_FILL…）不校验，晨审/旧心跳照常 claim。
+    """
+    try:
+        row = db.claim(task_id, consumer=consumer)
+    except PermissionError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(3)
     if row is None:
         typer.echo(f"❌ #{task_id} 认领失败（不存在或已被认领/已结束）", err=True)
         raise typer.Exit(1)
-    typer.echo(f"✅ 已认领 #{row['id']} [{row['type']}] {row['entity']} → processing")
+    by = f" consumer={consumer}" if consumer else ""
+    typer.echo(f"✅ 已认领 #{row['id']} [{row['type']}] {row['entity']} → processing{by}")
 
 
 @app.command("done")

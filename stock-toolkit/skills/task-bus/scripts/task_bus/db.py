@@ -7,8 +7,15 @@ ENV = "STOCK_TASKS_DB"
 DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
-TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT"]
+TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
+         # v12 消息挂单链路（方案 v12-news-order-20260903）：news-watch 专属三类型
+         "NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE"]
 STATUSES = ["pending", "processing", "done", "failed"]
+
+# v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='news-watch'）可认领；
+# 存量类型不在本集合内 → 不校验（向后兼容，晨审/旧心跳照常 claim）。
+NEWS_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
+NEWS_CONSUMER = "news-watch"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
@@ -68,10 +75,27 @@ def add(type_: str, entity: str, source: str = "user", priority: int = 3,
         conn.close()
 
 
-def claim(task_id: int) -> dict | None:
-    """原子认领：pending → processing。认领失败（已被抢/状态不对/不存在）返回 None。"""
+def claim(task_id: int, consumer: str | None = None) -> dict | None:
+    """原子认领：pending → processing。认领失败（已被抢/状态不对/不存在）返回 None。
+
+    v12 claim 硬门：news 三类型（NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE）仅
+    consumer='news-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
+    缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。存量类型不校验（向后
+    兼容：晨审/旧心跳无 --consumer 照常 claim）。consumer 传入时写进 payload
+    （claimed_by）供审计。
+    """
     conn = connect()
     try:
+        row = conn.execute("SELECT id, type, payload FROM task_events WHERE id=?",
+                           (task_id,)).fetchone()
+        if row is None:
+            return None
+        if row["type"] in NEWS_TYPES and consumer != NEWS_CONSUMER:
+            who = consumer or "(未提供 --consumer)"
+            raise PermissionError(
+                f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=news-watch"
+                f"（专用心跳 stock-news-watch）；当前 consumer={who}。"
+                f"旧心跳/晨审请跳过 NEWS_* 类型（review 修订#5：唯一消费者保证）")
         cur = conn.execute(
             "UPDATE task_events SET status='processing', claimed_at=datetime('now','localtime') "
             "WHERE id=? AND status='pending'",
@@ -80,8 +104,20 @@ def claim(task_id: int) -> dict | None:
         conn.commit()
         if cur.rowcount == 0:
             return None  # 只有 UPDATE 命中 pending 才算认领成功；否则一律失败
-        row = conn.execute("SELECT * FROM task_events WHERE id=?", (task_id,)).fetchone()
-        return dict(row)
+        if consumer:
+            # 消费者写入 payload（审计：谁认领的）；payload 非 JSON 时不阻塞认领
+            try:
+                p = json.loads(row["payload"]) if row["payload"] else {}
+                if not isinstance(p, dict):
+                    p = {"_raw_payload": p}
+            except (ValueError, TypeError):
+                p = {"_raw_payload": row["payload"]}
+            p["claimed_by"] = consumer
+            conn.execute("UPDATE task_events SET payload=? WHERE id=?",
+                         (json.dumps(p, ensure_ascii=False), task_id))
+            conn.commit()
+        r = conn.execute("SELECT * FROM task_events WHERE id=?", (task_id,)).fetchone()
+        return dict(r)
     finally:
         conn.close()
 

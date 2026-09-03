@@ -23,6 +23,11 @@ from datetime import datetime
 TASKS_DB = os.environ.get("STOCK_TASKS_DB") or os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 WS = os.environ.get("STOCK_ANALYSIS_WORKSPACE", os.path.join(os.getcwd(), ".paper-trading"))
 POOL_DB = os.path.join(WS, "master_pool.db")
+# v12 news scope：newsdb 路径（与 news-database config.get_db_path 同口径：env 优先）
+NEWS_DB = os.environ.get("STOCK_NEWS_DB") or os.path.join(
+    os.environ.get("STOCK_ANALYSIS_WORKSPACE_ROOT",
+                   "/home/catmouse/Github_Project/daily-stock-workspace"),
+    "data", "news", "news.db")
 STATE_FILE = "/tmp/watch_scan_state.json"  # 兼容旧文件（已迁移到 kv_store，读时优先 kv）
 KV_STATE_KEY = "watch_scan_state"
 RECOVER_STALE_HOURS = 2.0
@@ -122,6 +127,31 @@ def fetch_price(code: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def fetch_price_any(code: str) -> float | None:
+    """取实时价，兼容 newsdb 混合码格式（sh600760 / 600703.SH / 300394）。
+
+    newsdb event_stock 存码三态并存（实测 9/3：sh 前缀、点后缀、裸 6 位），
+    ptrade2 fetch-price 只认前缀/裸部分格式时各异——依次尝试候选写法，首个成功即返回。
+    """
+    if not code:
+        return None
+    c = code.strip()
+    cands = [c]
+    m = re.match(r"^(sh|sz|bj)(\d{6})$", c, re.I)
+    if m:
+        cands.append(f"{m.group(2)}.{'SH' if m.group(1).lower() == 'sh' else 'SZ'}")
+    elif re.search(r"\.(SH|SZ|BJ)$", c, re.I):
+        digits, suf = c.split(".")[0], c.split(".")[-1].lower()
+        cands.append(f"{suf}{digits}")
+    elif re.match(r"^\d{6}$", c):
+        cands.append(("sh" if c[0] in "5689" else "sz") + c)
+    for cand in cands:
+        px = fetch_price(cand)
+        if px is not None:
+            return px
+    return None
+
+
 TASKS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,7 +187,11 @@ def _ensure_task_table():
 
 # ---------- 1. 任务事件检查 ----------
 def check_tasks() -> list[dict]:
-    """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。"""
+    """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。
+
+    v12：NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE 也不列——消息挂单三类型唯一消费者
+    =专用心跳 news-watch（claim 硬门见 task_bus/db.py），legacy 心跳只发现不消费，
+    排除防止旧心跳被唤醒误 claim（prompt 热换前的双保险）。"""
     if not os.path.exists(TASKS_DB):
         return []
     _ensure_task_table()
@@ -174,7 +208,9 @@ def check_tasks() -> list[dict]:
         conn.commit()
         return [dict(r) for r in conn.execute(
             "SELECT id, type, entity, priority, source FROM task_events "
-            "WHERE status='pending' AND type NOT IN ('CALENDAR','L3_SNAPSHOT','NEWS_SNAPSHOT') "
+            "WHERE status='pending' AND type NOT IN "
+            "('CALENDAR','L3_SNAPSHOT','NEWS_SNAPSHOT',"
+            "'NEWS_CANDIDATE','NEWS_ORDER','NEWS_REJUDGE') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()
@@ -765,6 +801,185 @@ def check_sleeve_fill_event() -> list[str]:
             f"({', '.join(due)}) → sleeve-fill"]
 
 
+# ---------- 4.6 v12 消息挂单：news scope 检出（方案 v12-news-order-20260903） ----------
+NEWS_EVENT_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
+NEWS_IMPACT_MIN = 4          # 检出阈值：importance >= 4
+NEWS_MAX_AGE_HOURS = 24      # 入库新鲜度：events.created_at 起 24h 内
+NEWS_SCAN_STATE_KEY = "news_scan_state"   # kv: {"emitted": [event_key...]} 检出留痕（防 done 后复发）
+
+
+def _pool_event_keys() -> set[str]:
+    """已入池事件键（pool.event_key ∪ event_slots.event_key，只读）。
+
+    缺表/缺列（旧库）→ 该来源视为空，不崩溃。newsdb 事件键约定 ND#<event_id>
+    （与 sleeve watchlist-add --event-key 同一格式）。"""
+    if not os.path.exists(POOL_DB):
+        return set()
+    keys: set[str] = set()
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    try:
+        for table in ("pool", "event_slots"):
+            try:
+                keys.update(r[0] for r in conn.execute(
+                    f"SELECT DISTINCT event_key FROM {table} "
+                    "WHERE event_key IS NOT NULL AND event_key != ''"))
+            except sqlite3.OperationalError:
+                pass  # 表/列不存在（旧库）→ 忽略该来源
+    finally:
+        conn.close()
+    return keys
+
+
+def _news_event_codes(nconn: sqlite3.Connection, event_id: int) -> list[str]:
+    """事件关联股票代码（直接 event_stock 优先；行业事件经 event_industry→
+    industry_stocks 兜底）。按 relevance 降序，首位=anchor 取价对象。"""
+    codes = [r[0] for r in nconn.execute(
+        "SELECT stock_code FROM event_stock WHERE event_id=? "
+        "ORDER BY relevance DESC, stock_code", (event_id,)).fetchall()]
+    if codes:
+        return codes
+    return [r[0] for r in nconn.execute(
+        "SELECT ish.stock_code FROM event_industry ei "
+        "JOIN industry_stocks ish ON ish.industry_id = ei.industry_id "
+        "WHERE ei.event_id=? ORDER BY ish.relevance DESC, ish.stock_code LIMIT 5",
+        (event_id,)).fetchall()]
+
+
+def _news_already_emitted(event_key: str, emitted: set[str]) -> bool:
+    """检出留痕三查：kv emitted / taskbus 同键 NEWS_CANDIDATE / NEWS_ORDER（任意状态）。
+
+    任意状态（含 done/failed）都不重发——晨审/重判 done 掉的事件若下 tick 复发=死循环。"""
+    if event_key in emitted:
+        return True
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM task_events WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER') "
+            "AND payload LIKE ? LIMIT 1",
+            (f'%"event_key": "{event_key}"%',)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def check_news_events() -> list[str]:
+    """news scope 检出：newsdb 新事件 → NEWS_CANDIDATE 事件入 taskbus。
+
+    判定（契约）：imp≥4、status=open、bullish 方向（事件下至少一条消息
+    signal_direction='bullish'）、created_at（入库时刻真源）24h 内、
+    未入池（ND#id 不在 pool/event_slots）、未发过（_news_already_emitted）。
+
+    payload：event_key=ND#<id>、anchor_price=**检出时刻实时价**（第一关联股，
+    fetch_price_any 兼容混合码格式）、event_title、newsdb_event_id、codes 等。
+    fail-closed：无关联股或取价失败 → **不写事件**（无锚无法定 ±5% band，
+    输出顺延提示；24h 窗口内下一 tick 再试）。锚价语义=事件入库/检出时刻快照，
+    不是挂单时刻价（用户裁决 9/3 第 1 条）。"""
+    if not os.path.exists(NEWS_DB) or not os.path.exists(TASKS_DB):
+        return []
+    st = _kv_get(NEWS_SCAN_STATE_KEY)
+    emitted = set(st.get("emitted") or [])
+    pool_keys = _pool_event_keys()
+    out, new_emitted = [], []
+    nconn = sqlite3.connect(f"file:{NEWS_DB}?mode=ro", uri=True)
+    nconn.row_factory = sqlite3.Row
+    try:
+        rows = nconn.execute(
+            "SELECT e.id, e.title, e.importance, e.entity_type, e.created_at FROM events e "
+            "WHERE e.importance >= ? AND e.status = 'open' "
+            "AND e.created_at != '' AND e.created_at >= datetime('now','localtime', ?) "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.event_id = e.id "
+            "            AND m.signal_direction = 'bullish') "
+            "ORDER BY e.importance DESC, e.id DESC",
+            (NEWS_IMPACT_MIN, f"-{NEWS_MAX_AGE_HOURS} hours")).fetchall()
+        for e in rows:
+            event_key = f"ND#{e['id']}"
+            if event_key in pool_keys:
+                continue  # 已入池（watchlist/sleeve 槽），消息组链路已接管
+            if _news_already_emitted(event_key, emitted):
+                continue
+            codes = _news_event_codes(nconn, e["id"])
+            anchor = None
+            for c in codes:
+                anchor = fetch_price_any(c)
+                if anchor is not None:
+                    break
+            if anchor is None:
+                out.append(f"⚠️ {event_key}「{e['title'][:30]}」锚价获取失败"
+                           f"（codes={codes[:3]}），本轮顺延，24h 内下一 tick 重试")
+                continue
+            _ensure_task_table()
+            payload = json.dumps({
+                "event_key": event_key,
+                "newsdb_event_id": e["id"],
+                "event_title": e["title"],
+                "anchor_price": anchor,
+                "anchor_code": codes[0] if codes else None,
+                "importance": e["importance"],
+                "entity_type": e["entity_type"],
+                "codes": codes,
+                "news_created_at": e["created_at"],
+                "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "action": "消息专用心跳消费：G1-G4 闸→值得→watchlist-add NEWS + "
+                          "sleeve-open→sleeve-order-place（band=[anchor×0.95, anchor×1.05]）；"
+                          "不值得→done 注明（claimed_by 必须=news-watch）",
+            }, ensure_ascii=False)
+            conn = sqlite3.connect(TASKS_DB)
+            try:
+                cur = conn.execute(
+                    "INSERT INTO task_events (type, entity, source, priority, payload) "
+                    "VALUES ('NEWS_CANDIDATE', ?, 'watch-scan-news', 1, ?)",
+                    (event_key, payload))
+                conn.commit()
+                tid = cur.lastrowid
+            finally:
+                conn.close()
+            new_emitted.append(event_key)
+            out.append(f"📰 NEWS_CANDIDATE #{tid} {event_key} imp={e['importance']} "
+                       f"锚¥{anchor:.2f}「{e['title'][:40]}」→ claim --consumer news-watch")
+    finally:
+        nconn.close()
+    if new_emitted:
+        emitted.update(new_emitted)
+        st["emitted"] = sorted(emitted)[-300:]  # 留痕上限，防 kv 无限膨胀
+        _kv_set(NEWS_SCAN_STATE_KEY, st)
+    return out
+
+
+def news_pending_lines() -> list[str]:
+    """news scope 唤醒层：pending/processing 的 NEWS_* 事件持久列举（字节稳定，
+    同 [SLEEVE] 语义）——专用心跳每拍看到未清事件持续唤醒，直到消费/重判闭环。"""
+    if not os.path.exists(TASKS_DB):
+        return []
+    _ensure_task_table()
+    conn = sqlite3.connect(TASKS_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT id, type, entity, priority, status FROM task_events "
+            "WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER','NEWS_REJUDGE') "
+            "AND status IN ('pending','processing') "
+            "ORDER BY priority ASC, id ASC LIMIT 30").fetchall()
+    finally:
+        conn.close()
+    return [f"[NEWS] #{r['id']} [{r['type']}] {r['entity']} p{r['priority']} "
+            f"{r['status']} → taskbus claim {r['id']} --consumer news-watch"
+            for r in rows]
+
+
+def run_news_scope() -> int:
+    """news scope 主流程（v12 专用心跳 monitor）：只检 newsdb 新事件 + 列 NEWS_*
+    待办。**静默** SLEEVE_FILL/[SLEEVE]（旧链路退役，legacy scope 原样保留可回滚）、
+    静默价格条件/裸奔/异动/大盘等 legacy 检测——专用心跳只看 news 输出，防串唤醒。"""
+    lines = []
+    lines.extend(check_news_events())
+    lines.extend(news_pending_lines())
+    if not lines:
+        print("IDLE")
+        return 0
+    print("\n".join(lines))
+    return 0
+
+
 def check_calendar() -> list[str]:
     """CALENDAR 事件到期检测：到期时刻 ≤ now 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
 
@@ -885,6 +1100,21 @@ def cleanup_tabs_auto(max_keep: int = 4, trigger: int = 10):
 
 
 def main() -> int:
+    # v12 scope 分流（方案 review 修订#7）：
+    #   --scope news   → 消息挂单专用心跳 monitor（只检 newsdb 新事件，静默 SLEEVE 与一切 legacy 检测）
+    #   --scope legacy（默认，兼容现网 cron 无参调用）→ 旧全量逻辑原样，含 SLEEVE_FILL/[SLEEVE]
+    scope = "legacy"
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--scope" and i + 1 < len(args):
+            scope = args[i + 1]
+        elif a.startswith("--scope="):
+            scope = a.split("=", 1)[1]
+    if scope not in ("news", "legacy"):
+        print(f"❌ --scope 应为 news / legacy（收到 {scope!r}）", file=sys.stderr)
+        return 2
+    if scope == "news":
+        return run_news_scope()
     # CDP tab 自动清理（>10 保留 4，从最早开始关）——纯副作用，不唤醒 LLM
     cleanup_tabs_auto()
     lines = []

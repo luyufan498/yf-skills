@@ -163,20 +163,24 @@ class MasterPoolManager:
                     "rotation_gate": ROTATION_GATE,
                 }
             # sleeve：槽视角对账（占用=活跃槽预算；realized=Σ槽 realized）
+            # v12：SLOT_ACTIVE 含 pending_order/pending_rejudge——挂单/待重判预算
+            # 已拨付占用（free+占用=total 恒等式不因新态出现资金黑洞）
+            from paper_trading_v2.sleeve_slots import SLOT_ACTIVE as _SLOT_ACT
+            _ph = ','.join('?' * len(_SLOT_ACT))
             occupied = conn.execute(
-                "SELECT COALESCE(SUM(budget),0) s FROM event_slots WHERE status IN (?,?)",
-                ('open', 'partial')).fetchone()['s']
+                f"SELECT COALESCE(SUM(budget),0) s FROM event_slots WHERE status IN ({_ph})",
+                tuple(_SLOT_ACT)).fetchone()['s']
             realized = conn.execute(
                 "SELECT COALESCE(SUM(realized),0) s FROM event_slots").fetchone()['s']
             member_segments = conn.execute(
                 "SELECT COUNT(*) c FROM position WHERE status='open' AND strategy='NEWS'"
             ).fetchone()['c']
             active_slots = conn.execute(
-                "SELECT COUNT(*) c FROM event_slots WHERE status IN (?,?)",
-                ('open', 'partial')).fetchone()['c']
+                f"SELECT COUNT(*) c FROM event_slots WHERE status IN ({_ph})",
+                tuple(_SLOT_ACT)).fetchone()['c']
             pending = conn.execute(
-                "SELECT COUNT(*) c FROM event_slots WHERE fill_status='pending' "
-                "AND status IN (?,?)", ('open', 'partial')).fetchone()['c']
+                f"SELECT COUNT(*) c FROM event_slots WHERE fill_status='pending' "
+                f"AND status IN ({_ph})", tuple(_SLOT_ACT)).fetchone()['c']
             return {
                 "total": ledger['total'], "free": ledger['free'],
                 "occupied": occupied,

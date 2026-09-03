@@ -31,6 +31,14 @@ FILL_MAX_DEV_PREV_CLOSE = 0.30  # R7：开盘价偏离昨收 >30% 拒绝成交�
 FILL_MIN_PRICE = 0.01          # M1.7/F5：价格下限（A股最小报价单位；<0.01=脏价）
 FILL_DIVE_THRESHOLD = -0.03    # 影子观察：开盘较昨收 ≤-3% → shadow_log dive_open（不拦截）
 
+# v12：旧开盘价成交路径（sleeve-fill）只作用于 open/partial 槽——挂单槽
+# （pending_order/pending_rejudge）由 sleeve-order-fill 按检测价专属处理，
+# 旧扫描必须跳过（契约洞6：旧链路退役不越权，v12 期间两路互不踩踏）。
+SLOT_LEGACY_FILL = ('open', 'partial')
+# close-slot 可关态：旧两态 + v12 pending_rejudge（重判不值得→关槽回款）。
+# pending_order 不可直接关——先 expire 弃单转 pending_rejudge 再关（状态机纪律）。
+SLOT_CLOSEABLE = ('open', 'partial', 'pending_rejudge')
+
 
 class SleeveOpener:
     def __init__(self, db_path=None):
@@ -225,10 +233,11 @@ class SleeveOpener:
                         "INSERT INTO event_slots (event_key, status, opened_at, budget, "
                         "news_kind, title, members_json, fill_status, note) "
                         "SELECT ?, 'open', ?, ?, ?, ?, ?, 'pending', ? "
-                        "WHERE (SELECT COUNT(*) FROM event_slots WHERE status IN (?,?)) < ?",
+                        f"WHERE (SELECT COUNT(*) FROM event_slots WHERE status IN "
+                        f"({','.join('?' * len(SLOT_ACTIVE))})) < ?",
                         (event_key, now, budget, news_kind, title,
                          json.dumps(stocks, ensure_ascii=False), note,
-                         SLOT_ACTIVE[0], SLOT_ACTIVE[1], MAX_ACTIVE_SLOTS))
+                         *SLOT_ACTIVE, MAX_ACTIVE_SLOTS))
                     if cur.rowcount == 0:
                         raise ValueError(f"事件坑已满（{active_slot_count(conn)}/"
                                          f"{MAX_ACTIVE_SLOTS}），需先 close-slot 释放")
@@ -247,8 +256,9 @@ class SleeveOpener:
                         if has_open_pos:
                             in_active_slot = conn.execute(
                                 "SELECT 1 FROM event_slots es JOIN event_slot_members m "
-                                "ON m.event_key=es.event_key WHERE m.stock=? AND es.status IN "
-                                "('open','partial')", (s,)).fetchone()
+                                "ON m.event_key=es.event_key WHERE m.stock=? AND es.status "
+                                "IN ('open','partial','pending_order','pending_rejudge')",
+                                (s,)).fetchone()
                             if in_active_slot:
                                 raise ValueError(f"{s} 已在活跃事件槽中（同票多槽冲突），"
                                                  f"先 close-slot/迁移")
@@ -363,7 +373,8 @@ class SleeveOpener:
     # ---------- sleeve-fill ----------
 
     def fill_pending(self, event_key=None, open_prices=None, atr=None, skip_conditions=False,
-                     prev_close_map=None, high10_map=None, codes=None):
+                     prev_close_map=None, high10_map=None, codes=None,
+                     statuses=None, only_unordered=True):
         """pending 待成交单 → 按当日开盘价成交 + 挂三件套（成本保护/移动止损）。
 
         open_prices: {stock: 开盘价}；缺项触网取实时价的 open_price 字段。
@@ -374,13 +385,20 @@ class SleeveOpener:
         （shadow_log kind='fill_blocked'，槽保持 pending 下轮重试，禁静默裸奔）。
         R2/A1：槽级认领+成员扣款均为事务内条件 UPDATE + rowcount 判定——
         并发 fill/cancel 同槽时抢不到行即出局，杜绝双买入/双花。
+        v12 参数：statuses（默认 SLOT_LEGACY_FILL=open/partial——v12 挂单态不扫描）；
+        only_unordered（默认 True：排除 order_id 在列的挂单槽，sleeve-order-fill
+        以 statuses=('pending_order',), only_unordered=False 复用本函数成交）。
         """
         conn = self._conn()
         now = now_iso()
         summary = []
         try:
-            q = "SELECT * FROM event_slots WHERE fill_status='pending' AND status IN (?,?)"
-            args = list(SLOT_ACTIVE)
+            st = tuple(statuses or SLOT_LEGACY_FILL)
+            q = (f"SELECT * FROM event_slots WHERE fill_status='pending' AND status IN "
+                 f"({','.join('?' * len(st))})")
+            if only_unordered:
+                q += " AND COALESCE(order_id,'')=''"   # v12：挂单槽归 sleeve-order-fill
+            args = list(st)
             if event_key:
                 q += " AND event_key=?"
                 args.append(event_key)
@@ -711,16 +729,19 @@ class SleeveOpener:
                                 (event_key,)).fetchone()
             if not slot:
                 raise ValueError(f"事件槽 {event_key} 不存在")
-            if slot['status'] not in SLOT_ACTIVE:
-                raise ValueError(f"事件槽 {event_key} 状态 {slot['status']} 非 open/partial")
+            if slot['status'] not in SLOT_CLOSEABLE:
+                raise ValueError(f"事件槽 {event_key} 状态 {slot['status']} 不可关——"
+                                 f"open/partial 直接关；v12 挂单槽先 expire 转 "
+                                 f"pending_rejudge 再关（pending_order 不可跳级）")
             members = conn.execute("SELECT stock FROM event_slot_members WHERE event_key=?",
                                    (event_key,)).fetchall()
             with conn:
                 # M1.7/F3：槽认领=条件 UPDATE（状态守卫进事务）——抢不到=已被并发处理
                 cur = conn.execute(
                     "UPDATE event_slots SET status='closed', closed_at=?, "
-                    "note=COALESCE(note,'')||? WHERE event_key=? AND status IN (?,?)",
-                    (now, f" [close-slot:{reason}]", event_key, SLOT_ACTIVE[0], SLOT_ACTIVE[1]))
+                    "note=COALESCE(note,'')||? WHERE event_key=? AND status IN (?,?,?)",
+                    (now, f" [close-slot:{reason}]", event_key,
+                     SLOT_CLOSEABLE[0], SLOT_CLOSEABLE[1], SLOT_CLOSEABLE[2]))
                 if cur.rowcount == 0:
                     raise ValueError(f"事件槽 {event_key} 已被并发处理（状态 {slot['status']}），"
                                      f"不能重复 close-slot")

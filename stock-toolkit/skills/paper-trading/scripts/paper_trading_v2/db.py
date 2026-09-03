@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 10  # 与 migrate_db 实际最高版同步（v10: v11 池模型列，2026-09-02）
+SCHEMA_VERSION = 11  # 与 migrate_db 实际最高版同步（v11: v12 消息挂单列，2026-09-03）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -200,6 +200,11 @@ CREATE TABLE IF NOT EXISTS event_slots (
     migrated_stock TEXT,
     fill_status TEXT DEFAULT 'pending',    -- 待成交单：pending/filled/cancelled
     fill_at TEXT,
+    band_min REAL,                         -- v12 挂单带下沿（0.95×anchor；NULL=未挂单）
+    band_max REAL,                         -- v12 挂单带上沿（1.05×anchor）
+    anchor_price REAL,                     -- v12 锚=事件入库时刻价快照（watch_scan payload）
+    order_ttl TEXT,                        -- v12 挂单到期（ISO；=挂单时刻后第一个交易节收盘）
+    order_id TEXT,                         -- v12 挂单标识（order:<event_key>:<epoch>）
     note TEXT
 );
 
@@ -568,6 +573,25 @@ def migrate_db(conn: sqlite3.Connection):
                         if 'duplicate column' not in str(e).lower():
                             raise
         conn.execute("UPDATE schema_meta SET version=10")
+        conn.commit()
+    if current < 11:
+        # v11: v12 消息挂单链路（plans/v12-news-order-20260903）event_slots 挂单列——
+        # band_min/band_max/anchor_price（成交带 = [0.95,1.05]×事件入库时刻价锚）、
+        # order_ttl（挂单到期=下一节收盘）、order_id（挂单标识）。
+        # 只加列零行改写；存量行默认 NULL=未挂单（兼容旧 pending/filled 槽）。
+        # SCHEMA_DDL 同步新库建表；此处 ALTER 覆盖存量库（duplicate column 幂等）。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(event_slots)").fetchall()]
+        if cols:  # 合成 schema 容错：无 event_slots 表（最小库）→ 无处加列，只推版本号
+            for col, decl in (('band_min', 'REAL'), ('band_max', 'REAL'),
+                              ('anchor_price', 'REAL'), ('order_ttl', 'TEXT'),
+                              ('order_id', 'TEXT')):
+                if col not in cols:
+                    try:
+                        conn.execute(f"ALTER TABLE event_slots ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError as e:
+                        if 'duplicate column' not in str(e).lower():
+                            raise
+        conn.execute("UPDATE schema_meta SET version=11")
         conn.commit()
 
 

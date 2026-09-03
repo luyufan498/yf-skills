@@ -1,9 +1,12 @@
 """sleeve 槽与影子账共享工具（sleeve-m1，方案 2.2/2.7/3.7）
 
-槽状态机（唯一状态机，方案 3.7）：open / partial / migrated / closed / archived
-- 槽占用（20 事件坑计数）= status ∈ (open, partial) 的行数
-  （方案 2.2 的占用元组含 migrated，但 2.3"事件坑随之释放（槽数-1）"与 2.5"活跃计数"
-   更具体——按 2.3 执行：migrated 不占坑。偏差已记录于 M1 报告。）
+槽状态机（唯一状态机，方案 3.7 + v12 挂单扩展）：
+open / partial / migrated / closed / archived
++ v12 消息挂单链（plans/v12-news-order-20260903）：
+  pending_order（挂单中：band=[0.95,1.05]×anchor_price，order_ttl 到期弃单）
+  pending_rejudge（弃单/破带后等待重判：预算冻结保留，不关槽不清坑）
+- 槽占用（20 事件坑计数）= status ∈ SLOT_ACTIVE 的行数；v12 两个挂单态占坑保预算
+  （契约洞2/洞3：弃单只转 pending_rejudge，关槽只发生在"重判不值得"）
 - 成员部分退出（TP1 卖 1/3）→ 槽 partial 仍占坑；全部成员持仓清零 → closed 释放
 - budget 对账：event_slots.realized 累计成员已实现盈亏；未实现=成员持仓市值
 
@@ -13,8 +16,15 @@ import json
 import sqlite3
 from datetime import datetime
 
-# 活跃槽状态（占坑口径）
-SLOT_ACTIVE = ('open', 'partial')
+# 活跃槽状态（占坑口径）。v12：pending_order/pending_rejudge 加入——挂单中弃单待重判
+# 均占坑保预算（槽生命周期与挂单 TTL 分离）。消费点影响面（9/3 审计）：
+# - slot_lifecycle 的 `elif still_holding and len< len(members)` 分支对挂单态不会误转
+#   partial（挂单/弃单期成员 qty=0 → 走 else 保持原态）；
+# - watchlist._news_guards 的字面量 IN('open','partial','migrated') 不含挂单态——
+#   NEWS 行已 active 时 watchlist-add 只走 UPDATE 复挂键路径（不建新槽不建段，槽唯一
+#   入口仍是 sleeve-open，无资金/状态副作用），留待主代理裁决是否收紧（不改他模块）；
+# - sleeve_migrate 迁移资格只认 open/partial——挂单槽（无持仓）本不可迁移，收紧正确。
+SLOT_ACTIVE = ('open', 'partial', 'pending_order', 'pending_rejudge')
 
 NEWS_KINDS = ('price_cycle', 'policy', 'earnings', 'company_event',
               'tech_catalyst', 'sentiment', 'other')
@@ -39,10 +49,11 @@ def shadow_write(conn: sqlite3.Connection, kind: str, key, payload: dict,
 
 
 def active_slot_count(conn) -> int:
-    """20 事件坑计数器 = event_slots 活跃行数（与主池 20 段位上限并存互不侵占）。"""
+    """20 事件坑计数器 = event_slots 活跃行数（与主池 20 段位上限并存互不侵占）。
+    v12：SLOT_ACTIVE 4 态，占位符动态生成。"""
     return conn.execute(
-        "SELECT COUNT(*) FROM event_slots WHERE status IN (?,?)",
-        SLOT_ACTIVE).fetchone()[0]
+        f"SELECT COUNT(*) FROM event_slots WHERE status IN "
+        f"({','.join('?' * len(SLOT_ACTIVE))})", SLOT_ACTIVE).fetchone()[0]
 
 
 def get_slot(conn, event_key):

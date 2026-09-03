@@ -754,6 +754,121 @@ def sleeve_close_slot(
         raise typer.Exit(1)
 
 
+# ============ v12 消息挂单命令组（sleeve-order-*，plans/v12-news-order-20260903） ============
+
+@app.command("sleeve-order-place")
+def sleeve_order_place(
+    event_key: str = typer.Argument(..., help="已开槽的 G3 事件键（槽须 open 态）"),
+    anchor: float = typer.Option(..., "--anchor",
+                                 help="锚价=事件入库(created_at)时刻价格快照（watch_scan payload）"),
+    ttl: str = typer.Option(..., "--ttl",
+                            help="挂单到期 ISO 时刻=挂单后第一个交易节收盘（11:30/15:00 先到）"),
+    reason: str = typer.Option("", "--reason", help="挂单依据（审计）"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """挂单（开槽后）：band=[0.95,1.05]×anchor，槽 open → pending_order，资金零挪动
+    （专用心跳消费 NEWS_CANDIDATE → sleeve-open → 本命令）"""
+    from paper_trading_v2.sleeve_order import SleeveOrder
+    try:
+        r = SleeveOrder().place(event_key, anchor, ttl, source=source, reason=reason)
+        typer.echo(f"✅ 挂单 {r['order_id']}：带 [{r['band_min']}, {r['band_max']}]"
+                   f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-order-fill")
+def sleeve_order_fill(
+    slot_id: str = typer.Argument(..., help="槽 id（event_key）"),
+    price: float = typer.Option(..., "--price", help="心跳检测价（触带即成交，裁决 2）"),
+    atr: Optional[str] = typer.Option(None, "--atr",
+                                      help="ATR 注入 股票=ATR 或标量（缺省触网算）"),
+    skip_conditions: bool = typer.Option(False, "--skip-conditions",
+                                         help="跳过挂三件套（不推荐）"),
+):
+    """检测价触带成交（专用心跳每拍：现价进带调用）→ 复用 sleeve-fill 成交逻辑建成员段
+    （fail-closed：带外/脏价/TTL 已过/槽态不符 → 拒绝且不建段）"""
+    from paper_trading_v2.sleeve_order import SleeveOrder
+
+    atr_arg = None
+    if atr:
+        atr_arg = {k.strip(): float(v) for k, v in [atr.split('=', 1)]} \
+            if '=' in atr else float(atr)
+    try:
+        r = SleeveOrder().fill(slot_id, price, atr=atr_arg,
+                               skip_conditions=skip_conditions)
+        if r['fill_price'] is not None:
+            for f in r['filled']:
+                typer.echo(f"✅ {slot_id} {f['stock']} 检测价 ¥{r['fill_price']} 买 "
+                           f"{f.get('qty', '-')} 股" +
+                           (f" = ¥{f['amount']:,.0f}" if 'amount' in f else f"（{f.get('note','')}）"))
+            typer.echo(f"   槽 {slot_id} → {r['status']}（成员段+三件套已建）")
+        else:
+            for st, why in r['skipped']:
+                typer.echo(f"⏭ {slot_id} {st} 未成交：{why}", err=True)
+            raise typer.Exit(1)
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-order-expire")
+def sleeve_order_expire(
+    slot_id: str = typer.Argument(..., help="槽 id（event_key）"),
+    reason: str = typer.Option("expired", "--reason",
+                               help="expired=TTL 到期（需 order_ttl 确已过）| band_break=现价破带"),
+    due_batch: bool = typer.Option(False, "--due-batch",
+                                   help="批量：全部 TTL 已过的挂单槽一键弃单（心跳用）"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """弃单：pending_order → pending_rejudge（预算冻结保留，不关槽不回款——
+    槽生命周期与挂单 TTL 分离；重判由 NEWS_REJUDGE 事件消费）"""
+    from paper_trading_v2.sleeve_order import SleeveOrder
+    try:
+        if due_batch:
+            done = SleeveOrder().expire_due(source=source)
+            typer.echo(f"✅ TTL 到期批量弃单 {len(done)} 槽：{done}" if done
+                       else "IDLE（无 TTL 已过挂单）")
+            return
+        r = SleeveOrder().expire(slot_id, reason=reason, source=source)
+        typer.echo(f"✅ 弃单 {slot_id}（{reason}）→ pending_rejudge，"
+                   f"预算 ¥{r['budget_held']:,.0f} 冻结保留")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("sleeve-order-rejudge")
+def sleeve_order_rejudge(
+    slot_id: str = typer.Argument(..., help="槽 id（event_key，须 pending_rejudge 态）"),
+    keep: bool = typer.Option(False, "--keep/--no-keep",
+                              help="值得：刷新 band 重挂（新 anchor=当时现价）"),
+    close: bool = typer.Option(False, "--close/--no-close",
+                               help="不值得/事件过期：关槽回款+NEWS 信号行清理"),
+    anchor: Optional[float] = typer.Option(None, "--anchor",
+                                           help="当时现价（缺省触网取首成员实时价）"),
+    ttl: Optional[str] = typer.Option(None, "--ttl", help="新挂单到期 ISO（--keep 必传）"),
+    reason: str = typer.Option("", "--reason", help="轻量闸审结论（newsdb 新鲜度+G1-G4）"),
+    source: str = typer.Option("agent", "--source"),
+):
+    """重判消费（NEWS_REJUDGE）：keep=新 anchor 刷带重挂回 pending_order；
+    close=复用 close-slot 关槽回款 + 信号行档案化（回池要新证据，方案 2.6b）"""
+    from paper_trading_v2.sleeve_order import SleeveOrder
+    try:
+        r = SleeveOrder().rejudge(slot_id, keep=keep, close=close, anchor=anchor,
+                                  ttl=ttl, reason=reason, source=source)
+        if r['action'] == 'close':
+            typer.echo(f"✅ 重判关槽 {slot_id}：回款 ¥{r['refund']:,.0f}，"
+                       f"信号行已清理（槽 closed 坑释放）")
+        else:
+            typer.echo(f"✅ 重判重挂 {slot_id}：新带 [{r['band_min']}, {r['band_max']}]"
+                       f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order")
+    except ValueError as e:
+        typer.echo(f"❌ {e}", err=True)
+        raise typer.Exit(1)
+
+
 # ============ 交易命令组（minimal，委托 PaperTrader v2） ============
 
 @app.command("init")

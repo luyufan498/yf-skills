@@ -300,9 +300,10 @@ def test_monitor_stale_check_enabled(db_path, tmp_path, monkeypatch):
     from news_database import storage
 
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯")
+    storage.upsert_stock(conn, "601127.SH", "赛力斯", is_watchlist=1)
     eid = storage.create_event(conn, "赛力斯新款发布")
     storage.link_event_stock(conn, eid, "601127.SH")  # 新关联 → 非空置
+    storage.add_message(conn, eid, "新款发布快讯")  # 口径=messages 最近关联
     conn.close()
     out = _run_monitor(monkeypatch, db_path, tmp_path / "no_such_tasks.db",
                        env={"NEWS_COLLECT_STALE_CHECK": "1"})
@@ -315,11 +316,11 @@ def test_monitor_stale_check_enabled_detects_vacant(db_path, tmp_path, monkeypat
     from news_database import storage
 
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "600519.SH", "贵州茅台")
+    storage.upsert_stock(conn, "600519.SH", "贵州茅台", is_watchlist=1)
     conn.close()
     out = _run_monitor(monkeypatch, db_path, tmp_path / "no_such_tasks.db",
                        env={"NEWS_COLLECT_STALE_CHECK": "1"})
-    assert "[STALE] 空置候选 1 只" in out
+    assert "[STALE] 空置候选 1 只（名单更新）" in out
 
 
 def test_monitor_stale_check_enabled_mixed(db_path, tmp_path, monkeypatch):
@@ -329,8 +330,8 @@ def test_monitor_stale_check_enabled_mixed(db_path, tmp_path, monkeypatch):
     from news_database import storage
 
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯")
-    storage.upsert_stock(conn, "600519.SH", "贵州茅台")
+    storage.upsert_stock(conn, "601127.SH", "赛力斯", is_watchlist=1)
+    storage.upsert_stock(conn, "600519.SH", "贵州茅台", is_watchlist=1)
     eid = storage.create_event(conn, "赛力斯新款发布")
     storage.link_event_stock(conn, eid, "601127.SH")
     storage.add_message(conn, eid, "新款发布快讯")  # fetched_at=今天 → 赛力斯非空置
@@ -340,7 +341,7 @@ def test_monitor_stale_check_enabled_mixed(db_path, tmp_path, monkeypatch):
     out = _run_monitor(monkeypatch, db_path, tmp_path / "no_such_tasks.db",
                        env={"NEWS_COLLECT_STALE_CHECK": "1"})
     # 赛力斯今天有关联 → 非空置；茅台零关联 → 空置
-    assert "[STALE] 空置候选 1 只" in out
+    assert "[STALE] 空置候选 1 只（名单更新）" in out
 
 
 def test_monitor_creates_table_idempotently(db_path, tmp_path, monkeypatch):

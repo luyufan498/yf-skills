@@ -9,13 +9,23 @@ DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
 TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
-         "NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE"]
+         "NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE",
+         # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
+         # COLLECT 独立新增（不复用 REFRESH——REFRESH 已定归 C2/msg-watch，
+         # 复用会翻转 v12 归属矩阵；REFRESH 退役路径在迁移 M2 处理）
+         "COLLECT"]
 STATUSES = ["pending", "processing", "done", "failed"]
 
 # v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='msg-watch'）可认领；
 # 存量类型不在本集合内 → 不校验（向后兼容，晨审/旧心跳照常 claim）。
 NEWS_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
 NEWS_CONSUMER = "msg-watch"
+
+# M1 claim 硬门扩展（news-collect 心跳 v2 方案 §5）：COLLECT 仅专用心跳
+# （consumer='news-collect'，与 job 名一致）可认领；存量类型不校验（不动
+# msg-watch 既有逻辑，只加 COLLECT 分支）。
+COLLECT_TYPES = ("COLLECT",)
+COLLECT_CONSUMER = "news-collect"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
@@ -80,9 +90,10 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
 
     v12 claim 硬门：news 三类型（NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE）仅
     consumer='msg-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
-    缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。存量类型不校验（向后
-    兼容：晨审/旧心跳无 --consumer 照常 claim）。consumer 传入时写进 payload
-    （claimed_by）供审计。
+    缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。M1 扩展（news-collect
+    心跳 v2 方案 §5）：COLLECT 仅 consumer='news-collect' 可认领，规则同构。
+    存量类型不校验（向后兼容：晨审/旧心跳无 --consumer 照常 claim）。consumer
+    传入时写进 payload（claimed_by）供审计。
     """
     conn = connect()
     try:
@@ -96,6 +107,12 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
                 f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=msg-watch"
                 f"（专用心跳 stock-msg-watch）；当前 consumer={who}。"
                 f"旧心跳/晨审请跳过 NEWS_* 类型（review 修订#5：唯一消费者保证）")
+        if row["type"] in COLLECT_TYPES and consumer != COLLECT_CONSUMER:
+            who = consumer or "(未提供 --consumer)"
+            raise PermissionError(
+                f"#{task_id} [{row['type']}] 属采集任务链路，唯一消费者={COLLECT_CONSUMER}"
+                f"（专用心跳 news-collect）；当前 consumer={who}。"
+                f"存量消费者请跳过 COLLECT 类型（唯一消费者保证）")
         cur = conn.execute(
             "UPDATE task_events SET status='processing', claimed_at=datetime('now','localtime') "
             "WHERE id=? AND status='pending'",

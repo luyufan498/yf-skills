@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""news-collect 心跳 monitor（M0 空跑观察版，方案 §4 三查）。
+"""news-collect 心跳 monitor（M1 版，方案 §4 三查）。
 
 每拍输出（心跳 agent 按输出变化唤醒，无变化=IDLE 睡眠，字节稳定语义）：
   a) task_schedule 到期行（T1-T4）：[COLLECT-DUE] <task_id> 上次 <last_run_at or never> ttl=<h>
   b) tasks.db pending COLLECT 事件数：[COLLECT-INJECT] pending N
   c) T5 空置候选（默认关闭，NEWS_COLLECT_STALE_CHECK=1 才启用）：
-     [STALE] 空置候选 N 只（最长 M 天），N=0 不输出。
-     M0 默认关闭：池内 88 只全算会长期 N>0 → 每拍变字节 → 空跑 IDLE 不稳。
+     集合签名字节稳定（newsdb kv last_stale_sig）：候选**集合无变化**输出固定行
+     "[STALE] 空置候选 N 只"（字节不变）；**集合变化**才输出新行（含最长天数/
+     名单更新）；N=0 输出空。
 
 无任何到期/注入/空置输出 → "IDLE"。
 
-生产库只读约束：newsdb 侧仅 ensure_table 幂等建表（新表 task_schedule，
-不触碰 scan_log）；tasks.db 侧仅 SELECT（COLLECT 类型 M0 未登记白名单，
-查 task_events 有无 type='COLLECT' AND status='pending' 行，表不存在=0）。
+生产库只读约束：newsdb 侧仅幂等建表（task_schedule/stale_check_log/kv_store，
+不触碰 scan_log）；tasks.db 侧仅 SELECT（查 task_events 有无
+type='COLLECT' AND status='pending' 行，表不存在=0）。
 
 用法（cron 或手动）：
   python3 news_collect_monitor.py            # 读 STOCK_NEWS_DB / STOCK_TASKS_DB
@@ -21,7 +22,7 @@
 import os
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 # 让脚本可从任意 cwd 直接运行（scripts/ 下找 news_database 包）
@@ -83,33 +84,19 @@ def query_collect_inject(tasks_db_path: Path, now: datetime) -> list[str]:
 def query_stale_candidates(conn: sqlite3.Connection, now: datetime) -> list[str]:
     """查 c) T5 空置候选 → 输出行（仅 NEWS_COLLECT_STALE_CHECK=1 时被 main 调用）。
 
-    输出 [STALE] 空置候选 N 只（最长 M 天）；N=0 不输出（无变化）。
-    候选=池内股（stocks 表）近 STALE_DAYS 天无任何关联内容
-    （event_stock 关联事件的最新 fetched_at/started_at 早于 7 天前或缺失）。
+    M1 起（方案 §4 查 c + 任务定案）：候选**集合签名**存 newsdb kv
+    （last_stale_sig）——集合无变化输出固定行（含 N，字节不变），集合变化
+    才变字节（含最长天数/名单更新标记）；N=0 输出空。彻底解决 M0 担忧
+    （88 只全算长期 N>0 → 每拍变字节）。
+    候选判定走 news_collector.stale_candidates（口径=watchlist 股近 7 天
+    零 messages 关联），输出行由 stale_line 统一生成。
     """
-    cutoff = _fmt_dt(now - timedelta(days=STALE_DAYS))
-    rows = conn.execute(
-        """
-        SELECT s.code, s.name,
-               MAX(COALESCE(m.fetched_at, e.started_at)) AS last_related
-        FROM stocks s
-        LEFT JOIN event_stock es ON es.stock_code = s.code
-        LEFT JOIN events e ON e.id = es.event_id
-        LEFT JOIN messages m ON m.event_id = e.id
-        GROUP BY s.code, s.name
-        HAVING last_related IS NULL OR last_related < ?
-        """,
-        (cutoff,),
-    ).fetchall()
-    if not rows:
-        return []
-    related = [r["last_related"] for r in rows if r["last_related"]]
-    if related:
-        oldest = min(related)
-        days = int((now - datetime.strptime(oldest, "%Y-%m-%d %H:%M:%S")).days)
-        return [f"[STALE] 空置候选 {len(rows)} 只（最长 {days} 天）"]
-    # 全部零关联（从未有任何内容映射）：最长天数无意义，省略
-    return [f"[STALE] 空置候选 {len(rows)} 只"]
+    from news_database import news_collector as nc
+    from news_database import task_schedule as ts
+
+    candidates = nc.stale_candidates(
+        conn, days=STALE_DAYS, now=_fmt_dt(now))
+    return nc.stale_line(candidates, conn, enabled=ts.stale_check_enabled())
 
 
 def main() -> int:

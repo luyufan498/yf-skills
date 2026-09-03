@@ -146,6 +146,23 @@ CREATE TABLE IF NOT EXISTS task_schedule (
     last_result TEXT                  -- 上次轮次摘要
 );
 
+-- stale_check_log（2026-09-03 M1，方案 §2.B/§3：T5 空置探索检查留痕）。
+-- T5 不建逐股状态行（§3：派生查询即候选清单）；本表只记"翻过谁/何时/翻到否"，
+-- 供"连续 2 轮（14 天）翻不到→上报用户"判定（M3）。code PK，重复检查覆盖。
+CREATE TABLE IF NOT EXISTS stale_check_log (
+    code         TEXT PRIMARY KEY,    -- 股票代码（600519.SH）
+    last_checked TEXT NOT NULL,       -- 最近一次专门翻它的时间（datetime('now','localtime')）
+    result       TEXT                 -- 轮次摘要（如 'found:xx' / 'vacant'）
+);
+
+-- kv_store（M1）：newsdb 侧轻量状态（monitor stale 输出签名 last_stale_sig 等）。
+-- 与 task-bus 的 kv_store 同构但独立（两库不依赖彼此存在）。
+CREATE TABLE IF NOT EXISTS kv_store (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- 注意：messages_fts 是独立表，写入 messages 时必须同步插入（rowid = messages.id），否则搜索静默漂移
 -- FTS5 全文索引（trigram 支持中文子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(

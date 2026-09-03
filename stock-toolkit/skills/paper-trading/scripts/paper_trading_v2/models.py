@@ -63,6 +63,10 @@ class StockInfo(BaseModel):
     class Config:
         use_enum_values = True
         json_encoders = {datetime: lambda v: v.isoformat()}
+        # pydantic v2 默认 alias 生效时禁止字段名填充：price_fetcher 全部用
+        # open_price= 关键字构造 → 被当 extra 静默丢弃，open_price 恒 None
+        # （sleeve-fill 全员误判"无开盘价停牌顺延"的根因，2026-09-03 修复）
+        populate_by_name = True
 
 
 class CapitalPool(BaseModel):

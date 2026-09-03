@@ -75,11 +75,37 @@ def _open(ws, stock='测试票', budget=100000, key='ND#900'):
     return key
 
 
-def _place(ws, key='ND#900', anchor=10.0, ttl_min=60):
+def _quote(px=10.0, high=None, low=None, pre_close=10.0, volume='100000'):
+    """E3 行情防线后的 fill 测试件：新鲜带内快照（可变造一字板/停牌）。"""
+    from paper_trading_v2.models import StockInfo
+    now = datetime.now()
+    return StockInfo(code='sh600000', name='测试票', current_price=px,
+                     pre_close=pre_close, open_price=px,
+                     high=high if high is not None else px + 0.2,
+                     low=low if low is not None else px - 0.2, volume=volume,
+                     date=now.strftime('%Y-%m-%d'), time=now.strftime('%H:%M:%S'),
+                     source='tencent')
+
+
+def _set_ttl(ws, key='ND#900', dt=None):
+    """直改槽 order_ttl（E5 起 place 只收未来交易节收盘，过期场景走 DB 改写模拟）。"""
+    c = _conn(ws)
+    with c:
+        c.execute("UPDATE event_slots SET order_ttl=? WHERE event_key=?",
+                  (_iso(dt), key))
+    c.close()
+
+
+def _place(ws, key='ND#900', anchor=10.0, ttl_min=None):
+    """挂单：ttl=next_session_close（E5 TTL 真源）；ttl_min 非 None → 挂单后把
+    order_ttl 直改到过去（模拟"挂了但已到期"，expire 测试前置）。"""
     from paper_trading_v2.cli import app
-    ttl = _iso(datetime.now() + timedelta(minutes=ttl_min))
+    from paper_trading_v2.sleeve_order import next_session_close
+    ttl = next_session_close().isoformat(timespec='seconds')
     r = _run(app, 'sleeve-order-place', key, '--anchor', anchor, '--ttl', ttl)
     assert r.exit_code == 0, r.output
+    if ttl_min is not None:
+        _set_ttl(ws, key, datetime.now() + timedelta(minutes=ttl_min))
     return ttl
 
 
@@ -176,13 +202,14 @@ def test_place_sets_band_and_pending_order(pools, env):
 
 def test_place_rejects_bad_anchor_and_double_place(pools, env):
     from paper_trading_v2.cli import app
+    from paper_trading_v2.sleeve_order import next_session_close
     _open(env)
     r = _run(app, 'sleeve-order-place', 'ND#900', '--anchor', '0',
              '--ttl', _iso(datetime.now() + timedelta(minutes=60)))
     assert r.exit_code == 1
     _place(env, anchor=10.0)
     r = _run(app, 'sleeve-order-place', 'ND#900', '--anchor', '11.0',
-             '--ttl', _iso(datetime.now() + timedelta(minutes=60)))
+             '--ttl', next_session_close().isoformat(timespec='seconds'))
     assert r.exit_code == 1                       # 已挂单不得重复挂
     assert _slot(env)['anchor_price'] == pytest.approx(10.0)
 
@@ -194,7 +221,9 @@ def test_fill_low_band_boundary_creates_member_position(pools, env):
     from paper_trading_v2.cli import app
     _open(env)
     _place(env, anchor=10.0)
-    r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '9.5', '--atr', '0.5')
+    with patch('paper_trading_v2.sleeve_order.SleeveOrder._fetch_quote',
+               return_value=_quote(px=9.5)):
+        r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '9.5', '--atr', '0.5')
     assert r.exit_code == 0, r.output
     tr = _trades(env)
     assert len(tr) == 1 and tr[0]['operation'] == 'buy'
@@ -219,7 +248,9 @@ def test_fill_high_band_boundary_inclusive(pools, env):
     from paper_trading_v2.cli import app
     _open(env)
     _place(env, anchor=10.0)
-    r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '10.5', '--atr', '0.5')
+    with patch('paper_trading_v2.sleeve_order.SleeveOrder._fetch_quote',
+               return_value=_quote(px=10.5)):
+        r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '10.5', '--atr', '0.5')
     assert r.exit_code == 0, r.output
     assert len(_trades(env)) == 1
 
@@ -293,10 +324,13 @@ def test_expire_expired_preserves_budget_slot_and_slot_count(pools, env):
 
 
 def test_expire_band_break_allowed_while_ttl_live(pools, env):
+    """E9：band_break 核价通过（现价 9.3 < band_min 9.5）——破带证据在位才允许弃单。"""
     from paper_trading_v2.cli import app
     _open(env)
-    _place(env, anchor=10.0, ttl_min=60)
-    r = _run(app, 'sleeve-order-expire', 'ND#900', '--reason', 'band_break')
+    _place(env, anchor=10.0)
+    with patch('paper_trading_v2.sleeve_order.SleeveOrder._fetch_quote',
+               return_value=_quote(px=9.3)):
+        r = _run(app, 'sleeve-order-expire', 'ND#900', '--reason', 'band_break')
     assert r.exit_code == 0, r.output
     assert _slot(env)['status'] == 'pending_rejudge'
 
@@ -327,26 +361,29 @@ def test_expire_due_batch(pools, env):
 # ============ rejudge：keep 刷新重挂 / close 关槽回款 ============
 
 def test_rejudge_keep_refreshes_band_and_replaces(pools, env):
-    """keep：当时现价为新 anchor 刷新 band，槽回 pending_order，旧带作废。"""
+    """keep：带内新锚（-4%，E4 漂移帽内）刷新 band，槽回 pending_order，旧带作废。"""
     from paper_trading_v2.cli import app
+    from paper_trading_v2.sleeve_order import next_session_close
     _open(env)
     _place(env, anchor=10.0, ttl_min=-5)
     r = _run(app, 'sleeve-order-expire', 'ND#900', '--reason', 'expired')
     assert r.exit_code == 0
-    new_ttl = _iso(datetime.now() + timedelta(minutes=90))
+    new_ttl = next_session_close().isoformat(timespec='seconds')
     r = _run(app, 'sleeve-order-rejudge', 'ND#900', '--keep',
-             '--anchor', '12.0', '--ttl', new_ttl)
+             '--anchor', '9.6', '--ttl', new_ttl)
     assert r.exit_code == 0, r.output
     s = _slot(env)
     assert s['status'] == 'pending_order'
-    assert s['band_min'] == pytest.approx(11.4)
-    assert s['band_max'] == pytest.approx(12.6)
-    assert s['anchor_price'] == pytest.approx(12.0)
+    assert s['band_min'] == pytest.approx(9.12)
+    assert s['band_max'] == pytest.approx(10.08)
+    assert s['anchor_price'] == pytest.approx(9.6)
     assert s['order_ttl'] == new_ttl
-    # 旧带价已不可成交，新带 12.6 边界可成交
+    # 旧带价已不可成交（10.5 在新带 [9.12,10.08] 外）；新带 10.08 边界可成交
     r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '10.5', '--atr', '0.5')
     assert r.exit_code == 1 and _trades(env) == []
-    r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '12.6', '--atr', '0.5')
+    with patch('paper_trading_v2.sleeve_order.SleeveOrder._fetch_quote',
+               return_value=_quote(px=10.08)):
+        r = _run(app, 'sleeve-order-fill', 'ND#900', '--price', '10.08', '--atr', '0.5')
     assert r.exit_code == 0, r.output
     assert len(_trades(env)) == 1
 

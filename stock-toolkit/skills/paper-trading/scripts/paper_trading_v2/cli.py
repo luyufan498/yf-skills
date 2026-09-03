@@ -788,7 +788,8 @@ def sleeve_order_fill(
                                          help="跳过挂三件套（不推荐）"),
 ):
     """检测价触带成交（专用心跳每拍：现价进带调用）→ 复用 sleeve-fill 成交逻辑建成员段
-    （fail-closed：带外/脏价/TTL 已过/槽态不符 → 拒绝且不建段）"""
+    （fail-closed：带外/脏价/TTL 已过/槽态不符/E3 行情防线 → 拒绝且不建段；
+    多成员槽按各成员自己的现价分价成交——E11）"""
     from paper_trading_v2.sleeve_order import SleeveOrder
 
     atr_arg = None
@@ -798,9 +799,11 @@ def sleeve_order_fill(
     try:
         r = SleeveOrder().fill(slot_id, price, atr=atr_arg,
                                skip_conditions=skip_conditions)
-        if r['fill_price'] is not None:
+        if r['filled'] and not r['skipped']:
+            fp = r.get('fill_prices') or {}
             for f in r['filled']:
-                typer.echo(f"✅ {slot_id} {f['stock']} 检测价 ¥{r['fill_price']} 买 "
+                px = f.get('price', fp.get(f['stock'], r['fill_price']))
+                typer.echo(f"✅ {slot_id} {f['stock']} 检测价 ¥{px} 买 "
                            f"{f.get('qty', '-')} 股" +
                            (f" = ¥{f['amount']:,.0f}" if 'amount' in f else f"（{f.get('note','')}）"))
             typer.echo(f"   槽 {slot_id} → {r['status']}（成员段+三件套已建）")
@@ -859,7 +862,8 @@ def sleeve_order_rejudge(
         r = SleeveOrder().rejudge(slot_id, keep=keep, close=close, anchor=anchor,
                                   ttl=ttl, reason=reason, source=source)
         if r['action'] == 'close':
-            typer.echo(f"✅ 重判关槽 {slot_id}：回款 ¥{r['refund']:,.0f}，"
+            forced = '（重判超限强制关槽）' if r.get('forced') else ''
+            typer.echo(f"✅ 重判关槽 {slot_id}{forced}：回款 ¥{r['refund']:,.0f}，"
                        f"信号行已清理（槽 closed 坑释放）")
         else:
             typer.echo(f"✅ 重判重挂 {slot_id}：新带 [{r['band_min']}, {r['band_max']}]"

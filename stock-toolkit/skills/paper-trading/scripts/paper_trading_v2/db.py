@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 11  # 与 migrate_db 实际最高版同步（v11: v12 消息挂单列，2026-09-03）
+SCHEMA_VERSION = 12  # 与 migrate_db 实际最高版同步（v12: v12-patch E4 rejudge_count，2026-09-03）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS event_slots (
     anchor_price REAL,                     -- v12 锚=事件入库时刻价快照（watch_scan payload）
     order_ttl TEXT,                        -- v12 挂单到期（ISO；=挂单时刻后第一个交易节收盘）
     order_id TEXT,                         -- v12 挂单标识（order:<event_key>:<epoch>）
+    rejudge_count INTEGER DEFAULT 0,       -- v12-patch/E4 重判 keep 次数（帽 2 次，超限强制 close）
     note TEXT
 );
 
@@ -592,6 +593,22 @@ def migrate_db(conn: sqlite3.Connection):
                         if 'duplicate column' not in str(e).lower():
                             raise
         conn.execute("UPDATE schema_meta SET version=11")
+        conn.commit()
+    if current < 12:
+        # v12: v12-patch 补洞轮（E4）event_slots.rejudge_count——重判 keep 次数帽
+        # （keep ≤2 次，超限强制 close，防"弃单→重挂→再弃单"无限循环永久冻结预算坑）。
+        # 只加列零行改写；存量行默认 0=从未重判（兼容旧 pending/filled 槽）。
+        # SCHEMA_DDL 同步新库建表；此处 ALTER 覆盖存量库（duplicate column 幂等）。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(event_slots)").fetchall()]
+        if cols:  # 合成 schema 容错：无 event_slots 表（最小库）→ 无处加列，只推版本号
+            if 'rejudge_count' not in cols:
+                try:
+                    conn.execute("ALTER TABLE event_slots "
+                                 "ADD COLUMN rejudge_count INTEGER DEFAULT 0")
+                except sqlite3.OperationalError as e:
+                    if 'duplicate column' not in str(e).lower():
+                        raise
+        conn.execute("UPDATE schema_meta SET version=12")
         conn.commit()
 
 

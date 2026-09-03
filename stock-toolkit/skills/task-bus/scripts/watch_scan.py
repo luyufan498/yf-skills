@@ -189,7 +189,7 @@ def _ensure_task_table():
 def check_tasks() -> list[dict]:
     """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。
 
-    v12：NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE 也不列——消息挂单三类型唯一消费者
+    v12：MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE 也不列——消息挂单三类型唯一消费者
     =专用心跳 msg-watch（claim 硬门见 task_bus/db.py），legacy 心跳只发现不消费，
     排除防止旧心跳被唤醒误 claim（prompt 热换前的双保险）。"""
     if not os.path.exists(TASKS_DB):
@@ -209,8 +209,8 @@ def check_tasks() -> list[dict]:
         return [dict(r) for r in conn.execute(
             "SELECT id, type, entity, priority, source FROM task_events "
             "WHERE status='pending' AND type NOT IN "
-            "('CALENDAR','L3_SNAPSHOT','NEWS_SNAPSHOT',"
-            "'NEWS_CANDIDATE','NEWS_ORDER','NEWS_REJUDGE') "
+            "('CALENDAR','L3_SNAPSHOT','MSG_SNAPSHOT',"
+            "'MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()
@@ -802,7 +802,7 @@ def check_sleeve_fill_event() -> list[str]:
 
 
 # ---------- 4.6 v12 消息挂单：news scope 检出（方案 v12-news-order-20260903） ----------
-NEWS_EVENT_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
+MSG_EVENT_TYPES = ("MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE")
 NEWS_IMPACT_MIN = 4          # 检出阈值：importance >= 4
 NEWS_MAX_AGE_HOURS = 24      # 入库新鲜度：events.created_at 起 24h 内
 NEWS_SCAN_STATE_KEY = "news_scan_state"   # kv: {"emitted": [event_key...]} 检出留痕（防 done 后复发）
@@ -846,7 +846,7 @@ def _news_event_codes(nconn: sqlite3.Connection, event_id: int) -> list[str]:
 
 
 def _news_already_emitted(event_key: str, emitted: set[str]) -> bool:
-    """检出留痕三查：taskbus 同键 NEWS_CANDIDATE / NEWS_ORDER 状态、kv emitted。
+    """检出留痕三查：taskbus 同键 MSG_CANDIDATE / MSG_ORDER 状态、kv emitted。
 
     v12-patch/E13：同 event_key 仅剩 failed 记录 → 放行重检重发（消费失败不该
     永久封死一条消息链路——fail 多为环境性：锚价取不到/消费端崩）；pending/
@@ -856,7 +856,7 @@ def _news_already_emitted(event_key: str, emitted: set[str]) -> bool:
     conn = sqlite3.connect(TASKS_DB)
     try:
         rows = conn.execute(
-            "SELECT status FROM task_events WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER') "
+            "SELECT status FROM task_events WHERE type IN ('MSG_CANDIDATE','MSG_ORDER') "
             "AND payload LIKE ?",
             (f'%"event_key": "{event_key}"%',)).fetchall()
     finally:
@@ -867,7 +867,7 @@ def _news_already_emitted(event_key: str, emitted: set[str]) -> bool:
 
 
 def check_news_events() -> list[str]:
-    """news scope 检出：newsdb 新事件 → NEWS_CANDIDATE 事件入 taskbus。
+    """news scope 检出：newsdb 新事件 → MSG_CANDIDATE 事件入 taskbus。
 
     判定（契约）：imp≥4、status=open、bullish 方向（事件下至少一条消息
     signal_direction='bullish'）、created_at（入库时刻真源）24h 内、
@@ -931,14 +931,14 @@ def check_news_events() -> list[str]:
             try:
                 cur = conn.execute(
                     "INSERT INTO task_events (type, entity, source, priority, payload) "
-                    "VALUES ('NEWS_CANDIDATE', ?, 'watch-scan-news', 1, ?)",
+                    "VALUES ('MSG_CANDIDATE', ?, 'watch-scan-news', 1, ?)",
                     (event_key, payload))
                 conn.commit()
                 tid = cur.lastrowid
             finally:
                 conn.close()
             new_emitted.append(event_key)
-            out.append(f"📰 NEWS_CANDIDATE #{tid} {event_key} imp={e['importance']} "
+            out.append(f"📰 MSG_CANDIDATE #{tid} {event_key} imp={e['importance']} "
                        f"锚¥{anchor:.2f}「{e['title'][:40]}」→ claim --consumer msg-watch")
     finally:
         nconn.close()
@@ -950,7 +950,7 @@ def check_news_events() -> list[str]:
 
 
 def news_pending_lines() -> list[str]:
-    """news scope 唤醒层：pending/processing 的 NEWS_* 事件持久列举（字节稳定，
+    """news scope 唤醒层：pending/processing 的 MSG_* 事件持久列举（字节稳定，
     同 [SLEEVE] 语义）——专用心跳每拍看到未清事件持续唤醒，直到消费/重判闭环。"""
     if not os.path.exists(TASKS_DB):
         return []
@@ -960,7 +960,7 @@ def news_pending_lines() -> list[str]:
     try:
         rows = conn.execute(
             "SELECT id, type, entity, priority, status FROM task_events "
-            "WHERE type IN ('NEWS_CANDIDATE','NEWS_ORDER','NEWS_REJUDGE') "
+            "WHERE type IN ('MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE') "
             "AND status IN ('pending','processing') "
             "ORDER BY priority ASC, id ASC LIMIT 30").fetchall()
     finally:
@@ -971,7 +971,7 @@ def news_pending_lines() -> list[str]:
 
 
 def run_news_scope() -> int:
-    """news scope 主流程（v12 专用心跳 monitor）：只检 newsdb 新事件 + 列 NEWS_*
+    """news scope 主流程（v12 专用心跳 monitor）：只检 newsdb 新事件 + 列 MSG_*
     待办。**静默** SLEEVE_FILL/[SLEEVE]（旧链路退役，legacy scope 原样保留可回滚）、
     静默价格条件/裸奔/异动/大盘等 legacy 检测——专用心跳只看 news 输出，防串唤醒。"""
     lines = []

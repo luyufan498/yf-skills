@@ -63,8 +63,8 @@ def claim_event(
     task_id: int = typer.Argument(..., help="事件 ID"),
     consumer: Optional[str] = typer.Option(
         None, "--consumer",
-        help="消费者标识（写入 payload.claimed_by 供审计）。NEWS_CANDIDATE/NEWS_ORDER/"
-             "NEWS_REJUDGE 三类必须传 'msg-watch'（专用心跳），COLLECT 必须传 "
+        help="消费者标识（写入 payload.claimed_by 供审计）。MSG_CANDIDATE/MSG_ORDER/"
+             "MSG_REJUDGE 三类必须传 'msg-watch'（专用心跳），COLLECT 必须传 "
              "'news-collect'（采集心跳），否则拒绝认领"),
 ):
     """原子认领事件（pending→processing）。已被认领返回失败。

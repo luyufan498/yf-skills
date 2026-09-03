@@ -128,7 +128,7 @@ class SleeveOrder:
             "claimed_at TEXT, done_at TEXT, note TEXT)")
 
     def _insert_rejudge_event(self, conn, slot, reason, now):
-        """E2：同事务 INSERT NEWS_REJUDGE（预算冻结坑的唯一唤醒通道——只转态不发事件
+        """E2：同事务 INSERT MSG_REJUDGE（预算冻结坑的唯一唤醒通道——只转态不发事件
         =坑永久冻结，E2 审计原文）。payload 带消费方（news-watch）重判全上下文。"""
         row = conn.execute(
             "SELECT p.code FROM event_slot_members m "
@@ -147,7 +147,7 @@ class SleeveOrder:
         }
         conn.execute(
             "INSERT INTO taskbus.task_events (type, entity, source, priority, payload) "
-            "VALUES ('NEWS_REJUDGE', ?, 'sleeve-order', 1, ?)",
+            "VALUES ('MSG_REJUDGE', ?, 'sleeve-order', 1, ?)",
             (slot['event_key'], json.dumps(payload, ensure_ascii=False)))
 
     # ---------- E3：行情快照与防线 ----------
@@ -395,7 +395,7 @@ class SleeveOrder:
         reason=band_break：现价破带即时弃单（不待 TTL）——E9 必须核价（复用 fill 同款
         取价）：现价 ≥ band_min → 拒（未破带不可弃单，只能 reason=expired）；
         现价确 < band_min 才允许；取不到价 fail-closed 拒。
-        E2：转 pending_rejudge 成功的同事务里向 tasks.db INSERT NEWS_REJUDGE
+        E2：转 pending_rejudge 成功的同事务里向 tasks.db INSERT MSG_REJUDGE
         （ATTACH 同连接同事务；只转态不发事件=预算坑永久冻结，E2 审计原文）。
         tasks.db 不可定位/写入失败 → 本事务回滚，弃单不落地（fail-closed，下拍重试）。
         """
@@ -489,7 +489,7 @@ class SleeveOrder:
 
     def rejudge(self, event_key, keep=False, close=False, anchor=None, ttl=None,
                 reason='', source='agent'):
-        """重判消费（NEWS_REJUDGE）：轻量闸审判定后落到这里执行。
+        """重判消费（MSG_REJUDGE）：轻量闸审判定后落到这里执行。
 
         keep=True：值得——以当时现价为新 anchor 刷新 band 重挂（回 pending_order，
         旧带作废；anchor 缺省触网取现价，取不到 fail-closed 拒），ttl 必传新到期；

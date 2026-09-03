@@ -376,12 +376,12 @@ def test_collect_claim_by_news_collect_ok(tasks_db):
 
 
 def test_legacy_types_claim_unaffected(tasks_db):
-    """存量类型（CANDIDATE/NEWS_CANDIDATE 硬门）行为不变：CANDIDATE 无 consumer 可认领。"""
+    """存量类型（CANDIDATE/MSG_CANDIDATE 硬门）行为不变：CANDIDATE 无 consumer 可认领。"""
     tid = tasks_db.add("CANDIDATE", "601127.SH")
     row = tasks_db.claim(tid, consumer=None)  # 存量不校验
     assert row is not None and row["status"] == "processing"
-    # NEWS_* 旧硬门仍在：非 msg-watch 拒绝
-    nid = tasks_db.add("NEWS_CANDIDATE", "601127.SH")
+    # MSG_* 旧硬门仍在：非 msg-watch 拒绝
+    nid = tasks_db.add("MSG_CANDIDATE", "601127.SH")
     with pytest.raises(PermissionError):
         tasks_db.claim(nid, consumer="news-collect")
     ok = tasks_db.claim(nid, consumer="msg-watch")

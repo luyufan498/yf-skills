@@ -767,7 +767,7 @@ def sleeve_order_place(
     source: str = typer.Option("agent", "--source"),
 ):
     """挂单（开槽后）：band=[0.95,1.05]×anchor，槽 open → pending_order，资金零挪动
-    （专用心跳消费 NEWS_CANDIDATE → sleeve-open → 本命令）"""
+    （专用心跳消费 MSG_CANDIDATE → sleeve-open → 本命令）"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:
         r = SleeveOrder().place(event_key, anchor, ttl, source=source, reason=reason)
@@ -826,7 +826,7 @@ def sleeve_order_expire(
     source: str = typer.Option("agent", "--source"),
 ):
     """弃单：pending_order → pending_rejudge（预算冻结保留，不关槽不回款——
-    槽生命周期与挂单 TTL 分离；重判由 NEWS_REJUDGE 事件消费）"""
+    槽生命周期与挂单 TTL 分离；重判由 MSG_REJUDGE 事件消费）"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:
         if due_batch:
@@ -855,7 +855,7 @@ def sleeve_order_rejudge(
     reason: str = typer.Option("", "--reason", help="轻量闸审结论（newsdb 新鲜度+G1-G4）"),
     source: str = typer.Option("agent", "--source"),
 ):
-    """重判消费（NEWS_REJUDGE）：keep=新 anchor 刷带重挂回 pending_order；
+    """重判消费（MSG_REJUDGE）：keep=新 anchor 刷带重挂回 pending_order；
     close=复用 close-slot 关槽回款 + 信号行档案化（回池要新证据，方案 2.6b）"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:

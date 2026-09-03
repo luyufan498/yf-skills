@@ -1,7 +1,7 @@
 """v12 补洞回归锁（2026-09-03，先红后绿）——双模型对抗审计 E2/E3/E4/E5/E9/E10/E11
 
 契约（plans/v12-news-order-20260903「双模型对抗审计节」+ CC 任务书 cc-v12-patch-task.md）：
-- E2  expire(含 expire_due) 成功转 pending_rejudge → 同事务 INSERT NEWS_REJUDGE 到 tasks.db
+- E2  expire(含 expire_due) 成功转 pending_rejudge → 同事务 INSERT MSG_REJUDGE 到 tasks.db
       （payload 含 event_key/code/reason/expired_at/note，source='sleeve-order'）
 - E3  fill 行情 fail-closed 防线：一字板（high==low≠昨收）拒 / 报价陈旧（>5min 或非今日）拒 /
       停牌标记拒 / 取不到快照拒——宁可不成交不脏成交
@@ -156,14 +156,14 @@ def _seg_trade(ws, stock):
 
 
 def _rejudge_rows(ws=None):
-    """tasks.db 的 NEWS_REJUDGE 行（库/表尚未创建 = 零事件，不算错）。"""
+    """tasks.db 的 MSG_REJUDGE 行（库/表尚未创建 = 零事件，不算错）。"""
     if not os.path.exists(_tasks_db(ws)):
         return []
     t = sqlite3.connect(_tasks_db(ws))
     t.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in t.execute(
-            "SELECT * FROM task_events WHERE type='NEWS_REJUDGE' ORDER BY id").fetchall()]
+            "SELECT * FROM task_events WHERE type='MSG_REJUDGE' ORDER BY id").fetchall()]
     except sqlite3.OperationalError:
         return []                            # 库在但表未建（从未发射过）= 零事件
     finally:
@@ -259,7 +259,7 @@ def test_e10_rejudge_keep_without_ttl_auto_derives(pools, env):
     assert s['order_ttl'] == next_session_close().isoformat(timespec='seconds')
 
 
-# ============ E2：expire 同事务发 NEWS_REJUDGE ============
+# ============ E2：expire 同事务发 MSG_REJUDGE ============
 
 def test_e2_expire_emits_news_rejudge(pools, env):
     from paper_trading_v2.cli import app
@@ -281,7 +281,7 @@ def test_e2_expire_emits_news_rejudge(pools, env):
 
 
 def test_e2_rejected_expire_emits_nothing(pools, env):
-    """fail-closed：未到期 expired 弃单被拒 → 不得有 NEWS_REJUDGE（防假信号）。"""
+    """fail-closed：未到期 expired 弃单被拒 → 不得有 MSG_REJUDGE（防假信号）。"""
     from paper_trading_v2.cli import app
     _open(env)
     _place(env, anchor=10.0)                        # ttl=未来交易节收盘

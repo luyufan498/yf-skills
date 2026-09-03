@@ -7,9 +7,9 @@ ENV = "STOCK_TASKS_DB"
 DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
-TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "NEWS_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
+TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
-         "NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE",
+         "MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE",
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
          # COLLECT 独立新增（不复用 REFRESH——REFRESH 已定归 C2/msg-watch，
          # 复用会翻转 v12 归属矩阵；REFRESH 退役路径在迁移 M2 处理）
@@ -18,8 +18,8 @@ STATUSES = ["pending", "processing", "done", "failed"]
 
 # v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='msg-watch'）可认领；
 # 存量类型不在本集合内 → 不校验（向后兼容，晨审/旧心跳照常 claim）。
-NEWS_TYPES = ("NEWS_CANDIDATE", "NEWS_ORDER", "NEWS_REJUDGE")
-NEWS_CONSUMER = "msg-watch"
+MSG_TYPES = ("MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE")
+MSG_CONSUMER = "msg-watch"
 
 # M1 claim 硬门扩展（news-collect 心跳 v2 方案 §5）：COLLECT 仅专用心跳
 # （consumer='news-collect'，与 job 名一致）可认领；存量类型不校验（不动
@@ -88,7 +88,7 @@ def add(type_: str, entity: str, source: str = "user", priority: int = 3,
 def claim(task_id: int, consumer: str | None = None) -> dict | None:
     """原子认领：pending → processing。认领失败（已被抢/状态不对/不存在）返回 None。
 
-    v12 claim 硬门：news 三类型（NEWS_CANDIDATE/NEWS_ORDER/NEWS_REJUDGE）仅
+    v12 claim 硬门：消息三类型（MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE）仅
     consumer='msg-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
     缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。M1 扩展（news-collect
     心跳 v2 方案 §5）：COLLECT 仅 consumer='news-collect' 可认领，规则同构。
@@ -101,12 +101,12 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
                            (task_id,)).fetchone()
         if row is None:
             return None
-        if row["type"] in NEWS_TYPES and consumer != NEWS_CONSUMER:
+        if row["type"] in MSG_TYPES and consumer != MSG_CONSUMER:
             who = consumer or "(未提供 --consumer)"
             raise PermissionError(
                 f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=msg-watch"
                 f"（专用心跳 stock-msg-watch）；当前 consumer={who}。"
-                f"旧心跳/晨审请跳过 NEWS_* 类型（review 修订#5：唯一消费者保证）")
+                f"旧心跳/晨审请跳过 MSG_* 类型（review 修订#5：唯一消费者保证）")
         if row["type"] in COLLECT_TYPES and consumer != COLLECT_CONSUMER:
             who = consumer or "(未提供 --consumer)"
             raise PermissionError(

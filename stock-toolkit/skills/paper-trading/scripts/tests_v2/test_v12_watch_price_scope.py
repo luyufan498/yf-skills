@@ -8,7 +8,7 @@
       （不含 9:00-9:29 集合竞价、不含 14:58+ 收盘集合竞价）
 - E6  保护链扫描承接 legacy check_price_triggers（全账户扫，含 strategy='NEWS'
       成员段）→ WATCH_ALERT 落 taskbus 供 C1 心跳消费
-- E13 NEWS_CANDIDATE 去重放宽：同 event_key 仅 failed 记录 → 允许重检重发；
+- E13 MSG_CANDIDATE 去重放宽：同 event_key 仅 failed 记录 → 允许重检重发；
       done / 槽已开 仍不重发（防双开）
 """
 import json
@@ -238,7 +238,7 @@ def test_price_scope_protection_chain_news_segment(sleeve_ready, ws_scan, monkey
     assert n == 1, n
 
 
-# ---------- E13：NEWS_CANDIDATE 去重放宽（failed 重发） ----------
+# ---------- E13：MSG_CANDIDATE 去重放宽（failed 重发） ----------
 
 @pytest.fixture
 def scan_newsdb(ws, monkeypatch):
@@ -278,14 +278,14 @@ def _cand_row(conn, key, status):
     with conn:
         conn.execute(
             "INSERT INTO task_events (type, entity, source, priority, payload, status) "
-            "VALUES ('NEWS_CANDIDATE', ?, 'watch-scan-news', 1, ?, ?)",
+            "VALUES ('MSG_CANDIDATE', ?, 'watch-scan-news', 1, ?, ?)",
             (key, json.dumps({"event_key": key}, ensure_ascii=False), status))
 
 
 def _cand_count(tasks, key):
     c = sqlite3.connect(tasks)
     try:
-        return c.execute("SELECT COUNT(*) FROM task_events WHERE type='NEWS_CANDIDATE' "
+        return c.execute("SELECT COUNT(*) FROM task_events WHERE type='MSG_CANDIDATE' "
                          "AND entity=?", (key,)).fetchone()[0]
     finally:
         c.close()
@@ -293,7 +293,7 @@ def _cand_count(tasks, key):
 
 def test_news_candidate_failed_allows_reemit(sleeve_ready, ws_scan, scan_newsdb,
                                              monkeypatch):
-    """E13：同 event_key 仅有 failed 记录 → 放行重检重发（新 NEWS_CANDIDATE 入队），
+    """E13：同 event_key 仅有 failed 记录 → 放行重检重发（新 MSG_CANDIDATE 入队），
     kv 留痕不封死（旧逻辑任意状态都拦 → 消费失败永久封死一条消息链路）。"""
     mod, tasks = ws_scan
     _seed_news_event(scan_newsdb, 910)

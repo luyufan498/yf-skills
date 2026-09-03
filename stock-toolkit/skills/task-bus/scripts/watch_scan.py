@@ -607,13 +607,19 @@ def pool_stocks() -> list[tuple[str, str]]:
 
 
 def fetch_kline_closes(code: str) -> list[float]:
+    """日线收盘价列表，**新→旧**（closes[0]=今日）。
+
+    2026-09-03 修复：底层 kline_fetcher.py 对 day_data `sort(key=lambda x: x['date'])`
+    输出**升序（旧→新）**——旧代码直接 append 导致 closes[0] 实为最旧 bar，
+    scan_moves 的 today/ten_ago 全部错位（拿历史价当现价判动量）。此处反转对齐注释。
+    """
     out = ptrade2("fetch-kline", code, "--type", "day", "--count", "15")
     closes = []
     for line in out.splitlines():
         m = re.search(r"收:\s*([\d.]+)", line)
         if m:
             closes.append(float(m.group(1)))
-    return closes  # 新→旧
+    return list(reversed(closes))  # 源升序→反转：新→旧
 
 
 def scan_moves() -> list[str]:

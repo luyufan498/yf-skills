@@ -239,6 +239,17 @@ class StockPriceFetcher:
             elif code.lower().startswith(('gb_', 'us')):
                 market = MarketType.US_STOCK
 
+            # 2026-09-03 实测：qt.gtimg.cn 字段漂移——parts[29]（date）置空、
+            # parts[30] 由 "HH:MM:SS" 改为紧凑时间戳 "YYYYMMDDHHMMSS"。E3 新鲜度
+            # 防线（sleeve-order-fill）依赖 date/time，解析器必须兼容新旧两版布局，
+            # 否则挂单触带成交全被误判"报价非今日"fail-closed 拒单。
+            date_s = parts[29].replace('/', '-') if len(parts) > 29 else ''
+            time_s = parts[30] if len(parts) > 30 else ''
+            if len(time_s) >= 14 and time_s[:8].isdigit():
+                # 新版紧凑时间戳 YYYYMMDDHHMMSS → 拆出 date/time
+                date_s = f"{time_s[0:4]}-{time_s[4:6]}-{time_s[6:8]}"
+                time_s = f"{time_s[8:10]}:{time_s[10:12]}:{time_s[12:14]}"
+            time_s = ':'.join(time_s.split(':')[:3])
             return StockInfo(
                 code=code.lower(),
                 name=parts[1],
@@ -249,8 +260,8 @@ class StockPriceFetcher:
                 high=float(parts[33]) if len(parts) > 33 else None,
                 low=float(parts[34]) if len(parts) > 34 else None,
                 volume=parts[6],
-                date=parts[29].replace('/', '-') if len(parts) > 29 else '',
-                time=':'.join(parts[30].split(':')[:3]) if len(parts) > 30 else '',
+                date=date_s,
+                time=time_s,
                 source='tencent'
             )
 

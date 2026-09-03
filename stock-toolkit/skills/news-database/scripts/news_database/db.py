@@ -136,6 +136,16 @@ CREATE TABLE IF NOT EXISTS deepdive_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_deepdive_status ON deepdive_requests(status, priority DESC);
 
+-- task_schedule（2026-09-03 news-collect 心跳 v2，方案 §3）：任务级节奏真源（仅几行）。
+-- 旧 scan_log 不动（7 旧 cron 依赖其 UPSERT PK），两套并存，读写函数在 task_schedule.py
+CREATE TABLE IF NOT EXISTS task_schedule (
+    task_id     TEXT PRIMARY KEY,     -- 'xueqiu_sentiment'|'daily_news'|'deep_analysis'|'industry_research'
+    last_run_at TEXT,                 -- 上次任务完成
+    ttl_hours   REAL NOT NULL,        -- 节奏（T1=4~8h 交易时段对齐、T2=12h、T3=24-48h、T4=触发+15-30天）
+    next_due_at TEXT NOT NULL,        -- last_run_at + ttl
+    last_result TEXT                  -- 上次轮次摘要
+);
+
 -- 注意：messages_fts 是独立表，写入 messages 时必须同步插入（rowid = messages.id），否则搜索静默漂移
 -- FTS5 全文索引（trigram 支持中文子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(

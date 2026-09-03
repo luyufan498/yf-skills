@@ -91,9 +91,10 @@ def master_pool_show(
     if pool == 'sleeve':
         typer.echo(f"   活跃事件槽：{d['active_slots']}/20 ｜ 待成交单：{d['pending_slots']}")
     else:
-        typer.echo(f"   v11 水位：承诺率 {d['commitment_rate']*100:.1f}%"
-                   f"（门 {d['commitment_gate']*100:.0f}%）｜ 真实率 {d['real_rate']*100:.2f}%"
-                   f"（净持仓 ¥{d['real_cost']:,.0f}）｜ floor ¥{d['floor']:,.0f}"
+        typer.echo(f"   v11 水位：真实占用率 {d['real_rate']*100:.2f}%（门 "
+                   f"{d['rotation_gate']*100:.1f}%，9/3 真实值口径）"
+                   f"（净持仓 ¥{d['real_cost']:,.0f}）｜ 承诺率 {d['commitment_rate']*100:.1f}%"
+                   f"（展示口径）｜ floor ¥{d['floor']:,.0f}"
                    f" ｜ free {'≥' if d['free'] >= d['floor'] else '<'} floor"
                    f" {'✅' if d['free'] >= d['floor'] else '⚠️（入场门收紧）'}")
 
@@ -308,7 +309,8 @@ def reconcile_cmd(
         for seg_id, stock, ident, base, cash, fifo in bad:
             typer.echo(f"     ❌ 段#{seg_id} {stock}: cash ¥{cash:,.2f} + FIFO ¥{fifo:,.2f} "
                        f"− realized = ¥{ident:,.2f} ≠ budget ¥{base:,.2f}")
-        # v11 水位（承诺率/真实率/floor——晨审口径）
+        # v11 水位（真实占用率=门口径 / 承诺率=展示 / floor——晨审口径）
+        from paper_trading_v2.master_pool import ROTATION_GATE
         if main['total']:
             committed = conn.execute(
                 "SELECT COALESCE(SUM(budget),0) FROM position WHERE status='open' "
@@ -318,8 +320,9 @@ def reconcile_cmd(
                                        "AND COALESCE(strategy,'') != 'NEWS'"):
                 net_cost += account_remaining(conn, sid)[1]
             floor = 0.20 * main['total']
-            typer.echo(f"   v11 水位：承诺率 {committed / main['total'] * 100:.1f}%"
-                       f"（门 80%）｜ 真实率 {net_cost / main['total'] * 100:.2f}% ｜ "
+            typer.echo(f"   v11 水位：真实占用率 {net_cost / main['total'] * 100:.2f}% "
+                       f"（门 {ROTATION_GATE*100:.1f}%，9/3 真实值口径）｜ "
+                       f"承诺率 {committed / main['total'] * 100:.1f}%（展示）｜ "
                        f"floor ¥{floor:,.2f} ｜ free ¥{main['free']:,.2f} "
                        f"{'≥' if main['free'] >= floor else '<'} floor")
         if detail:

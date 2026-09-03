@@ -36,7 +36,7 @@
 移交桥：sleeve-migrate（单向一次，原成本结转+双 ledger 对转+加仓锁，禁回迁）
 ```
 
-- **allocate（v11 信封化）**：只立 budget=承诺（计划层，可超售），**不从 free 搬 cash**——段 cash=0 常态，钱只在 buy 瞬间出池。校验：承诺率门（Σ段预算/total>80% 且 normal 且非 manual → 拒，话术引 §8.2.3 轮换评估；`--entry-mode rotation --rotation-out CODE` 伴配放行=audit rotation_out/in 行 + task_bus ROTATION_EXIT 事件，CODE 须有技术组 open 段）、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。**初始段默认总池 5%**（策略矩阵见 trading-discipline 3.0.0）。
+- **allocate（v11 信封化）**：只立 budget=承诺（计划层，可超售），**不从 free 搬 cash**——段 cash=0 常态，钱只在 buy 瞬间出池。校验：**真实占用率门**（Σ净持仓成本/total>2/3（66.7%，预留 1/3；9/3 裁决真实值口径，承诺率仅展示）且 normal 且非 manual → 拒，话术引 §8.2.3 轮换评估；`--entry-mode rotation --rotation-out CODE` 伴配放行=audit rotation_out/in 行 + task_bus ROTATION_EXIT 事件，CODE 须有技术组 open 段）、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。**初始段默认总池 5%**（策略矩阵见 trading-discipline 3.0.0）。
 - **buy（v11 买路径单点）**：entry（段首仓，normal）过物理 floor 门——成交后 pool.free<20%×total → 拒（真实口径；rotation 段豁免但未平仓轮换义务≤1；topup buy 豁免=机动资金本意；manual 段全豁免）。段 cash 不足自动从 pool 拨付差额（audit `pool_grant`）；池不足=物理硬拒。
 - **topup（v11 信封加码）**：段 budget/topup_total += amount（机动权利加码），**free/段 cash 均不动**。校验累计 ≤30%×total；消息组（NEWS 段）禁 topup（闸门）。
 - **sell（v11 回池）**：v11 信封段回款直接回 pool.free（audit `pool_return`），段 cash 不留存（流动性归公，再买仍可拨付）；清仓自动 release 兼容（残留 cash≈0）。
@@ -73,7 +73,7 @@ python -m paper_trading_v2.pool_publicize [--execute] [--date D]   # v11 一次�
 1. 趋势池 1000 万固定；消息池 = 总资金 20%（sleeve_ledger），互不透支——两个独立资金操作入口。
 2. 单股分配 ≤ 30%×total（含 topup 累计，技术组）。
 3. 总持仓段 ≤ 20（有持仓= L1，全部计入；sleeve 成员段不占主池段位）；消息组 20 事件坑独立计数。
-4. 现金保留 free ≥ 20%×total 作为弱市子弹底线（v11：**入场 buy 单点机械门**——成交后 free 穿 floor 拒；rotation/topup buy/manual 豁免=换仓缓冲非轮换穿底禁令。名义承诺率>80% 是另一根轴=诚实稀缺信号，触发轮换评估义务，不再是假稀缺现金门）。
+4. 现金保留 free ≥ 20%×total 作为弱市子弹底线（v11：**入场 buy 单点机械门**——成交后 free 穿 floor 拒；rotation/topup buy/manual 豁免=换仓缓冲非轮换穿底禁令。轮换门另轴=**真实占用率>2/3**（9/3 裁决真实值口径，预留 1/3；承诺率>80% 旧口径废除=假稀缺误杀根除，承诺率仅展示）。
 5. 释放冷却 7 日（防 whipsaw）；L1 人工不受；消息组槽释放无冷却（closed 即复用，无 FIFO）。
 6. 每次 allocate/topup/release/sleeve-open 必须带 --reason 审计。
 7. 技术组候选须过完整分析；消息组候选须过 G1-G4 清单闸（判决权给清单，agent 当会计不当法官）。

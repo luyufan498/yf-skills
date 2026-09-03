@@ -150,16 +150,34 @@ def _commitment_env(env, pools, specs, buy_price=10.0):
                          cost_qty=int(cost / buy_price), cost_price=buy_price)
 
 
-# ============ a) 承诺率>80% 门（allocate 信封化 + 轮换伴配） ============
+# ============ a) 真实占用>2/3 轮换门（9/3 用户裁决：门基于真实值非承诺值） ============
 
-def test_a1_commitment_gate_rejects_normal_allocate(pools, env):
-    """旧判例「中国石化式」：承诺率>80% 且 normal 且非 manual → allocate 拒，
-    话术引用轮换评估（§8.2.3）。"""
+def test_a1_real_gate_rejects_normal_allocate(pools, env):
+    """真实占用率 Σ净持仓成本/total > 66.7%（预留 1/3）且 normal 且非 manual →
+    allocate 拒，话术引用轮换评估（§8.2.3）。成本 8.05M=80.5%>2/3。"""
     _commitment_env(env, pools, [('石化甲', 3_000_000, 3_000_000),
                                  ('石化乙', 3_000_000, 3_000_000),
-                                 ('石化丙', 2_050_000, 2_050_000)])   # 承诺 8.05M=80.5%
-    with pytest.raises(ValueError, match='承诺率|轮换'):
+                                 ('石化丙', 2_050_000, 2_050_000)])   # 真实 80.5%>66.7%
+    with pytest.raises(ValueError, match='真实占用|轮换'):
         pools.allocate('新候选', 300_000, reason='9/2 式新入场')
+
+
+def test_a5_real_rate_below_gate_passes(pools, env):
+    """边界锁·下沿：真实占用 65% ≤ 66.7% → normal 直放（不看承诺率脸色）。
+    预算 9M（承诺 90%）但成本 6.5M——门基于真实值（9/3 裁决核心命题）。"""
+    _make_direct_seg(env, '重仓甲', 4_500_000, 0.0, cost_qty=325_000)   # 成本 3.25M
+    _make_direct_seg(env, '重仓乙', 4_500_000, 0.0, cost_qty=325_000)   # 成本 3.25M
+    pools.allocate('直放票', 500_000, reason='真实 65%≤2/3')
+    assert _seg_row(env, '直放票') is not None
+
+
+def test_a6_real_rate_above_gate_rejects(pools, env):
+    """边界锁·上沿：真实占用 68% > 66.7% → 拒（阈值改动会被此对锁暴露）。
+    成本 6.8M，free 3.2M > floor 2M——证明拦的是占用门不是 floor。"""
+    _make_direct_seg(env, '顶仓甲', 3_400_000, 0.0, cost_qty=340_000)   # 成本 3.4M
+    _make_direct_seg(env, '顶仓乙', 3_400_000, 0.0, cost_qty=340_000)   # 成本 3.4M
+    with pytest.raises(ValueError, match='真实占用|轮换'):
+        pools.allocate('撞门票', 400_000, reason='真实 68%>2/3')
 
 
 def test_a2_envelope_allocate_moves_no_cash(pools, env):
@@ -289,15 +307,17 @@ def test_b3_rotation_obligation_over_one_rejected(pools, env, monkeypatch):
     assert len(_audit_rows(env, 'pool_return', '义甲')) == 1
 
 
-# ============ c) 旧判例锁：承诺>80% 中国石化式（无伴配）必拒 ============
+# ============ c) 判例锁（9/3 裁决重铸）：门基于真实值 ============
 
-def test_c1_sinopec_precedent_locked(pools, env):
-    """判例锁：9/2 中国石化同水位（承诺 81%）无 --rotation-out 软放行 → v11 必拒。"""
+def test_c1_sinopec_precedent_reclassified(pools, env):
+    """判例锁重铸：9/2 中国石化场景（承诺 81% 但真实占用仅 ~9%）在真实值口径下
+    **不再是轮换门拦截对象**——预算睡觉不该挡新入场（假稀缺根除，用户 9/3 裁决）。
+    当年真正的拦截应是 floor（free 1.0M < 2M）——由 b 组锁管。"""
     _commitment_env(env, pools, [('判例甲', 3_000_000, 300_000),
                                  ('判例乙', 3_000_000, 300_000),
-                                 ('判例丙', 2_100_000, 300_000)])   # 承诺 8.1M=81%
-    with pytest.raises(ValueError, match='承诺率|轮换'):
-        pools.allocate('中国石化', 1_000_000, reason='同水位复刻')
+                                 ('判例丙', 2_100_000, 300_000)])   # 承诺 8.1M/真实 0.9M=9%
+    pools.allocate('中国石化', 1_000_000, reason='真实 9%≤2/3 → 直放（承诺 81% 不再拦）')
+    assert _seg_row(env, '中国石化') is not None
 
 
 # ============ d) 自动拨付幂等 + sell→pool 逐分 ============
@@ -457,9 +477,11 @@ def test_f3_reconcile_shows_watermarks(env, pools):
     from paper_trading_v2.cli import app
     _make_direct_seg(env, '水位甲', 3_000_000, 2_500_000, cost_qty=50_000)   # 成本 50万
     d = pools.show()
-    assert 'commitment_rate' in d and 'real_rate' in d and 'floor' in d
+    assert 'commitment_rate' in d and 'real_rate' in d and 'floor' in d and 'rotation_gate' in d
     r = runner_out = CliRunner().invoke(app, ["reconcile"])
-    assert "v11 水位" in r.output and "承诺率" in r.output and "真实率" in r.output
+    # 9/3 口径：门口径=真实占用率（展示含 66.7% 门），承诺率降级展示口径
+    assert "v11 水位" in r.output and "真实占用率" in r.output and "66.7%" in r.output
+    assert "承诺率" in r.output and "展示" in r.output
 
 
 # ============ g) NEWS 池零行为变化（6 pending 回归锁的账面侧） ============

@@ -15,8 +15,10 @@ from paper_trading_v2.db import get_connection, migrate_db
 
 LEDGER_TABLES = {'main': 'pool_ledger', 'sleeve': 'sleeve_ledger'}
 
-# v11 池模型常量（方案 2026-09-02：预算/现金分离 + 80% 轮换门 + 20% floor 单点）
-COMMITMENT_GATE = 0.80      # Σ段预算/total > 80% → 新段须轮换伴配
+# v11 池模型常量（方案 2026-09-02 + 9/3 用户裁决：轮换门基于真实值，预留 1/3）
+ROTATION_GATE = 2.0 / 3.0   # Σ净持仓成本/total > 2/3（预留 1/3）→ 新段须轮换伴配
+                            # （9/3 裁决：承诺率>80% 口径废除——预算睡觉不该挡新入场，
+                            #  门必须量真实占用；承诺率降级为展示口径非门）
 FLOOR_RATIO = 0.20          # 物理 floor = 20%×total（只在入场 buy 单点，换仓缓冲）
 MAX_OPEN_ROTATIONS = 1      # 未平仓轮换义务 ≤1（超出=拒）
 
@@ -158,7 +160,7 @@ class MasterPoolManager:
                     "real_rate": real_cost / ledger['total'] if ledger['total'] else 0,
                     "real_cost": real_cost,
                     "floor": FLOOR_RATIO * ledger['total'],
-                    "commitment_gate": COMMITMENT_GATE,
+                    "rotation_gate": ROTATION_GATE,
                 }
             # sleeve：槽视角对账（占用=活跃槽预算；realized=Σ槽 realized）
             occupied = conn.execute(
@@ -440,12 +442,16 @@ class MasterPoolManager:
                             f"--rotation-out {rotation_out} 不存在（无技术组 open 段）——"
                             f"伪造伴配拒；轮换对象必须是场内真实持仓段")
                     rotation_out_code = trow['code']
-                commitment, _t = self._v11_commitment(conn)
-                if commitment > COMMITMENT_GATE and entry_mode == 'normal' \
+                # 9/3 裁决：轮换门量真实占用（Σ净持仓成本/total > 2/3，预留 1/3）。
+                # 承诺率（Σ预算/total）只作展示——预算睡觉不该挡新入场（假稀缺根除）。
+                real_cost = self._real_net_cost(conn)
+                _c, total = self._v11_commitment(conn)
+                real_rate = real_cost / total if total else 0.0
+                if real_rate > ROTATION_GATE and entry_mode == 'normal' \
                         and source != 'manual':
                     raise ValueError(
-                        f"承诺率门：Σ段预算/total = {commitment*100:.1f}% > "
-                        f"{COMMITMENT_GATE*100:.0f}%（诚实稀缺信号，非假稀缺）——新入场须先做"
+                        f"真实占用率门：Σ净持仓成本/total = {real_rate*100:.1f}% > "
+                        f"{ROTATION_GATE*100:.1f}%（预留 1/3 机动，9/3 裁决）——新入场须先做"
                         f"轮换评估（候选 vs 场内低价值，机械分，纪律 §8.2.3）：确认候选价值"
                         f"高于场内垫底持仓后，用 --entry-mode rotation --rotation-out CODE "
                         f"伴配入场（CODE=拟换出票，将插 ROTATION_EXIT 事件限 T+1 挂出）；"

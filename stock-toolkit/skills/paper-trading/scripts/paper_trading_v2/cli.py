@@ -532,6 +532,11 @@ def sleeve_open(
     code: list[str] = typer.Option(None, "--code", help="成员代码，顺序对应成员（可多次）"),
     force: bool = typer.Option(False, "--force/--no-force", help="放行同票双组冲突"
                                "（第四.8；默认拒绝，人工裁决后使用，audit 留痕）"),
+    place: bool = typer.Option(False, "--place/--no-place", help="开槽即挂单（v12：open 后自动 sleeve-order-place，消灭开槽未挂断链）"),
+    anchor: Optional[float] = typer.Option(None, "--anchor",
+                                           help="挂单锚价=事件入库时刻价格快照（--place 必填）"),
+    ttl: Optional[str] = typer.Option(None, "--ttl",
+                                      help="挂单到期 ISO=挂单后首个交易节收盘（--place 必填）"),
 ):
     """消息组 L1 建仓事务：sleeve_ledger 扣款→成员账户(grp=news)→pending 待成交单→开槽
     （G3 归并：活跃槽并入等权不加坑；关闭槽二波=新键开新槽）
@@ -562,7 +567,17 @@ def sleeve_open(
             typer.echo(f"   ⚠️ 事件键缺失 fail-open：兜底键 {r['event_key']}（影子账#9 已记）")
         for c in r.get('conflicts', []):
             typer.echo(f"   ⚠️ {c} 主池另有 open 段（同票双组）——晨审人工裁决")
-        typer.echo(f"   待成交单 pending → 心跳开盘后首扫 sleeve-fill 按开盘价成交")
+        if place:
+            if not anchor or not ttl:
+                raise ValueError("--place 需配 --anchor 与 --ttl（挂单锚价/到期）")
+            from paper_trading_v2.sleeve_order import SleeveOrder
+            pr = SleeveOrder().place(r['event_key'], anchor, ttl,
+                                     source=source, reason=reason or "sleeve-open --place")
+            typer.echo(f"   ✅ 开槽即挂单 {pr['order_id']}：带 [{pr['band_min']}, {pr['band_max']}]"
+                       f"（锚 ¥{pr['anchor']}）ttl={pr['order_ttl']}，槽 → pending_order")
+        else:
+            typer.echo("   ⚠️ 槽 open/fill_status=pending 未挂单——v12 下须 sleeve-order-place 挂单"
+                       "（或开槽时直接 --place），否则心跳不会成交")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)

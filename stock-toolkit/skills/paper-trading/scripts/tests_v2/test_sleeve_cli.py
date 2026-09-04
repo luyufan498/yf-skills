@@ -435,3 +435,42 @@ def test_cli_sleeve_fill_t1_gate(sleeve_ready, monkeypatch):
                       ).fetchone()[0]
     conn.close()
     assert fs == 'filled'
+
+
+def test_cli_sleeve_open_place_one_shot(sleeve_ready):
+    """b：sleeve-open --place 开槽即挂单（v12 消灭开槽未挂断链）。"""
+    from paper_trading_v2.cli import app
+    from paper_trading_v2.db import get_connection
+
+    # 无 --place → 槽 open/pending 且未挂单（保持向后兼容）
+    r = _run(app, 'sleeve-open', '开单甲', '--budget', '100000',
+             '--event-key', 'ND#811', '--news-kind', 'policy',
+             '--code', 'sh600811', '--reason', '开槽即挂单测试')
+    assert r.exit_code == 0, r.output
+    conn = get_connection(_db(sleeve_ready))
+    slot = dict(conn.execute("SELECT status, fill_status, order_id, band_min "
+                             "FROM event_slots WHERE event_key='ND#811'").fetchone())
+    conn.close()
+    assert slot['status'] == 'open' and slot['fill_status'] == 'pending'
+    assert slot['order_id'] is None and slot['band_min'] is None
+
+    # --place 缺 --anchor → 拒（fail-closed）
+    r = _run(app, 'sleeve-open', '开单乙', '--budget', '100000',
+             '--event-key', 'ND#812', '--news-kind', 'policy',
+             '--code', 'sh600812', '--place')
+    assert r.exit_code == 1 and '--anchor' in r.output, r.output
+
+    # --place 齐参 → open + 自动挂单 pending_order
+    r = _run(app, 'sleeve-open', '开单乙', '--budget', '100000',
+             '--event-key', 'ND#812', '--news-kind', 'policy',
+             '--code', 'sh600812', '--place', '--anchor', '10.0',
+             '--ttl', '2026-09-04T11:30:00', '--reason', '开槽即挂单')
+    assert r.exit_code == 0, r.output
+    assert '开槽即挂单' in r.output and 'pending_order' in r.output, r.output
+    conn = get_connection(_db(sleeve_ready))
+    slot = dict(conn.execute("SELECT status, fill_status, order_id, band_min, band_max "
+                             "FROM event_slots WHERE event_key='ND#812'").fetchone())
+    conn.close()
+    assert slot['status'] == 'pending_order' and slot['fill_status'] == 'pending'
+    assert slot['order_id'] and abs(slot['band_min'] - 9.5) < 1e-9 \
+        and abs(slot['band_max'] - 10.5) < 1e-9

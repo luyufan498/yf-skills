@@ -805,7 +805,74 @@ def _parse_kline_pairs(text: str) -> list[tuple[str | None, float]]:
     return pairs
 
 
-def _fetch_cached_closes(code: str) -> list[float]:
+def _qfq_equivalent_closes(code: str, pairs: list[tuple[str | None, float]],
+                           today_str: str | None = None) -> list[float] | None:
+    """raw 收盘序列 → qfq 等效收盘序列（E10 除权折算，2026-09-04）。
+
+    公式（detect_exright_jumps 语义推导 + sh600000 2026-07-16 10派4.2 实测验证）：
+      ratio(d) = qfq(d)/raw(d)，最新 bar re-anchor ratio=1（qfq 锚定最新收盘）；
+      factor(除权日 e) = ratio(e)/ratio(e 前一已收盘 bar)。
+    除权日之后（含当日）ratio≡1，之前 ratio≡1/factor（多除权累积）。故任意 bar
+    的 qfq 等效价 = raw(bar) × ratio(bar) = raw(bar) / ∏factor(e ∈ (bar_d, today])，
+    与 market_cache docstring 口径（窗口动量 raw × ∏factor = qfq 动量）等价：
+        today / (ten_ago_raw / ∏f) - 1 ≡ today_qfq / ten_ago_qfq - 1
+    实测：sh600000 ten_ago(7/15) raw 9.31 / 1.04724409 = 8.889998 == 腾讯 qfq 8.89。
+    实现按**日期区间**逐 bar 取后缀事件链（非按 bar 计数）：停牌票长窗口跨多个
+    除权自然连乘，无事件 ∏f=1 逐字透传。
+
+    首事件退化（保守 fail-closed）：事件表**首行**的 factor 在检测时可能无 prev bar
+    （退化为该日绝对 ratio 而非跳变系数）。判别依据：detect_exright_jumps 仅在
+    有 prev bar 时才往 note 写 'jump X'——首行 note 含 'jump ' → 真跳变系数可信
+    （如 TTL 全量重建从 250 bar 链内算出）；无 'jump ' → 退化不可信。首行退化
+    事件落入折算窗口 → 返回 None（scan_moves 本轮跳过该票，不动状态机）；
+    首行在窗口外或首行可信则正常折算。缺口补抓（gap_fill）场景实测会产出
+    退化首事件（note 无 jump、factor≈1.0 而真值如 1.047）——本判别正是防它。
+    窗口内脏 factor（≤0/非数值）同样 fail-closed 跳过。
+    事件表读失败 → fail-open 返回原 raw 序列（=P3 既有行为，不因基础设施故障
+    扩大静默面）。当前生产库 3 条事件均为含 prev 的正常跳变（note 带 'jump'）。
+    """
+    today_str = today_str or datetime.now().strftime("%Y-%m-%d")
+    dated = [(d, c) for d, c in pairs if d and d < today_str]
+    if not dated:
+        return []
+    try:
+        if _PAPER_SCRIPTS not in sys.path:
+            sys.path.insert(0, _PAPER_SCRIPTS)
+        from paper_trading_v2 import market_cache as _mc
+        events = _mc.read_exright_events(code)
+    except Exception:
+        return [c for _, c in dated]  # 事件表不可读 → fail-open 维持 raw（P3 行为）
+    if not events:
+        return [c for _, c in dated]
+    start = dated[0][0]
+    win: list[tuple[str, float]] = []
+    for i, ev in enumerate(events):
+        d = str(ev.get("date") or "")
+        if not (start < d <= today_str):
+            continue
+        try:
+            f = float(ev.get("factor"))
+        except (TypeError, ValueError):
+            f = 0.0
+        # 首行无 'jump '（无 prev bar 退化为绝对 ratio）或 factor 非法 → fail-closed
+        if f <= 0 or (i == 0 and "jump " not in str(ev.get("note") or "")):
+            return None
+        win.append((d, f))
+    if not win:
+        return [c for _, c in dated]
+    # 逐 bar 后缀折算：新→旧扫，越过事件日即把该 factor 计入折算分母
+    out: list[float] = []
+    k, ei = 1.0, len(win) - 1
+    for d, c in reversed(dated):
+        while ei >= 0 and win[ei][0] > d:
+            k *= win[ei][1]
+            ei -= 1
+        out.append(c / k)
+    out.reverse()
+    return out
+
+
+def _fetch_cached_closes(code: str) -> list[float] | None:
     """日线收盘价列表（P3：market.db raw 缓存读），**旧→新**（closes[-1]=最近已收盘日）。
 
     P3（2026-09-04）：逐票 `fetch-kline`（腾讯 qfq 直抓 ~1.5s/票）退役，改读
@@ -818,9 +885,12 @@ def _fetch_cached_closes(code: str) -> list[float]:
     date ≥ 今日的 bar**（cache 不动）。scan_moves 的 today=批量实时价、ten_ago
     以"最近已收盘日"为锚往回数，永不消费今日缓存 bar。
 
-    ⚠️ raw 口径注记（用户拍板接受）：market.db 存**不复权**收盘价——10 日窗口
-    内跨除权时动量含除权跳空（10 送 10 会被当 -50% 暴跌）。除权事件表
-    exright_events 已建，raw→qfq 动量折算留后续任务。
+    ⚠️ 除权折算（E10，2026-09-04）：返回前经 _qfq_equivalent_closes 逐 bar 折算成
+    **qfq 等效序列**——10 日窗口跨除权不再含跳空假摔（10 送 10 不再被当 -50%
+    暴跌；sh600000 7/16 10派4.2 对拍：折算动量与腾讯 qfq 源零差）。多除权连乘、
+    停牌票长窗口按日期区间取事件链、首事件退化/脏 factor 保守跳过（返回 None，
+    scan_moves 弃该票本轮）、事件表读失败 fail-open 维持 raw。唯一消费方
+    scan_moves 已适配 None；day_chg 不走此路径（pre_close=官方除权调整口径）。
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
     pairs: list[tuple[str | None, float]] = []
@@ -832,13 +902,16 @@ def _fetch_cached_closes(code: str) -> list[float]:
         pairs = [(b.get("date"), float(b["close"])) for b in bars if b.get("close")]
         if pairs and not _closes_need_refresh(code, [c for _, c in pairs]):
             # 暖缓存纯读命中（0 网络 0 子进程）
-            return [c for d, c in pairs if d and d < today_str]
+            return _qfq_equivalent_closes(code, pairs, today_str)
     except Exception:
         pairs = []
     # 冷票/缺口/TTL 过期 → 子进程 CLI 自愈（内部锁内二次检查，并发安全）
     out = ptrade2("fetch-kline-cached", code, "--count", "15", timeout=60)
     pairs = _parse_kline_pairs(out)
-    return [c for d, c in pairs if d and d < today_str]
+    try:
+        return _qfq_equivalent_closes(code, pairs, today_str)
+    except Exception:
+        return [c for d, c in pairs if d and d < today_str]
 
 
 def scan_moves() -> list[str]:
@@ -851,8 +924,9 @@ def scan_moves() -> list[str]:
 
     P3 数据源（2026-09-04）：today=批量实时价（_PRICE_CACHE，拍首预取）、
     day_ago=批量昨收 pre_close（_PRE_CLOSE_CACHE；腾讯官方除权调整口径，
-    比取昨日 K 线 bar 更准）、ten_ago=market.db 缓存 raw 收盘（_fetch_cached_closes，
-    升序取 closes[9]）。状态机/滞回/输出文案逐字不变（monitor 字节语义依赖）。
+    比取昨日 K 线 bar 更准）、ten_ago=market.db 缓存收盘（_fetch_cached_closes，
+    升序取 closes[-10]；**qfq 等效折算**：跨除权 10 日窗口经 _qfq_equivalent_closes
+    折算，ten_chg 无除权跳空假摔）。状态机/滞回/输出文案逐字不变（monitor 字节语义依赖）。
     """
     if not in_trade_hours():
         return []
@@ -868,12 +942,13 @@ def scan_moves() -> list[str]:
         day_ago = fetch_pre_close(code)
         if not day_ago:
             continue
-        # ten_ago：缓存 raw 收盘，**升序 closes[-10]**=10 个交易日前（closes[-1]=
-        # 最近已收盘日=昨收；9/3 教训同源：升序数组"倒数第 N"必须用负索引，
-        # 正索引 closes[9] 是窗口内第 10 根=t-6，会系统性错位）；**bar 数==收盘日数**
-        # （今日 bar 已剪除，见 _fetch_cached_closes）
+        # ten_ago：缓存收盘折算序列（qfq 等效，**升序 closes[-10]**=10 个交易日前：
+        # closes[-1]=最近已收盘日=昨收；9/3 教训同源——升序数组"倒数第 N"必须用负
+        # 索引，正索引 closes[9] 是窗口内第 10 根=t-6，会系统性错位；**bar 数==收盘
+        # 日数**（今日 bar 已剪除，见 _fetch_cached_closes）。None=首事件退化/脏
+        # factor fail-closed（_qfq_equivalent_closes）→ 本轮跳过该票，状态机不动。
         closes = _fetch_cached_closes(code)
-        if len(closes) < 10:
+        if not closes or len(closes) < 10:
             continue
         ten_ago = closes[-10]
         # round 防浮点精度（14.999999999999991 >= 15 判定失败）

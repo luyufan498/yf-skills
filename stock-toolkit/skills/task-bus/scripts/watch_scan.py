@@ -18,6 +18,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime
 
 TASKS_DB = os.environ.get("STOCK_TASKS_DB") or os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
@@ -47,6 +48,16 @@ STOCK_WS_ROOT = os.environ.get("STOCK_ANALYSIS_WORKSPACE_ROOT",
                                "/home/catmouse/Github_Project/daily-stock-workspace")
 if STOCK_WS_ROOT not in sys.path:
     sys.path.insert(0, STOCK_WS_ROOT)
+
+# P3（2026-09-04）：进程内直读 market.db 日K缓存需要 paper_trading_v2（与
+# _earliest_fill_allowed 的 import 同一 editable 安装目录，不在默认 sys.path——
+# 补路径后 _fetch_cached_closes 可进程内纯读；import 仍失败时退回
+# fetch-kline-cached 子进程，行为不劣化）。
+_PAPER_SCRIPTS = os.path.join(os.path.dirname(STOCK_WS_ROOT),
+                              "yf-skills", "stock-toolkit", "skills",
+                              "paper-trading", "scripts")
+if os.path.isdir(_PAPER_SCRIPTS) and _PAPER_SCRIPTS not in sys.path:
+    sys.path.insert(0, _PAPER_SCRIPTS)
 
 
 def now_hhmm() -> str:
@@ -124,21 +135,109 @@ def ptrade2(*args, timeout=90) -> str:
 # 同拍价格缓存（2026-09-04 S1 修复）：E6 保护链/E7 watchpoint/E8 裸奔/E10 动量
 # 对同一股票可能重复取价——同一次 price scope 内每 code 只取一次，砍重复进程+网络。
 # monitor 每拍新进程启动，缓存天然按拍隔离（无跨拍陈旧问题）。
+# P3（2026-09-04）：run_price_scope 改为拍首一次 fetch_prices_batch 批量预取填充，
+# E6/E7/E8 的 fetch_price 退化为纯字典读（缺失才回退旧的逐票子进程路径）。
 _PRICE_CACHE: dict[str, float] = {}
+# P3 批量昨收缓存：fetch_prices_batch 填充，scan_moves 的 day_chg 直接消费
+# （昨收=交易所除权调整后的官方口径，比 K 线取昨日 bar 更准）。
+_PRE_CLOSE_CACHE: dict[str, float] = {}
+# P3 本拍批量快照：{归一码: {'price': x, 'pre_close': y}}，fetch_prices_batch 填充；
+# E11 fetch_index_day_chg 直接读（_PRICE_CACHE 只有价，day_chg 还需昨收）。
+_QUOTE: dict[str, dict] = {}
 
 
 def _clear_price_cache() -> None:
     _PRICE_CACHE.clear()
+    _PRE_CLOSE_CACHE.clear()
+    _QUOTE.clear()
+
+
+def _normalize_code(code: str) -> str:
+    """候选码归一为 sh/sz+6 位前缀码（腾讯批量接口只认前缀码）。
+
+    裸 6 位 / 点后缀（600703.SH / 601138）直接进 fetch-prices 会被静默丢弃
+    （2026-09-04 实测：批量 '601138,600703.SH,sz002151' 只回 2 只）——批量收集前
+    先归一。裸码交易所前缀启发式与 fetch_price_any 同款（5/6/8/9 开头→sh）。
+    """
+    c = (code or "").strip()
+    m = re.match(r"^(sh|sz|bj)(\d{6})$", c, re.I)
+    if m:
+        return f"{m.group(1).lower()}{m.group(2)}"
+    if re.search(r"\.(SH|SZ|BJ)$", c, re.I):
+        digits, suf = c.split(".")[0], c.split(".")[-1].lower()
+        return f"{suf}{digits}"
+    if re.match(r"^\d{6}$", c):
+        return ("sh" if c[0] in "5689" else "sz") + c
+    return c.lower()
+
+
+def fetch_prices_batch(codes: list[str]) -> dict[str, dict]:
+    """批量实时价（P3，2026-09-04）：subprocess ptrade2 fetch-prices '<逗号连接>'
+    --format json → {code: {'price': x, 'pre_close': y}}。
+
+    - 一次网络往返拿全部需价票（腾讯原生批量；50 码实测 ~1.0s 含解释器启动）；
+    - 成功的票同步填充 _PRICE_CACHE / _PRE_CLOSE_CACHE：E6/E7/E8 的 fetch_price
+      变纯字典读、E10 拿 today/pre_close、E11 拿指数涨跌幅；
+    - 失败（CLI 缺失/超时/非 JSON/空响应）→ 返回 {}，调用方降级不崩：各检测经
+      fetch_price 回退旧的逐票子进程路径；单票缺失不影响其他票
+      （fetch-prices 内部容错，返回数组里缺谁就是谁失败）。
+    """
+    norm_codes = sorted({_normalize_code(c) for c in codes if c and str(c).strip()})
+    if not norm_codes:
+        return {}
+    out = ptrade2("fetch-prices", ",".join(norm_codes), "--format", "json", timeout=60)
+    result: dict[str, dict] = {}
+    try:
+        items = json.loads(out)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(items, list):
+        return {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        code = str(it.get("code") or "").strip().lower()
+        if not code:
+            continue
+        try:
+            px = float(it["current_price"]) if it.get("current_price") is not None else None
+            pre = float(it["pre_close"]) if it.get("pre_close") is not None else None
+        except (TypeError, ValueError):
+            continue
+        if px is None or px <= 0:  # 停牌/脏 0 价 → 视同该票失败，走逐票兜底
+            continue
+        result[code] = {"price": px, "pre_close": pre}
+        _PRICE_CACHE[code] = px
+        _QUOTE[code] = {"price": px, "pre_close": pre}
+        if pre:
+            _PRE_CLOSE_CACHE[code] = pre
+    return result
+
+
+def fetch_pre_close(code: str) -> float | None:
+    """昨收（P3）：只读批量 dict 填充的 _PRE_CLOSE_CACHE；缺失返回 None。
+
+    昨收没有逐票兜底来源（旧 K 线路径已退役）——调用方对 None 跳过该票本轮。
+    """
+    return _PRE_CLOSE_CACHE.get(_normalize_code(code))
 
 
 def fetch_price(code: str) -> float | None:
     if code in _PRICE_CACHE:
         return _PRICE_CACHE[code]
+    # P3：批量预取按归一码落缓存，混合格式码（裸 6 位/点后缀）查询先归一再命中
+    norm = _normalize_code(code)
+    if norm != code and norm in _PRICE_CACHE:
+        px = _PRICE_CACHE[norm]
+        _PRICE_CACHE[code] = px  # 原键回填，后续同码查询免归一
+        return px
     out = ptrade2("fetch-price", code)
     m = re.search(r"当前价格:\s*¥([\d.]+)", out)
     px = float(m.group(1)) if m else None
     if px is not None:
         _PRICE_CACHE[code] = px
+        if norm != code:
+            _PRICE_CACHE[norm] = px
     return px
 
 
@@ -552,10 +651,17 @@ MARKET_SHOCK_STATE_KEY = "market_shock_last"
 
 
 def fetch_index_day_chg(code: str) -> float | None:
-    """拉指数单日涨跌幅（%）。用 fetch-price 返回的涨跌幅字段。"""
-    out = ptrade2("fetch-price", code)
-    m = re.search(r"涨跌幅:\s*([+-]?[\d.]+)%", out)
-    return float(m.group(1)) if m else None
+    """拉指数单日涨跌幅（%）。
+
+    P3（2026-09-04）：改读批量 dict（check_market_shock 预取填充），逐票
+    fetch-price 子进程退役。涨跌幅=(price/pre_close-1)*100，round 2——与 CLI
+    fetch-price 涨跌幅字段同算法同精度（`{change_percent:.2f}`）；指数批量支持
+    2026-09-04 实测（sh000001/sz399001 同批返回）。dict 缺该指数 → None（跳过）。
+    """
+    info = _QUOTE.get(_normalize_code(code))
+    if not info or not info.get("price") or not info.get("pre_close"):
+        return None
+    return round((info["price"] / info["pre_close"] - 1) * 100, 2)
 
 
 def check_market_shock() -> list[str]:
@@ -628,20 +734,111 @@ def pool_stocks() -> list[tuple[str, str]]:
         conn.close()
 
 
-def fetch_kline_closes(code: str) -> list[float]:
-    """日线收盘价列表，**新→旧**（closes[0]=今日）。
+def _closes_need_refresh(code: str, closes: list[float]) -> bool:
+    """进程内读库后的新鲜度自检（P3）：bar 不够 / 有缺口 / TTL 过期 → True。
 
-    2026-09-03 修复：底层 kline_fetcher.py 对 day_data `sort(key=lambda x: x['date'])`
-    输出**升序（旧→新）**——旧代码直接 append 导致 closes[0] 实为最旧 bar，
-    scan_moves 的 today/ten_ago 全部错位（拿历史价当现价判动量）。此处反转对齐注释。
+    与 market_cache.fetch_kline_cached 同口径的判定，但纯读零网络——
+    返回 True 时才走一次 fetch-kline-cached 子进程自愈（补缺/全量重建）。
     """
-    out = ptrade2("fetch-kline", code, "--type", "day", "--count", "15")
-    closes = []
-    for line in out.splitlines():
+    try:
+        from paper_trading_v2 import market_cache as _mc
+    except Exception:
+        return True  # 模块不可用 → 保守判定需刷新（子进程路径自会兜底）
+    try:
+        db = _mc.market_db_path()
+        if not os.path.exists(db):
+            return True
+        conn = sqlite3.connect(db)
+        try:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE code=? AND key='last_full_refresh_at'",
+                (code,)).fetchone()
+        finally:
+            conn.close()
+        # TTL 判定与 market_cache.fetch_kline_cached 同款
+        if not row:
+            return True
+        age_days = (time.time() - datetime.fromisoformat(row[0]).timestamp()) / 86400.0
+        if age_days > 7.0:
+            return True
+        # 缺口判定：bar 数足够 且 最新已收盘交易日已被覆盖
+        if len(closes) < 10:
+            return True
+        need = _mc.last_closed_trading_day()
+        conn = sqlite3.connect(db)
+        try:
+            newest = conn.execute(
+                "SELECT MAX(date) FROM kline_daily WHERE code=?", (code,)).fetchone()[0]
+            fail_row = conn.execute(
+                "SELECT value FROM meta WHERE code=? AND key='last_fetch_fail_at'",
+                (code,)).fetchone()
+        finally:
+            conn.close()
+        if newest and newest >= need:
+            return False
+        # 停牌票节流（P3 实测 sh688432：最后 bar 8/28，缺口永远补不齐）——
+        # 当日已试过补抓且源无新数据（last_fetch_fail_at=今天）→ 不再每拍空转自愈，
+        # 直接用现有缓存（ten_ago 锚=该票最后实际交易日，与 legacy fetch-kline 同语义）
+        if fail_row and str(fail_row[0])[:10] == datetime.now().strftime("%Y-%m-%d"):
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _parse_kline_pairs(text: str) -> list[tuple[str | None, float]]:
+    """'收: X' 行解析（与 fetch-kline/fetch-kline-cached pretty 同构）→ [(date, close)]。
+
+    📅 行给出所属日期（用于剔除今日 bar）；缺日期行的 close 以 None 日期保留
+    （日期过滤时按"不早于今日即弃"的保守口径处理不了 → None 日期一律保留，
+    仅在极端解析退化的情况下出现）。
+    """
+    pairs: list[tuple[str | None, float]] = []
+    cur_date: str | None = None
+    for line in text.splitlines():
+        dm = re.search(r"📅\s*(\d{4}-\d{2}-\d{2})", line)
+        if dm:
+            cur_date = dm.group(1)
         m = re.search(r"收:\s*([\d.]+)", line)
         if m:
-            closes.append(float(m.group(1)))
-    return list(reversed(closes))  # 源升序→反转：新→旧
+            pairs.append((cur_date, float(m.group(1))))
+    return pairs
+
+
+def _fetch_cached_closes(code: str) -> list[float]:
+    """日线收盘价列表（P3：market.db raw 缓存读），**旧→新**（closes[-1]=最近已收盘日）。
+
+    P3（2026-09-04）：逐票 `fetch-kline`（腾讯 qfq 直抓 ~1.5s/票）退役，改读
+    market.db 缓存。快路径=**进程内直读**（import paper_trading_v2 market_cache，
+    0 子进程 0 网络，~5ms/票）；库内缺口/TTL 过期才走一次 `fetch-kline-cached`
+    子进程自愈（补缺/全量重建，冷票一次性成本）。
+
+    ⚠️ 今日 bar 剪除（读侧缓存纪律兜底）：盘中今日 K 是动态脏值，且 market_cache
+    全量重建（无 end 界）可能在盘中把今日快照 bar 写进库——本函数**读时一律剪除
+    date ≥ 今日的 bar**（cache 不动）。scan_moves 的 today=批量实时价、ten_ago
+    以"最近已收盘日"为锚往回数，永不消费今日缓存 bar。
+
+    ⚠️ raw 口径注记（用户拍板接受）：market.db 存**不复权**收盘价——10 日窗口
+    内跨除权时动量含除权跳空（10 送 10 会被当 -50% 暴跌）。除权事件表
+    exright_events 已建，raw→qfq 动量折算留后续任务。
+    """
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    pairs: list[tuple[str | None, float]] = []
+    try:
+        if _PAPER_SCRIPTS not in sys.path:
+            sys.path.insert(0, _PAPER_SCRIPTS)
+        from paper_trading_v2 import market_cache as _mc
+        bars = _mc.read_cached_kline(code, 15)
+        pairs = [(b.get("date"), float(b["close"])) for b in bars if b.get("close")]
+        if pairs and not _closes_need_refresh(code, [c for _, c in pairs]):
+            # 暖缓存纯读命中（0 网络 0 子进程）
+            return [c for d, c in pairs if d and d < today_str]
+    except Exception:
+        pairs = []
+    # 冷票/缺口/TTL 过期 → 子进程 CLI 自愈（内部锁内二次检查，并发安全）
+    out = ptrade2("fetch-kline-cached", code, "--count", "15", timeout=60)
+    pairs = _parse_kline_pairs(out)
+    return [c for d, c in pairs if d and d < today_str]
 
 
 def scan_moves() -> list[str]:
@@ -651,6 +848,11 @@ def scan_moves() -> list[str]:
     - 状态不变 → 不输出（monitor 哈希稳定 → 睡眠）
     - 状态跃迁 → 输出一次（唤醒 agent 处理）
     - 滞回边界：进入甜点区 15% / 退出 14%；单日异动触发 7% / 复位 6.5%
+
+    P3 数据源（2026-09-04）：today=批量实时价（_PRICE_CACHE，拍首预取）、
+    day_ago=批量昨收 pre_close（_PRE_CLOSE_CACHE；腾讯官方除权调整口径，
+    比取昨日 K 线 bar 更准）、ten_ago=market.db 缓存 raw 收盘（_fetch_cached_closes，
+    升序取 closes[9]）。状态机/滞回/输出文案逐字不变（monitor 字节语义依赖）。
     """
     if not in_trade_hours():
         return []
@@ -658,10 +860,22 @@ def scan_moves() -> list[str]:
     states = st.get("move_states", {})  # {name: last_state}
     alerts = []
     for name, code in pool_stocks():
-        closes = fetch_kline_closes(code)
-        if len(closes) < 11:
+        # today：批量实时价（拍首 fetch_prices_batch 预取；缺失 → 该票本轮跳过）
+        today = fetch_price(code)
+        if today is None:
             continue
-        today, day_ago, ten_ago = closes[0], closes[1], closes[10]
+        # day_ago：批量昨收（pre_close；缺失 → 该票本轮跳过）
+        day_ago = fetch_pre_close(code)
+        if not day_ago:
+            continue
+        # ten_ago：缓存 raw 收盘，**升序 closes[-10]**=10 个交易日前（closes[-1]=
+        # 最近已收盘日=昨收；9/3 教训同源：升序数组"倒数第 N"必须用负索引，
+        # 正索引 closes[9] 是窗口内第 10 根=t-6，会系统性错位）；**bar 数==收盘日数**
+        # （今日 bar 已剪除，见 _fetch_cached_closes）
+        closes = _fetch_cached_closes(code)
+        if len(closes) < 10:
+            continue
+        ten_ago = closes[-10]
         # round 防浮点精度（14.999999999999991 >= 15 判定失败）
         day_chg = round((today / day_ago - 1) * 100, 2) if day_ago else 0.0
         ten_chg = round((today / ten_ago - 1) * 100, 2) if ten_ago else 0.0
@@ -1138,11 +1352,90 @@ def check_orphan_slots() -> list[str]:
             for s in slots]
 
 
+def _collect_price_scope_codes() -> set[str]:
+    """price scope 拍首批量预取的 code 收集（P3）：E1/E6/E7/E8/E10/E11 全部需价码。
+
+    - E1 挂单槽：pending_order 槽首成员 code（_slot_member_code）；
+    - E6 保护链：conditions JOIN position 的去重 code 集合；
+    - E7 watchpoint：watch_points 的 code（缺码实体兜底 pool_stocks 映射）；
+    - E8 裸奔错位检测：有净持仓 open 段中非 NEWS 段的 code；
+    - E10 动量：pool_stocks 的 code；
+    - E11 大盘：MARKET_INDICES 四大指数（腾讯批量支持指数，2026-09-04 实测）。
+    只读 DB（master_pool 生产库只读约束），一次连接批量取完。
+    """
+    codes: set[str] = set()
+    codes.update(MARKET_INDICES)                                   # E11
+    # E7：watch_points 的 code 集合（kv_store，含裸 6 位/点后缀——批量前归一化；
+    # 不在池的实体也收集，避免 E7 逐票兜底 subprocess）
+    if os.path.exists(TASKS_DB):
+        conn = sqlite3.connect(TASKS_DB)
+        try:
+            row = conn.execute("SELECT value FROM kv_store WHERE key='watch_points'").fetchone()
+            if row:
+                pts = json.loads(row[0])
+                if isinstance(pts, dict):
+                    for plist in pts.values():
+                        if isinstance(plist, list):
+                            for p in plist:
+                                if isinstance(p, dict) and p.get("code"):
+                                    codes.add(str(p["code"]))
+        except (sqlite3.Error, json.JSONDecodeError, TypeError):
+            pass  # kv 不可读 → E7 走 pool 映射兜底，不阻塞收集
+        finally:
+            conn.close()
+    if not os.path.exists(POOL_DB):
+        return codes
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    try:
+        # E1：挂单槽首成员（带 SQL 兜底，取不到的槽在检测内报"无成员段"）
+        try:
+            for r in conn.execute(
+                    "SELECT event_key FROM event_slots WHERE status='pending_order'").fetchall():
+                c = _slot_member_code(r[0])
+                if c:
+                    codes.add(c)
+        except sqlite3.OperationalError:
+            pass
+        # E6：conditions JOIN position（与 check_price_triggers 同 SQL，取 code 列）
+        for r in conn.execute(
+                "SELECT DISTINCT a.code FROM conditions cn JOIN position a ON cn.account_id=a.id "
+                "WHERE cn.status='active' AND cn.price IS NOT NULL AND a.code IS NOT NULL"):
+            codes.add(r[0])
+        # E7 watchpoint：code 缺失的实体由 pool_stocks 兜底映射（与 E10 合并拉取）
+        for r in conn.execute(
+                "SELECT p.stock, COALESCE(p.code, "
+                "(SELECT code FROM position WHERE stock=p.stock AND code IS NOT NULL LIMIT 1)) "
+                "FROM pool p WHERE p.pool_status='active' AND COALESCE(p.strategy,'') != 'NEWS'"):
+            if r[1]:
+                codes.add(r[1])
+        # E8：裸奔错位检测取价对象 = 非 NEWS 的实际持仓段（NEWS 段保护线由
+        # sleeve-fill 挂载，错位检测不消费——与 check_naked_conditions 行内查询同口径）
+        for r in conn.execute(
+                "SELECT DISTINCT p.code FROM position p WHERE p.status='open' AND "
+                "COALESCE(p.strategy,'')!='NEWS' AND p.code IS NOT NULL AND EXISTS ("
+                "  SELECT 1 FROM trades t WHERE t.account_id=p.id GROUP BY t.account_id"
+                "  HAVING SUM(CASE WHEN t.operation='buy' THEN t.quantity"
+                "                  ELSE -t.quantity END) > 0)"):
+            codes.add(r[0])
+    finally:
+        conn.close()
+    return {c for c in (x.strip() for x in codes) if c}
+
+
 def run_price_scope() -> int:
     """price scope 主流程（v12 C1 price-watch 心跳 monitor）：E1 挂单槽四态扫描
     + E6 保护链扫描（承接 legacy check_price_triggers 全账户扫，含 strategy='NEWS'
     成员段——成交后保护链归属的延续监督，触发写 WATCH_ALERT 供 C1 消费执行）。
-    静默 news 检出/任务列举/atr/异动/大盘等——专用心跳只看价格输出，防串唤醒。"""
+    静默 news 检出/任务列举/atr/异动/大盘等——专用心跳只看价格输出，防串唤醒。
+
+    P3（2026-09-04）性能改造：拍首 _collect_price_scope_codes 收集全部需价码 →
+    **一次 fetch_prices_batch 批量实时价**（腾讯原生批量，50 码 ~1.0s）填充
+    _PRICE_CACHE/_PRE_CLOSE_CACHE/_QUOTE → E6/E7/E8 的 fetch_price 变纯字典读、
+    E10 消费批量价+昨收+market.db 日K缓存、E11 读批量指数涨跌幅。常规拍子进程
+    从 ~100 个降到 1 个（+冷票时每票 1 次 fetch-kline-cached 补抓）。
+    预取失败（返回 {}）→ 各检测自动退回旧的逐票 fetch_price 路径，不崩。
+    """
+    fetch_prices_batch(list(_collect_price_scope_codes()))  # 拍首唯一实时价请求（填充同拍缓存）
     lines = []
     lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
     lines.extend(check_orphan_slots())      # E1b：孤儿槽（开槽未挂单，v12 断链兜底）

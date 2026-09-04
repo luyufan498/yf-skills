@@ -111,7 +111,7 @@ def master_pool_allocate(
                                         "必须伴配 --rotation-out）"),
     rotation_out: Optional[str] = typer.Option(
         None, "--rotation-out",
-        help="承诺率>80% 时的伴配换出票 CODE（须有技术组 open 段；插 ROTATION_EXIT 事件，"
+        help="伴配换出票 CODE（须有技术组 open 段；自动挂卖出 watchpoint mode=sell，"
              "T+1 内挂出）"),
 ):
     """开持仓段（v11 信封化：只立 budget 承诺不动现金；--code 缺失时自动查码补全）"""
@@ -123,7 +123,7 @@ def master_pool_allocate(
         mpm.allocate(stock, amount, reason, source=source, code=code,
                      entry_mode=entry_mode, rotation_out=rotation_out)
         typer.echo(f"✅ 分配 {stock} ¥{amount:,.0f} ({code})"
-                   + (f"（轮换换入，换出 {rotation_out}——ROTATION_EXIT 事件已排队）"
+                   + (f"（轮换换入，换出 {rotation_out}——卖出 watchpoint 已挂）"
                       if rotation_out else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

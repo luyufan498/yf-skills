@@ -279,7 +279,7 @@ class MasterPoolManager:
             if is_entry and not manual:
                 if entry_mode == 'rotation':
                     # 轮换义务帽：未平仓义务（audit rotation_in 且其 rotation_out 标的
-                    # 技术段仍有持仓=ROTATION_EXIT 未销账）不含本段 >1 → 拒
+                    # 技术段仍有持仓=卖出义务未销账）不含本段 >1 → 拒
                     open_obs = []
                     for r in conn.execute("SELECT stock, reason FROM audit WHERE "
                                           "action='rotation_in'").fetchall():
@@ -381,8 +381,9 @@ class MasterPoolManager:
         - 承诺率门：Σ段预算/total > 80% 且 entry_mode='normal' 且非 manual → 拒，
           话术引 §8.2.3（须先做轮换评估：候选 vs 场内低价值），除非 --rotation-out CODE
           伴配（CODE 必须有技术组 open 段，否则拒；audit rotation_out/rotation_in 行
-          + task_bus ROTATION_EXIT 事件，跨包失败降级：stdout 警告+audit 留痕，
-          入场不回滚——事件可晨审补挂）。
+          + 卖出 watchpoint（kv_store，mode=sell 现价×0.99 限价，2026-09-04 起——
+          ROTATION_EXIT 事件已退役），跨包失败降级：stdout 警告+audit 留痕，
+          入场不回滚——卖单可晨审补挂）。
         - 30% 单股帽/20 段位帽/冷却/同票互斥：保留（相对条件写+rowcount 认领不变）。
 
         pool='sleeve'：消息池成员拨款——**段 cash 模型分毫不动（红线：明早 9:30
@@ -458,7 +459,7 @@ class MasterPoolManager:
                         f"{ROTATION_GATE*100:.1f}%（预留 1/3 机动，9/3 裁决）——新入场须先做"
                         f"轮换评估（候选 vs 场内低价值，机械分，纪律 §8.2.3）：确认候选价值"
                         f"高于场内垫底持仓后，用 --entry-mode rotation --rotation-out CODE "
-                        f"伴配入场（CODE=拟换出票，将插 ROTATION_EXIT 事件限 T+1 挂出）；"
+                        f"伴配入场（CODE=拟换出票，自动挂卖出 watchpoint 限 T+1 挂出）；"
                         f"人工裁决可 --source manual（L1 特权同款）")
                 strat, pool_code = self._get_strategy(conn, stock)
                 if code is None:
@@ -558,7 +559,7 @@ class MasterPoolManager:
                     conn.execute("INSERT INTO operations (account_id, seq, type, capital, timestamp, "
                                  "note) VALUES (?,0,'init',?,?,'初始化资金池（段直建）')",
                                  (seg_id, amount, now))
-            # 跨包 task_bus ROTATION_EXIT 事件（事务外：事件失败不回滚入场——降级合同）
+            # 跨包卖出 watchpoint（事务外：挂点失败不回滚入场——降级合同）
             if pool == 'main' and rotation_out:
                 self._emit_rotation_exit(rotation_out, rotation_out_code, stock, reason)
             return True
@@ -566,36 +567,109 @@ class MasterPoolManager:
             conn.close()
 
     @staticmethod
-    def _emit_rotation_exit(rotation_out, code, inbound, reason):
-        """ROTATION_EXIT 事件（task_bus）：消费者=心跳认领→挂卖出 watchpoint（T+1 内
-        可成交限价）→done。跨包 import 失败降级：stdout 警告 + audit 'rotation_exit_pending'
-        留痕，入场不回滚（事件可晨审补挂）。"""
-        payload = {"stock": rotation_out, "code": code, "source": "rotation_gate",
-                   "reason": (f"轮换伴配换出（换入 {inbound}）"
-                              + (f"：{reason}" if reason else ""))}
+    def _import_taskbus_db():
+        """跨包 import task_bus.db（失败降级 None，调用方 audit 留痕）。
+
+        参考既有 sys.path 插入模式：paper_trading_v2/ → ../../task-bus/scripts。"""
         try:
             from task_bus import db as taskbus_db
         except ImportError:
-            taskbus_db = None
+            import sys
+            _here = os.path.dirname(os.path.realpath(__file__))
+            _tb = os.path.realpath(os.path.join(_here, '..', '..', '..',
+                                                'task-bus', 'scripts'))
+            if os.path.isdir(os.path.join(_tb, 'task_bus')) and _tb not in sys.path:
+                sys.path.insert(0, _tb)
             try:
-                import sys
-                _here = os.path.dirname(os.path.realpath(__file__))
-                _tb = os.path.realpath(os.path.join(_here, '..', '..', '..',
-                                                    'task-bus', 'scripts'))
-                if os.path.isdir(os.path.join(_tb, 'task_bus')) and _tb not in sys.path:
-                    sys.path.insert(0, _tb)
                 from task_bus import db as taskbus_db
             except ImportError:
-                taskbus_db = None
-        if taskbus_db is not None:
+                return None
+        return taskbus_db
+
+    @staticmethod
+    def _emit_rotation_exit(rotation_out, code, inbound, reason):
+        """轮换出池 → 直接写卖出 watchpoint（kv_store('watch_points')，2026-09-04）：
+
+        ROTATION_EXIT 事件类型已退役（task_bus/db.py TYPES 白名单移除），轮换卖单
+        改走 watchpoint sell 机制——{mode:'sell', price: 现价×0.99}，现价 ≥ 挂点触发
+        （次日可成交限价，禁梦价），心跳 watch_scan E7 触发 → WATCH_ALERT(mode=sell)
+        → C1 消费执行卖仓。原 taskbus_db.add('ROTATION_EXIT') 在白名单退役后会
+        ValueError，故直接写 watchpoint，一处机制多处用。
+
+        跨包 import 失败/写库失败降级：stdout 警告 + audit 'rotation_exit_pending'
+        留痕，入场不回滚（卖单可晨审补挂）。现价 fetch 失败 → price=None 占位 +
+        note 注明'晨审补价'（无价点不触发，由晨审 agent 补挂真实限价）。
+        """
+        taskbus_db = MasterPoolManager._import_taskbus_db()
+        if taskbus_db is None:
+            print("⚠️ task_bus 包不可 import（卖出 watchpoint 降级 audit 留痕，晨审补挂）")
+            MasterPoolManager._audit_rotation_exit_pending(rotation_out, inbound,
+                                                           "task_bus 不可达")
+            return
+        note = f"轮换出池换入{inbound}限价卖"
+        price = None
+        if code:
             try:
-                taskbus_db.add("ROTATION_EXIT", rotation_out, source="rotation_gate",
-                               priority=1, payload=payload)
-                return
+                price = MasterPoolManager._fetch_rotation_price(code)
             except Exception as e:
-                print(f"⚠️ ROTATION_EXIT 事件插入失败（入场不回滚，晨审补挂）：{e}")
-        else:
-            print("⚠️ task_bus 包不可 import（ROTATION_EXIT 降级 audit 留痕，晨审补挂）")
+                print(f"⚠️ 轮换出池现价获取失败（{code}）：{e}——挂点无价，晨审补价")
+        if price is None:
+            note += "（晨审补价：现价获取失败，price 占位待补真实限价）"
+        try:
+            points = taskbus_db.kv_get('watch_points')
+            if not isinstance(points, dict):
+                points = {}
+            # sell 触发价 = 现价×0.99（次日可成交限价，禁梦价）；fetch 失败 → None 占位
+            sell_price = round(price * 0.99, 2) if price is not None else None
+            pts = points.setdefault(rotation_out, [])
+            pts.append({
+                "code": code, "price": sell_price,
+                "note": note, "mode": "sell", "amount": None, "min": None,
+                "added_at": datetime.now().strftime("%m-%d %H:%M"),
+            })
+            taskbus_db.kv_set('watch_points', points)
+            px_txt = (f"触发价 ¥{sell_price}（现价¥{price:.2f}×0.99 限价）"
+                      if sell_price is not None else "⚠️无现价占位（晨审补价）")
+            print(f"✅ 轮换出池 {rotation_out}({code}) 卖出 watchpoint 已挂：{px_txt}（换入 {inbound}）")
+        except Exception as e:
+            print(f"⚠️ 卖出 watchpoint 写入失败（入场不回滚，晨审补挂）：{e}")
+            MasterPoolManager._audit_rotation_exit_pending(rotation_out, inbound,
+                                                           f"watchpoint 写入失败：{e}")
+
+    @staticmethod
+    def _fetch_rotation_price(code):
+        """轮换出池现价（fetch 失败抛异常由调用方降级）：先 paper_trading_v2
+        StockPriceFetcher（同包无跨包问题），失败回退 taskbus 侧 ptrade2 CLI。
+        """
+        try:
+            from paper_trading_v2.price_fetcher import StockPriceFetcher
+            info = StockPriceFetcher().get_realtime_price(code)
+            if info and info.current_price:
+                return float(info.current_price)
+        except Exception:
+            pass
+        # 回退：watch_scan 的 fetch_price（ptrade2 fetch-price，'当前价格: ¥X'）
+        import sys
+        _here = os.path.dirname(os.path.realpath(__file__))
+        _tb = os.path.realpath(os.path.join(_here, '..', '..', '..',
+                                            'task-bus', 'scripts'))
+        if os.path.isdir(_tb) and _tb not in sys.path:
+            sys.path.insert(0, _tb)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_watch_scan_price", os.path.join(_tb, "watch_scan.py"))
+        if spec is None or spec.loader is None:
+            raise ImportError(f"watch_scan.py 无法加载（{_tb}）")
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)   # 模块级只定义函数/常量，无副作用
+            return mod.fetch_price_any(code)
+        finally:
+            sys.modules.pop("_watch_scan_price", None)
+
+    @staticmethod
+    def _audit_rotation_exit_pending(stock, inbound, why):
+        """降级留痕：audit 'rotation_exit_pending' 行（晨审按此补挂卖出 watchpoint）。"""
         try:
             conn = MasterPoolManager()._conn()
             now = datetime.now().isoformat()
@@ -604,13 +678,13 @@ class MasterPoolManager:
                     conn.execute(
                         "INSERT INTO audit (timestamp, action, stock, amount, reason, "
                         "source) VALUES (?,?,?,?,?,?)",
-                        (now, 'rotation_exit_pending', rotation_out, None,
-                         f"task_bus 不可达，ROTATION_EXIT 待晨审补挂（换入 {inbound}）",
+                        (now, 'rotation_exit_pending', stock, None,
+                         f"{why}，卖出 watchpoint 待晨审补挂（换入 {inbound}）",
                          'rotation_gate'))
             finally:
                 conn.close()
         except Exception as e2:
-            print(f"⚠️ ROTATION_EXIT 降级 audit 留痕也失败（不阻断入场）：{e2}")
+            print(f"⚠️ 轮换出池降级 audit 留痕也失败（不阻断入场）：{e2}")
 
     # ---------- topup ----------
 

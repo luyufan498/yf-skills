@@ -191,30 +191,39 @@ def test_a2_envelope_allocate_moves_no_cash(pools, env):
     assert (seg['cash'] or 0) == 0, "段.cash=0 常态（预算≠现金）"
 
 
-def test_a3_rotation_companion_allows_and_emits_event(pools, env, monkeypatch):
+def test_a3_rotation_companion_allows_and_writes_sellpoint(pools, env, monkeypatch):
     """承诺率>80% + --rotation-out 合法技术 open 段 → 放行；audit rotation_out 行
-    + task_bus ROTATION_EXIT 事件（payload={stock, code, source, reason}）。"""
+    + 卖出 watchpoint（kv_store('watch_points')，mode=sell，price=现价×0.99）。
+    （2026-09-04 改造：ROTATION_EXIT 事件退役，轮换卖单直写 watchpoint sell 点。）"""
     tasks_db = env / 'tasks.db'
     monkeypatch.setenv('STOCK_TASKS_DB', str(tasks_db))
     _commitment_env(env, pools, [('换出甲', 3_000_000, 3_000_000),
                                  ('换出乙', 3_000_000, 3_000_000),
                                  ('换出丙', 2_050_000, 2_050_000)])
-    pools.allocate('轮换入', 400_000, reason='高价值轮换',
-                   entry_mode='rotation', rotation_out='换出甲')
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price',
+               return_value=_PI(10.0)):
+        pools.allocate('轮换入', 400_000, reason='高价值轮换',
+                       entry_mode='rotation', rotation_out='换出甲')
     seg = _seg_row(env, '轮换入')
     assert seg is not None
     ro = _audit_rows(env, 'rotation_out', '换出甲')
     assert len(ro) == 1, f"audit rotation_out 行缺失：{ro}"
     assert ro[0]['reason'] and '轮换入' in ro[0]['reason']
-    assert tasks_db.exists(), "task_bus ROTATION_EXIT 事件库未建（跨包写入失败未降级留痕？）"
+    assert tasks_db.exists(), "task_bus kv 库未建（跨包写入失败未降级留痕？）"
     tconn = sqlite3.connect(str(tasks_db))
     tconn.row_factory = sqlite3.Row
-    rows = tconn.execute("SELECT * FROM task_events WHERE type='ROTATION_EXIT'").fetchall()
+    row = tconn.execute("SELECT value FROM kv_store WHERE key='watch_points'").fetchone()
+    ev = tconn.execute("SELECT COUNT(*) c FROM task_events WHERE type='ROTATION_EXIT'").fetchone()['c']
     tconn.close()
-    assert len(rows) == 1, f"ROTATION_EXIT 事件数={len(rows)}"
-    payload = json.loads(rows[0]['payload'])
-    assert payload['stock'] == '换出甲' and payload['source'] == 'rotation_gate'
-    assert payload.get('code') and payload.get('reason')
+    assert ev == 0, "ROTATION_EXIT 已退役，不得再生产"
+    assert row, "watch_points kv 未写（跨包写入失败未降级留痕？）"
+    pts = json.loads(row['value'])
+    assert '换出甲' in pts, pts
+    p = pts['换出甲'][0]
+    assert p['mode'] == 'sell', p
+    assert p['price'] == pytest.approx(9.9), f"price 应=现价10×0.99=9.9，实得 {p['price']}"
+    assert '轮换出池换入轮换入限价卖' in p['note'], p
+    assert p.get('code'), "watchpoint 须带 code（心跳取价用）"
 
 
 def test_a4_rotation_out_fake_code_rejected(pools, env):
@@ -279,7 +288,7 @@ def test_b2_rotation_entry_buy_floor_exempt(pools, env, monkeypatch):
 
 def test_b3_rotation_obligation_over_one_rejected(pools, env, monkeypatch):
     """未平仓轮换义务≤1：第二笔 rotation 段入场时第一义务未销账 → 拒；
-    卖换出票（sell 回池=ROTATION_EXIT 销账）后放行。"""
+    卖换出票（sell 回池=卖出义务销账）后放行。"""
     monkeypatch.setenv('STOCK_TASKS_DB', str(env / 'tasks.db'))
     _commitment_env(env, pools, [('义甲', 2_800_000, 2_800_000),
                                  ('义乙', 2_800_000, 2_800_000),

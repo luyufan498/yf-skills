@@ -320,6 +320,8 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
     mode="eval"（技术组 L2 待命复检价格点）：不标记 conditions（无账户条件），payload 带 mode 供消费方区分。
     mode="buy"（技术组 L2 建仓点）：同 eval 不碰 conditions，额外带 budget（建仓预算）供消费方 allocate。
+    mode="sell"（卖出点，2026-09-04）：同 eval/buy 不碰 conditions；direction=sell + payload.mode=sell
+      供 C1 price-watch 消费执行卖仓/减仓（限价卖；挂点语义=触发后心跳 agent 执行）。
     tp_only=True（止盈阶梯，2026-08-30）：**只标记触发的 TP 条件本身**，不做 family 标记——
       阶梯只卖 1/3、仓位存续，family UPDATE（category='hard'）会连坐清掉
       cost_protection/trailing_stop，造成余仓裸奔。
@@ -1145,9 +1147,9 @@ def run_price_scope() -> int:
     lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
     lines.extend(check_orphan_slots())      # E1b：孤儿槽（开槽未挂单，v12 断链兜底）
     lines.extend(check_price_triggers())    # E6：保护链（全账户含 NEWS 段）
-    lines.extend(check_watch_points())      # E7：技术组 watchpoint buy/eval 触发（2026-09-04
+    lines.extend(check_watch_points())      # E7：技术组 watchpoint buy/eval/sell 触发（2026-09-04
                                             #   C1 吸收 legacy——C1=唯一股价盯盘心跳，脚本前置触发
-                                            #   →WATCH_ALERT 事件供 C1 消费核验/复检）
+                                            #   →WATCH_ALERT 事件供 C1 消费核验/复检/卖出）
     lines.extend(check_naked_conditions())  # E8：裸奔告警（无保护链的实际持仓段，同属股价盯盘）
     lines.extend(atr_sync_daily())          # E9：每日首次交易 tick 止损位同步（2026-09-04 随
                                             #   ATR 归价格域从 legacy 迁入——纯脚本，成功静默
@@ -1217,6 +1219,17 @@ def check_watch_points() -> list[str]:
     - mode=eval（技术组 L2 待命复检点）→ WATCH_ALERT(mode=eval) 唤醒分析 agent 复检
       （升 L1 挂 conditions / 继续观察 / 移除——原"评估升级"语义，L3 已并 L2）
     - mode=buy（技术组 L2 建仓点）→ WATCH_ALERT(mode=buy, budget=金额) 唤醒核验 → allocate → buy
+    - mode=sell（卖出点，2026-09-04 加，ROTATION_EXIT 退役后轮换出池/主动止盈挂点）→
+      WATCH_ALERT(mode=sell, direction=sell) 唤醒 C1 执行卖仓/减仓
+
+    触发方向按 mode 分流（2026-09-04 sell 加入）：
+    - buy/eval（买/复检点）：单值 现价 ≤ price；配 min 则区间 现价 ∈ [min, price]
+      （min=区间下沿，price=上沿——越跌越接近触发，price 是上限）。
+    - sell（卖出点，方向相反）：单值 现价 ≥ price 触发（涨到/回到目标价才卖）；
+      配 min 则区间 现价 ∈ [price, min] 且要求 price < min——此时 price=**下沿**触发价、
+      min=**上沿**封顶价（语义复用现字段：add 校验保证 0 < price < min）。
+      即 sell 区间 = 现价落在 [触发下沿, 上沿封顶] 内才卖（如 12.0~12.5 带内限价卖），
+      越涨越接近触发，price 是下限——与 buy/eval 的 [min, price] 镜像对称。
     """
     if not in_trade_hours() or not os.path.exists(TASKS_DB):
         return []
@@ -1235,6 +1248,31 @@ def check_watch_points() -> list[str]:
         if price is None:
             continue
         for p in pts:
+            note = p.get("note", "")
+            mode = p.get("mode", "eval")
+            # ---- sell 分支（2026-09-04，ROTATION_EXIT 退役后轮换出池卖单走此路）----
+            # 卖出点方向与 buy/eval 相反：现价 ≥ price 触发（涨到/回到目标价才卖）。
+            # 配 min 则区间触发：现价 ∈ [price, min]，add 校验保证 0 < price < min——
+            # price=下沿触发价（卖出下限），min=上沿封顶价（高于上沿不卖，防追价脱靶）。
+            if mode == "sell":
+                min_price = p.get("min")
+                if min_price is not None:
+                    hit = p["price"] <= price <= min_price
+                else:
+                    hit = price >= p["price"]
+                if hit:
+                    cond_name = f"卖出点-{note}" if note else "卖出点"
+                    if _write_alert(entity, code, "sell", 0, cond_name, p["price"], price,
+                                    mode="sell"):
+                        range_txt = (f"（带内 ¥{p['price']}~{min_price}）"
+                                     if min_price is not None else "")
+                        alerts.append(f"💰 {entity}({code}) 卖出点触发: 现价¥{price} ≥ ¥{p['price']} "
+                                      f"{range_txt}[{note}] → 唤醒 C1 执行卖仓/减仓（限价卖）")
+                        points.pop(entity, None)  # 触发即失效（同 buy/eval）
+                        changed = True
+                        break  # 触发即处理完该实体（同 buy/eval 单点语义）
+                continue
+            # ---- buy/eval 分支（原逻辑不动）----
             # 区间触发：配了 min 则现价 ∈ [min, price] 才触发；单值保持 现价 ≤ price
             min_price = p.get("min")
             if min_price is not None:
@@ -1242,8 +1280,6 @@ def check_watch_points() -> list[str]:
             else:
                 hit = price <= p["price"]
             if hit:
-                note = p.get("note", "")
-                mode = p.get("mode", "eval")
                 if mode == "buy":
                     cond_name = f"建仓点-{note}" if note else "建仓点"
                     budget = p.get("amount")

@@ -699,7 +699,7 @@ ptrade analysis "<股票名>" --action save --file report.md
 4. **2/3 轮换门（v11，9/3 修订：基于真实值）**：**真实占用率 >2/3**（净持仓成本口径，预留 1/3 机动资金）时，一切新入场（allocate 新段/技术 buy 点首仓/消息→技术迁移建段）必须过轮换评估——机械分对比候选与场内：
    - 低价值机械分（LLM 只执行排序不自创维度）：① 论点未兑现（入场 CALENDAR 复评判"继续观察"/入场后 m10 从未进甜点区）② 低价值磨（浮亏>8% 且加仓档已消耗且 15 日无 imp≥3 事件）③ 停滞（m10 死区 N 日无进展）。
    - 候选分（对比项）：新鲜 imp≥4 / 动量进甜点 / CALENDAR 临近确认。
-   - 候选 > 场内最低分 → `allocate --rotation-out CODE`：入场放行 + 自动生成 ROTATION_EXIT 卖出事件（次日可成交限价，禁梦价）；一换一原子对，audit 记 rotation_in/out。
+   - 候选 > 场内最低分 → `allocate --rotation-out CODE`：入场放行 + 自动挂卖出 watchpoint（mode=sell，price=现价×0.99 次日可成交限价，禁梦价——2026-09-04 起，ROTATION_EXIT 事件已退役，卖单走 watchpoint sell 机制由 C1 心跳消费）；一换一原子对，audit 记 rotation_in/out。
    - 找不到更弱的 → 入场拒绝，等释放/止损降承诺率。20% floor 只作换仓窗口缓冲（义务未回款前允许穿底一次），非轮换穿底禁止。
 
 ### 8.3 三档策略

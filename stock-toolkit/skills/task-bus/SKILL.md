@@ -76,6 +76,7 @@ watch_scan `check_naked_conditions` 的 `[ALERT] 裸奔` = **有实际持仓（F
 - **mode=trade（L1 条件触发）**：buy（现价 ≤ 买点）→ 消费 agent 评估纪律后执行买入，或纪律否决时调整买卖点；sell（现价 ≤ 止损/保护）→ 确认破位后执行卖出，hard 条件只升不降；**止盈阶梯（cond_name 含"分批止盈"，现价 ≥ 触发价，2026-08-30）**→ 确认当日为收盘确认后**次日**卖出持仓 1/3（T+1），`conditions --action trigger` 标记 + `sell --note "止盈阶梯①/②（成本¥X→现价¥Y 浮盈+Z%）"` 必填；**只标记该 TP 条件，禁止动保护线/移动止损**（余仓 1/3 继续 2.5×ATR 跟随）
 - **mode=eval（技术组 L2 待命复检点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 复检**（升 L1 挂 conditions / 重设价格点 / 移除；原"评估升级 L2"——L3 已并入 L2），**不直接交易**。触发后价格点自动移除（触发即失效）
 - **mode=buy（技术组 L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → allocate → buy**（见下方消费约定）。到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
+- **mode=sell（卖出点触发，2026-09-04 加——ROTATION_EXIT 事件退役后轮换出池卖单走此路）**：`taskbus watchpoint add --mode sell --price <卖出触发价>` 设置的价格点穿越（**方向与 buy/eval 相反：现价 ≥ price 触发**，涨到/回到目标价才卖；配 `--min` 则带内 [price, min] 卖出，price=下沿触发价、min=上沿封顶价，须 price<min）→ WATCH_ALERT(mode=sell, direction=sell) 唤醒 C1 **执行卖仓/减仓（限价卖，禁梦价）**。触发后价格点自动移除。轮换出池由 `ptrade2 master-pool-allocate --rotation-out CODE` 自动挂点（price=现价×0.99 次日可成交限价，master_pool 自动写入，无需手工）
 - **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday（12:05 收闻）发现 **L1/L2 持仓 + sleeve 持仓（NEWS 段）**标的 imp≥4 利空（立案/退市/停牌/暴雷/减持，payload 带 news_event=newsdb事件ID）时写入——补心跳纯价格触发的非价格信号盲区。消费：交易 subagent 查 newsdb 核真实性 → 对照持仓 → 防御评估。**盘中卖出仅限硬利空实锤（停牌/立案类）**；价格类止损仍走收盘确认纪律，普通坏消息不恐慌割肉
 - **sleeve 持仓（NEWS 段；v9 组由段 strategy 推导）禁 conditions 全家/禁 buy/禁 topup**（CLI 能力矩阵闸门强制执行，违例=报错+shadow_log gate_violation）
 - **⚠️ `--amount` 语义 = 段预算（建段金额），不是首笔买入金额**：初始建段统一 = 总池 5%（1000 万池 → **¥500,000**）；首笔比例是 buy 阶段按策略矩阵（3.0.0）计算（如消息仓 5-20% × 50 万 = 2.5-10 万），**绝不填进 --amount**——填错会把段建小（如沃森生物 8/24 只建了 10 万=1% 池，8/25 修正案例）
@@ -191,7 +192,8 @@ taskbus ack 42 43 44 --note "串行消费完成"     # 批量完成
 taskbus watchpoint add 光智科技 --price 240 --note "买点下沿-重新评估"          # L2 待命复检点（eval，原 L3 观察价点）
 taskbus watchpoint add 赛力斯 --price 24.5 --mode buy --amount 200000 --code sh601127 --note "建仓10%"  # L2 建仓点
 taskbus watchpoint add 中芯国际 --price 135 --min 130 --mode buy --amount 200000 --code sh688981 --note "区间建仓(130-135)"  # 区间触发（2026-08-25 支持）
-taskbus watchpoint list                        # 查看全部价格点（👀观=eval / 🛒买=buy）
+taskbus watchpoint add 换出股 --price 12.0 --mode sell --code sh600871 --note "轮换出池限价卖"  # 卖出点（现价≥12.0 触发卖出；轮换出池由 allocate --rotation-out 自动挂，无需手工）
+taskbus watchpoint list                        # 查看全部价格点（👀观=eval / 🛒买=buy / 💰卖=sell）
 taskbus watchpoint remove 赛力斯                # 移除价格点
 ```
 

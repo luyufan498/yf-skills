@@ -36,7 +36,7 @@
 移交桥：sleeve-migrate（单向一次，原成本结转+双 ledger 对转+加仓锁，禁回迁）
 ```
 
-- **allocate（v11 信封化）**：只立 budget=承诺（计划层，可超售），**不从 free 搬 cash**——段 cash=0 常态，钱只在 buy 瞬间出池。校验：**真实占用率门**（Σ净持仓成本/total>2/3（66.7%，预留 1/3；9/3 裁决真实值口径，承诺率仅展示）且 normal 且非 manual → 拒，话术引 §8.2.3 轮换评估；`--entry-mode rotation --rotation-out CODE` 伴配放行=audit rotation_out/in 行 + task_bus ROTATION_EXIT 事件，CODE 须有技术组 open 段）、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。**初始段默认总池 5%**（策略矩阵见 trading-discipline 3.0.0）。
+- **allocate（v11 信封化）**：只立 budget=承诺（计划层，可超售），**不从 free 搬 cash**——段 cash=0 常态，钱只在 buy 瞬间出池。校验：**真实占用率门**（Σ净持仓成本/total>2/3（66.7%，预留 1/3；9/3 裁决真实值口径，承诺率仅展示）且 normal 且非 manual → 拒，话术引 §8.2.3 轮换评估；`--entry-mode rotation --rotation-out CODE` 伴配放行=audit rotation_out/in 行 + 卖出 watchpoint（kv_store，mode=sell，price=现价×0.99 限价——2026-09-04 起，ROTATION_EXIT 事件已退役），CODE 须有技术组 open 段）、单股 ≤30%×total、总 open 段 <20、不在冷却期、无已 open 段。**初始段默认总池 5%**（策略矩阵见 trading-discipline 3.0.0）。
 - **buy（v11 买路径单点）**：entry（段首仓，normal）过物理 floor 门——成交后 pool.free<20%×total → 拒（真实口径；rotation 段豁免但未平仓轮换义务≤1；topup buy 豁免=机动资金本意；manual 段全豁免）。段 cash 不足自动从 pool 拨付差额（audit `pool_grant`）；池不足=物理硬拒。
 - **topup（v11 信封加码）**：段 budget/topup_total += amount（机动权利加码），**free/段 cash 均不动**。校验累计 ≤30%×total；消息组（NEWS 段）禁 topup（闸门）。
 - **sell（v11 回池）**：v11 信封段回款直接回 pool.free（audit `pool_return`），段 cash 不留存（流动性归公，再买仍可拨付）；清仓自动 release 兼容（残留 cash≈0）。

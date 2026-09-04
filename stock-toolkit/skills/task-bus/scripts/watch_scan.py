@@ -210,7 +210,10 @@ def check_tasks() -> list[dict]:
             "SELECT id, type, entity, priority, source FROM task_events "
             "WHERE status='pending' AND type NOT IN "
             "('CALENDAR','L3_SNAPSHOT','MSG_SNAPSHOT',"
-            "'MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE') "
+            "'MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE',"
+            # analysis-ttl（9/4）：ANALYSIS_REFRESH 唯一消费者=analysis-watch，
+            # legacy 连 [EVENT] 列表都不该看到（claim 硬门是二道保险）
+            "'ANALYSIS_REFRESH') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()

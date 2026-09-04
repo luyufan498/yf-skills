@@ -10,7 +10,9 @@
 
 monitor 只输出不产事件（自身触发=输出字节变化）；外部强制刷新事件
 （task_events ANALYSIS_REFRESH）由 analysis-watch 心跳消费侧 claim 后调
-analysis_schedule.request_refresh 打标，本 monitor 不读 tasks.db。
+analysis_schedule.request_refresh 打标，本 monitor 读 tasks.db 只为把
+pending ANALYSIS_REFRESH 数输出成 [ANALYSIS-INJECT] 行（同构 COLLECT-INJECT，
+否则注入事件不改字节 → 心跳永不唤醒 → 事件积压死锁）。
 
 生产库约束：newsdb 侧仅幂等建表（analysis_schedule，不触碰其他表）。
 
@@ -42,6 +44,33 @@ def query_due_lines(conn, now) -> list[str]:
     return lines
 
 
+def query_inject_lines() -> list[str]:
+    """查 b) tasks.db pending ANALYSIS_REFRESH 数（只读；无表/无库=0）。
+
+    同构 news_collect_monitor 的 COLLECT-INJECT：注入事件改变本行字节 →
+    心跳唤醒 → 消费侧 claim --consumer analysis-watch → request_refresh 打标。
+    """
+    import os
+    import sqlite3
+    tasks_db = os.getenv(
+        "STOCK_TASKS_DB",
+        "/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db")
+    if not os.path.exists(tasks_db):
+        return []
+    try:
+        tconn = sqlite3.connect(f"file:{tasks_db}?mode=ro", uri=True)
+        try:
+            n = tconn.execute(
+                "SELECT COUNT(*) FROM task_events "
+                "WHERE type='ANALYSIS_REFRESH' AND status='pending'"
+            ).fetchone()[0]
+        finally:
+            tconn.close()
+    except sqlite3.OperationalError:
+        n = 0  # 无 task_events 表（未 init）→ 视为 0
+    return [f"[ANALYSIS-INJECT] pending {n}"] if n > 0 else []
+
+
 def main() -> int:
     now = datetime.now()
 
@@ -53,6 +82,8 @@ def main() -> int:
         lines = query_due_lines(conn, now)
     finally:
         conn.close()
+
+    lines.extend(query_inject_lines())
 
     if not lines:
         print("IDLE")

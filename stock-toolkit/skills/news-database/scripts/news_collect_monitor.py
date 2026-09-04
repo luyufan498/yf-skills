@@ -78,6 +78,23 @@ def query_collect_inject(tasks_db_path: Path, now: datetime) -> list[str]:
         n = 0
     if n > 0:
         lines.append(f"[COLLECT-INJECT] pending {n}")
+    # T5（2026-09-04 从 legacy 迁入）：C1 异动初过滤后插的深挖请求——
+    # DEEP_DIVE（个股/大盘异动原因不明需查证）+ MARKET_SHOCK（大盘暴跌）
+    # 归 news-collect 消费（采集域），与 COLLECT 同源同门
+    if tasks_db_path.exists():
+        try:
+            tconn2 = sqlite3.connect(f"file:{tasks_db_path}?mode=ro", uri=True)
+            try:
+                n2 = tconn2.execute(
+                    "SELECT COUNT(*) FROM task_events "
+                    "WHERE type IN ('DEEP_DIVE','MARKET_SHOCK') AND status='pending'"
+                ).fetchone()[0]
+            finally:
+                tconn2.close()
+        except sqlite3.OperationalError:
+            n2 = 0
+        if n2 > 0:
+            lines.append(f"[COLLECT-INJECT] 深挖 {n2}（DEEP_DIVE/MARKET_SHOCK，C1 异动初过滤产出）")
     return lines
 
 

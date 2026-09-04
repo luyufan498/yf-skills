@@ -213,7 +213,9 @@ def check_tasks() -> list[dict]:
             "'MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE',"
             # analysis-ttl（9/4）：ANALYSIS_REFRESH 唯一消费者=analysis-watch，
             # legacy 连 [EVENT] 列表都不该看到（claim 硬门是二道保险）
-            "'ANALYSIS_REFRESH','WATCH_ALERT') "
+            "'ANALYSIS_REFRESH','WATCH_ALERT',"
+            # 深挖/大盘异动（9/4）归 news-collect 消费（C1 初过滤产出），legacy 不列
+            "'DEEP_DIVE','MARKET_SHOCK') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()
@@ -1135,6 +1137,12 @@ def run_price_scope() -> int:
     lines.extend(atr_sync_daily())          # E9：每日首次交易 tick 止损位同步（2026-09-04 随
                                             #   ATR 归价格域从 legacy 迁入——纯脚本，成功静默
                                             #   失败告警唤醒 C1；止损位=保护链数据）
+    lines.extend(scan_moves())              # E10：池内个股动量甜点/追高/单日异动（2026-09-04
+                                            #   从 legacy 迁入——纯价格扫描，状态机滞回防反复
+                                            #   唤醒；检出→C1 agent 初过滤原因）
+    lines.extend(check_market_shock())      # E11：大盘指数异动（2026-09-04 从 legacy 迁入——
+                                            #   指数也是价格；触发写 MARKET_SHOCK 事件，同交易日
+                                            #   去重；消费=news-collect 深挖）
     if not lines:
         print("IDLE")
         return 0
@@ -1296,9 +1304,6 @@ def main() -> int:
             lines.append(f"  … 其余 {len(tasks)-3} 个（按优先级逐一 claim 处理，单轮≤3 个防截断）")
     lines.extend(check_sleeve_fill_event())   # SLEEVE_FILL 事件入队（到期 pending 槽）
     lines.extend(check_sleeve_pending())
-    lines.extend(audit_inconsistencies())
-    lines.extend(check_market_shock())
-    lines.extend(scan_moves())
     if not lines:
         print("IDLE")
         return 0

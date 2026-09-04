@@ -7,7 +7,10 @@ ENV = "STOCK_TASKS_DB"
 DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
-TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
+# 退役说明：CANDIDATE（2026-09-04）——新入池触发分析由 analysis_schedule TTL 队列取代
+# （seed_pool 幂等 sync，入池股 last_analyzed_at=NULL 最优先），不再需要单独事件；
+# ROTATION_EXIT（2026-09-04）——存量 0 从未流通，轮换卖单走 watchpoint sell 由 C1 覆盖。
+TYPES = ["REFRESH", "DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
          "MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE",
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：

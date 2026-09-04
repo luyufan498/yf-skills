@@ -1090,6 +1090,32 @@ def check_price_orders() -> list[str]:
     return out
 
 
+def check_orphan_slots() -> list[str]:
+    """孤儿槽检测（2026-09-04 断链修复）：open + fill_status='pending' + band 缺失的槽。
+
+    v12 迁移断链产物——晨审/旧链路 sleeve-open 建槽后没接 sleeve-order-place，
+    槽停在 open/pending、band_min/max=NULL、order_id=NULL：check_price_orders 只扫
+    status='pending_order' 永远看不到 → 静默永不成交（9/4 ND#553/ND#407 卡 2.5h 根因）。
+    本检测对任何此类槽持续输出 → monitor 变化 → 唤醒 agent 补挂单（sleeve-order-place）
+    或正确处置（勿弃单勿成交——根本没挂单）。修复后同型槽不再产生，本函数变 IDLE。
+    """
+    if not os.path.exists(POOL_DB):
+        return []
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        slots = conn.execute(
+            "SELECT event_key FROM event_slots "
+            "WHERE status='open' AND fill_status='pending' "
+            "AND (band_min IS NULL OR band_max IS NULL) ORDER BY event_key").fetchall()
+    finally:
+        conn.close()
+    return [f"[ORPHAN-SLOT] {s['event_key']} 开槽未挂单（open/pending 且 band=NULL，v12 断链）"
+            f"→ 补跑 ptrade2 sleeve-order-place {s['event_key']} --anchor <成员昨收/现价> "
+            f"--ttl <最近交易节收盘>（成员 code 用 _slot_member_code 查实，勿错锚）"
+            for s in slots]
+
+
 def run_price_scope() -> int:
     """price scope 主流程（v12 C1 price-watch 心跳 monitor）：E1 挂单槽四态扫描
     + E6 保护链扫描（承接 legacy check_price_triggers 全账户扫，含 strategy='NEWS'
@@ -1097,6 +1123,7 @@ def run_price_scope() -> int:
     静默 news 检出/任务列举/atr/异动/大盘等——专用心跳只看价格输出，防串唤醒。"""
     lines = []
     lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
+    lines.extend(check_orphan_slots())      # E1b：孤儿槽（开槽未挂单，v12 断链兜底）
     lines.extend(check_price_triggers())    # E6：保护链（全账户含 NEWS 段）
     if not lines:
         print("IDLE")

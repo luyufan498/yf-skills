@@ -8,6 +8,22 @@ from typing import Dict, List, Optional
 import requests
 
 
+def _safe_float(val):
+    """宽松转 float（None/str/dict 兼容，与原 safe_float 行为一致）"""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(val, dict):
+        return list(val.values())[0] if val and val.values() else None
+    return None
+
+
 class KLineDataFetcher:
     """K线数据抓取器"""
 
@@ -118,7 +134,8 @@ class KLineDataFetcher:
 
         return False
 
-    def fetch_kline_data(self, stock_code: str, kline_type: str = 'day', count: int = 120) -> List[dict]:
+    def fetch_kline_data(self, stock_code: str, kline_type: str = 'day', count: int = 120,
+                         *, adjust: str = 'qfq') -> List[dict]:
         """
         获取K线数据
 
@@ -128,9 +145,12 @@ class KLineDataFetcher:
                         'minute'(分时数据), 'day'(日K), 'week'(周K), 'month'(月K),
                         '5min', '10min', '15min', '30min', '60min'(分钟K线)
             count: 获取最近N条数据
+            adjust: 复权方式（仅日K生效）：'qfq' 前复权（默认，历史行为不变）| 'raw' 不复权。
+                    2026-09-04 实测：fqkline qfq 响应只含 qfqday、无 raw 'day' 键，
+                    raw 走裸K端点 appstock/app/kline/kline（见 fetch_raw_kline）。
 
         Returns:
-            K线数据列表
+            K线数据列表（按日期升序）
         """
         # 美股使用 YFinance 专用处理
         if self._is_us_stock(stock_code):
@@ -144,6 +164,10 @@ class KLineDataFetcher:
             '30min': 30,
             '60min': 60
         }
+
+        # raw 不复权：仅日K支持，走裸K端点；分钟/周/月维持原路径
+        if adjust == 'raw' and kline_type == 'day':
+            return self.fetch_raw_kline(stock_code, count)
 
         if kline_type in minute_kline_map:
             minutes_per_kline = minute_kline_map[kline_type]
@@ -183,31 +207,23 @@ class KLineDataFetcher:
                         kline_field = 'qfqday'
                     day_data = stock_data.get(kline_field, stock_data.get(kline_type, []))
 
-                    def safe_float(val):
-                        if val is None:
-                            return None
-                        if isinstance(val, (int, float)):
-                            return float(val)
-                        if isinstance(val, str):
-                            try:
-                                return float(val)
-                            except (ValueError, TypeError):
-                                return None
-                        if isinstance(val, dict):
-                            return list(val.values())[0] if val and val.values() else None
-                        return None
-
                     for item in day_data:
                         if item and len(item) >= 6:
-                            kline_list.append({
+                            bar = {
                                 'date': item[0],
-                                'open': safe_float(item[1]),
-                                'close': safe_float(item[2]),
-                                'high': safe_float(item[3]),
-                                'low': safe_float(item[4]),
-                                'volume': safe_float(item[5]),
-                                'amount': safe_float(item[6]) if len(item) > 6 else None
-                            })
+                                'open': _safe_float(item[1]),
+                                'close': _safe_float(item[2]),
+                                'high': _safe_float(item[3]),
+                                'low': _safe_float(item[4]),
+                                'volume': _safe_float(item[5]),
+                                'amount': _safe_float(item[6]) if len(item) > 6 else None
+                            }
+                            # item[6] 为 dict 时是腾讯除权除息标记（cqr/FHcontent 等），
+                            # 原实现被 safe_float 吞成垃圾值——透传为 bar['exright']
+                            if len(item) > 6 and isinstance(item[6], dict):
+                                bar['exright'] = item[6]
+                                bar['amount'] = None
+                            kline_list.append(bar)
 
                     kline_list.sort(key=lambda x: x['date'])
 
@@ -215,6 +231,137 @@ class KLineDataFetcher:
 
         except Exception as e:
             print(f"Error fetching K-line data for {stock_code}: {e}")
+            return []
+
+    def fetch_raw_kline(self, stock_code: str, count: int = 120, kline_type: str = 'day') -> List[dict]:
+        """
+        获取不复权(raw)K线
+
+        2026-09-04 实测（sh688041/hk00700/sh600000）：fqkline qfq 响应只含
+        qfqday/qfqweek/qfqmonth 键，不存在 raw 'day' fallback——raw 必须走
+        裸K端点 appstock/app/kline/kline。
+
+        Args:
+            stock_code: 股票代码，如 'sh600000', 'sz000001', 'hk00700'
+            count: 获取最近N条数据
+            kline_type: 'day'（日K，market_cache 只用 day）
+
+        Returns:
+            K线数据列表（按日期升序），item[6] 可能带除权除息 dict
+        """
+        if kline_type != 'day':
+            print(f"fetch_raw_kline 仅支持 day，忽略 kline_type={kline_type}")
+            kline_type = 'day'
+
+        # 美股仍走 yfinance（auto_adjust=False 保留原始价）
+        if self._is_us_stock(stock_code):
+            return self._fetch_us_stock_kline(stock_code, kline_type, count)
+
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
+               f"?param={stock_code},{kline_type},,,{count},")
+        try:
+            response = requests.get(
+                url,
+                headers={'Host': 'web.ifzq.gtimg.cn', **self.headers},
+                timeout=self.timeout
+            )
+            data = response.json()
+            kline_list = []
+
+            if data.get('code') == 0 and 'data' in data:
+                if isinstance(data['data'], list) and len(data['data']) == 0:
+                    return []
+                if not isinstance(data['data'], dict):
+                    return []
+
+                stock_data = data['data'].get(stock_code, {})
+                if stock_data:
+                    day_data = stock_data.get(kline_type, [])
+                    if isinstance(day_data, dict):
+                        day_data = list(day_data.values())[0] if day_data else []
+
+                    for item in day_data:
+                        if item and len(item) >= 6:
+                            bar = {
+                                'date': item[0],
+                                'open': _safe_float(item[1]),
+                                'close': _safe_float(item[2]),
+                                'high': _safe_float(item[3]),
+                                'low': _safe_float(item[4]),
+                                'volume': _safe_float(item[5]),
+                                'amount': _safe_float(item[6]) if len(item) > 6 else None
+                            }
+                            if len(item) > 6 and isinstance(item[6], dict):
+                                bar['exright'] = item[6]
+                                bar['amount'] = None
+                            kline_list.append(bar)
+
+                    kline_list.sort(key=lambda x: x['date'])
+
+            return kline_list
+
+        except Exception as e:
+            print(f"Error fetching raw K-line data for {stock_code}: {e}")
+            return []
+
+    def fetch_kline_dual(self, stock_code: str, count: int = 250) -> Dict[str, List[dict]]:
+        """
+        同时获取 raw 与 qfq 日K（除权检测用，两次请求）
+
+        Args:
+            stock_code: 股票代码
+            count: 各取最近N条
+
+        Returns:
+            {'raw': [...], 'qfq': [...]}，各自按日期升序；键可能缺失（抓取失败）
+        """
+        return {
+            'raw': self.fetch_raw_kline(stock_code, count),
+            'qfq': self.fetch_kline_data(stock_code, 'day', count, adjust='qfq'),
+        }
+
+    def _fetch_kline_range(self, stock_code: str, start: str, end: str,
+                           count: int = 60) -> List[dict]:
+        """
+        按日期区间获取 raw 日K（缺口补抓用）
+
+        腾讯裸K端点 param 支持 {code},{type},{start},{end},{count}：
+        传起止日期时只返回该区间 bar（实测 2026-09-04）。
+
+        Returns:
+            升序 list[dict]，空列表=无数据/失败
+        """
+        if self._is_us_stock(stock_code):
+            return self._fetch_us_stock_kline(stock_code, 'day', count)
+
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
+               f"?param={stock_code},day,{start},{end},{count},")
+        try:
+            response = requests.get(
+                url,
+                headers={'Host': 'web.ifzq.gtimg.cn', **self.headers},
+                timeout=self.timeout
+            )
+            data = response.json()
+            kline_list = []
+            if data.get('code') == 0 and isinstance(data.get('data'), dict):
+                stock_data = data['data'].get(stock_code, {})
+                day_data = stock_data.get('day', []) if stock_data else []
+                for item in day_data:
+                    if item and len(item) >= 6:
+                        kline_list.append({
+                            'date': item[0],
+                            'open': _safe_float(item[1]),
+                            'close': _safe_float(item[2]),
+                            'high': _safe_float(item[3]),
+                            'low': _safe_float(item[4]),
+                            'volume': _safe_float(item[5]),
+                            'amount': _safe_float(item[6]) if len(item) > 6 else None
+                        })
+                kline_list.sort(key=lambda x: x['date'])
+            return kline_list
+        except Exception as e:
+            print(f"Error fetching K-line range for {stock_code}: {e}")
             return []
 
     def _fetch_us_stock_kline(self, stock_code: str, kline_type: str = 'day', count: int = 120) -> List[dict]:

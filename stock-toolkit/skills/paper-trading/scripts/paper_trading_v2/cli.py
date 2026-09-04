@@ -1329,7 +1329,7 @@ def fetch_price(
     code: str = typer.Argument(..., help="股票代码"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
 ):
-    """获取股票实时价格"""
+    """获取股票实时价格（单只）"""
     from paper_trading_v2.price_fetcher import StockPriceFetcher
     try:
         fetcher = StockPriceFetcher()
@@ -1385,17 +1385,84 @@ def fetch_price(
 
 
 @app.command()
+def fetch_prices(
+    codes: str = typer.Argument(..., help="逗号分隔多股票代码，如 'sh688041,sz002536,hk00700'"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """批量获取股票实时价格（腾讯接口原生批量，一次网络往返）
+
+    单 code 也支持（fetch-price 的批量等价场景）。空/非法 code 跳过不中断。
+    """
+    from paper_trading_v2.price_fetcher import StockPriceFetcher
+    try:
+        code_list = [c.strip().lower() for c in codes.split(',') if c.strip()]
+        if not code_list:
+            typer.echo("❌ 未提供有效股票代码", err=True)
+            raise typer.Exit(1)
+
+        fetcher = StockPriceFetcher()
+        results = fetcher.fetch_batch(code_list)
+
+        # 按输入顺序组装，未返回的 code 记 miss（容错：跳过，不崩）
+        items = []
+        missed = []
+        for c in code_list:
+            info = results.get(c)
+            if not info:
+                missed.append(c)
+                continue
+            items.append({
+                "code": info.code,
+                "name": info.name,
+                "current_price": info.current_price,
+                "pre_close": info.pre_close,
+                "open": info.open_price,
+                "high": info.high,
+                "low": info.low,
+                "volume": info.volume,
+                "time": info.time,
+            })
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps(items, ensure_ascii=False, indent=2))
+        else:
+            if not items:
+                typer.echo("❌ 所有代码均未取到数据", err=True)
+                raise typer.Exit(1)
+            typer.echo(f"📊 批量实时价（{len(items)} 只）")
+            for it in items:
+                price = f"{it['current_price']:.2f}" if it['current_price'] is not None else "N/A"
+                pre = f"{it['pre_close']:.2f}" if it['pre_close'] is not None else "N/A"
+                typer.echo(f"  {it['code']}\t{it['name']}\t现价 {price}\t昨收 {pre}\t"
+                           f"开 {it['open'] if it['open'] is not None else 'N/A'}\t"
+                           f"高 {it['high'] if it['high'] is not None else 'N/A'}\t"
+                           f"低 {it['low'] if it['low'] is not None else 'N/A'}\t"
+                           f"量 {it['volume'] or 'N/A'}\t{it['time'] or ''}")
+            if missed:
+                typer.echo(f"⚠ 未取到: {', '.join(missed)}")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"❌ 批量获取价格失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
 def fetch_kline(
     code: str = typer.Argument(..., help="股票代码"),
     kline_type: str = typer.Option("day", "--type", "-t", help="K线类型 (day/week/month/5min/10min/15min/30min/60min)"),
     count: int = typer.Option(120, "--count", "-n", help="获取最近N条数据"),
+    adjust: str = typer.Option("qfq", "--adjust", help="复权方式 (qfq前复权/raw不复权)，仅日K生效"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
 ):
     """获取股票K线数据"""
     from paper_trading_v2.kline_fetcher import KLineDataFetcher
     try:
         fetcher = KLineDataFetcher()
-        klines = fetcher.fetch_kline_data(code, kline_type=kline_type, count=count)
+        klines = fetcher.fetch_kline_data(code, kline_type=kline_type, count=count,
+                                          adjust=adjust)
 
         if not klines:
             typer.echo(f"❌ 未找到股票代码 '{code}' 的K线数据")
@@ -1426,6 +1493,53 @@ def fetch_kline(
 
     except Exception as e:
         typer.echo(f"❌ 获取K线数据失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("fetch-kline-cached")
+def fetch_kline_cached_cmd(
+    code: str = typer.Argument(..., help="股票代码"),
+    count: int = typer.Option(15, "--count", "-n", help="获取最近N条数据"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """market.db 缓存的日K（raw 不复权；读时检查+缺口补抓+TTL 重建）
+
+    watch_scan 以后用这条替代逐票 fetch-kline：命中缓存 0 网络往返。
+    pretty 输出与 fetch-kline 同格式（'收: X' 行可解析），值为 raw 不复权。
+    """
+    from paper_trading_v2.market_cache import fetch_kline_cached, read_exright_events
+    try:
+        klines = fetch_kline_cached(code, kline_type='day', count=count)
+
+        if not klines:
+            typer.echo(f"❌ 未找到股票代码 '{code}' 的K线数据")
+            raise typer.Exit(1)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps({
+                "code": code,
+                "kline_type": "day",
+                "adjust": "raw",
+                "cached": True,
+                "exright_events": read_exright_events(code),
+                "data": klines
+            }, ensure_ascii=False, indent=2))
+        else:
+            # 与 fetch-kline pretty 逐行同构（watch_scan 解析 '收: X'）
+            typer.echo(f"📊 {code} dayK 数据（最近 {len(klines)} 条, raw 不复权, market.db 缓存）\n")
+            for kline in klines[-20:]:
+                typer.echo(f"📅 {kline['date']}:")
+                typer.echo(f"   开: {kline['open']:.2f}, 收: {kline['close']:.2f}, "
+                           f"高: {kline['high']:.2f}, 低: {kline['low']:.2f}")
+                typer.echo(f"   成交量: {kline['volume']}")
+            if len(klines) > 20:
+                typer.echo(f"\n... 共 {len(klines)} 条数据")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"❌ 获取缓存K线失败: {e}", err=True)
         raise typer.Exit(1)
 
 

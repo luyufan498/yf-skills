@@ -20,6 +20,7 @@ pending ANALYSIS_REFRESH 数输出成 [ANALYSIS-INJECT] 行（同构 COLLECT-INJ
   python3 analysis_watch_monitor.py            # 读 STOCK_NEWS_DB
 """
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +72,54 @@ def query_inject_lines() -> list[str]:
     return [f"[ANALYSIS-INJECT] pending {n}"] if n > 0 else []
 
 
+def query_calendar_lines(now) -> list[str]:
+    """查 c) tasks.db 到期 CALENDAR（2026-09-04 从 legacy 迁入 analysis-watch）。
+
+    CALENDAR=分析回查（财报/解禁到期→重新评估股票），属分析域归本心跳。
+    到期语义同 watch_scan.check_calendar（2026-08-18 修复，防凌晨空触发）：
+    纯日期 '2026-08-20' → 当天 15:30 到期；带时间 → 精确时刻。
+    未到期不输出（安静睡眠）；到期 → 📅 行唤醒 agent 消费（claim → delegate 复评）。
+    """
+    import os
+    import sqlite3
+    tasks_db = os.getenv(
+        "STOCK_TASKS_DB",
+        "/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db")
+    if not os.path.exists(tasks_db):
+        return []
+    out = []
+    try:
+        tconn = sqlite3.connect(f"file:{tasks_db}?mode=ro", uri=True)
+        try:
+            rows = tconn.execute(
+                "SELECT id, entity, payload FROM task_events "
+                "WHERE type='CALENDAR' AND status='pending'").fetchall()
+        finally:
+            tconn.close()
+    except sqlite3.OperationalError:
+        return []
+    for rid, entity, payload in rows:
+        try:
+            p = json.loads(payload) if payload else {}
+        except (ValueError, TypeError):
+            continue
+        due_raw = str(p.get("due") or "")
+        if not due_raw:
+            continue
+        try:
+            if "T" in due_raw or " " in due_raw:
+                due_dt = datetime.fromisoformat(due_raw[:19].replace(" ", "T"))
+            else:
+                due_dt = datetime.strptime(due_raw[:10], "%Y-%m-%d").replace(
+                    hour=15, minute=30)
+        except ValueError:
+            continue  # due 格式非法 → 跳过不触发不崩溃
+        if due_dt <= now:
+            out.append(f"📅 CALENDAR 到期 #{rid} {entity} due={due_dt:%Y-%m-%d %H:%M} "
+                       f"[{p.get('event', '')}]")
+    return out
+
+
 def main() -> int:
     now = datetime.now()
 
@@ -84,6 +133,7 @@ def main() -> int:
         conn.close()
 
     lines.extend(query_inject_lines())
+    lines.extend(query_calendar_lines(now))
 
     if not lines:
         print("IDLE")

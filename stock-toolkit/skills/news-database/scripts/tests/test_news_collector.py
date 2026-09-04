@@ -376,8 +376,8 @@ def test_collect_claim_by_news_collect_ok(tasks_db):
 
 
 def test_legacy_types_claim_unaffected(tasks_db):
-    """存量类型（CANDIDATE/MSG_CANDIDATE 硬门）行为不变：CANDIDATE 无 consumer 可认领。"""
-    tid = tasks_db.add("CANDIDATE", "601127.SH")
+    """存量类型（CALENDAR/MSG_CANDIDATE 硬门）行为不变：CALENDAR 无 consumer 可认领。"""
+    tid = tasks_db.add("CALENDAR", "601127.SH")  # CANDIDATE 已退役(9/4)
     row = tasks_db.claim(tid, consumer=None)  # 存量不校验
     assert row is not None and row["status"] == "processing"
     # MSG_* 旧硬门仍在：非 msg-watch 拒绝

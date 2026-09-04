@@ -342,8 +342,8 @@ def test_analysis_refresh_claim_by_analysis_watch_ok(tasks_db):
 
 
 def test_legacy_types_claim_unaffected_by_analysis_gate(tasks_db):
-    """存量类型不校验：CANDIDATE 无 consumer 照常 claim；MSG_*/COLLECT 旧门不变。"""
-    tid = tasks_db.add("CANDIDATE", "601127.SH")
+    """存量类型不校验：CALENDAR 无 consumer 照常 claim；MSG_*/COLLECT 旧门不变。"""
+    tid = tasks_db.add("CALENDAR", "601127.SH")  # CANDIDATE 已退役(9/4)，用存量 CALENDAR 验"不校验"语义
     row = tasks_db.claim(tid, consumer=None)  # 存量不校验
     assert row is not None and row["status"] == "processing"
     # MSG_* 旧硬门仍在
@@ -378,11 +378,15 @@ def test_analysis_refresh_claim_cli_exit_codes(tasks_db):
 # ---------------------------------------------------------------------------
 
 
-def _run_monitor(news_db, env=None, cwd=None):
+def _run_monitor(news_db, env=None, cwd=None, tasks_db=None):
     """跑 monitor 脚本，返回 stdout。"""
     scripts_dir = _SCRIPTS_DIR
     cmd = [sys.executable, str(scripts_dir / "analysis_watch_monitor.py")]
-    e = {"STOCK_NEWS_DB": str(news_db)}
+    # 2026-09-04 M3 修复：STOCK_TASKS_DB 必须指向隔离空库——monitor 的
+    # ANALYSIS-INJECT/CALENDAR 查询读它，继承宿主 env 会读到生产 pending 污染 IDLE
+    import tempfile
+    e = {"STOCK_NEWS_DB": str(news_db),
+         "STOCK_TASKS_DB": str(tasks_db) if tasks_db else str(Path(tempfile.gettempdir()) / "monitor_test_tasks.db")}
     if env:
         e.update(env)
     r = subprocess.run(cmd, capture_output=True, text=True, env=e,
@@ -395,9 +399,10 @@ def test_monitor_idle_byte_stable_on_empty_db(db_path, tmp_path):
     """空表（未 seed）→ 稳定 IDLE，两拍字节一致（无时间戳）。"""
     conn = _conn(db_path)
     conn.close()
-    out1 = _run_monitor(db_path, cwd=tmp_path)
+    tdb = str(tmp_path / "tasks.db")
+    out1 = _run_monitor(db_path, cwd=tmp_path, tasks_db=tdb)
     assert out1.strip() == "IDLE"
-    out2 = _run_monitor(db_path, cwd=tmp_path)
+    out2 = _run_monitor(db_path, cwd=tmp_path, tasks_db=tdb)
     assert out1 == out2  # 字节稳定
 
 
@@ -408,14 +413,15 @@ def test_monitor_idle_after_all_analyzed(db_path, tmp_path):
     asched.mark_analyzed(conn, "茅台", result="中性")
     asched.mark_analyzed(conn, "赛力斯", result="偏多")
     conn.close()
-    out1 = _run_monitor(db_path, cwd=tmp_path)
+    tdb = str(tmp_path / "tasks.db")
+    out1 = _run_monitor(db_path, cwd=tmp_path, tasks_db=tdb)
     assert out1.strip() == "IDLE"
-    out2 = _run_monitor(db_path, cwd=tmp_path)
+    out2 = _run_monitor(db_path, cwd=tmp_path, tasks_db=tdb)
     assert out1 == out2
     conn = connect(db_path)
     asched.request_refresh(conn, "茅台", reason="news_signal", source="ND#7")
     conn.close()
-    out3 = _run_monitor(db_path, cwd=tmp_path)
+    out3 = _run_monitor(db_path, cwd=tmp_path, tasks_db=tdb)
     assert out3 != out1  # 打标 → 字节变化 → 心跳直醒
     assert "[ANALYSIS-DUE] 茅台" in out3
     assert "原因=refresh:news_signal" in out3

@@ -121,10 +121,25 @@ def ptrade2(*args, timeout=90) -> str:
         return ""
 
 
+# 同拍价格缓存（2026-09-04 S1 修复）：E6 保护链/E7 watchpoint/E8 裸奔/E10 动量
+# 对同一股票可能重复取价——同一次 price scope 内每 code 只取一次，砍重复进程+网络。
+# monitor 每拍新进程启动，缓存天然按拍隔离（无跨拍陈旧问题）。
+_PRICE_CACHE: dict[str, float] = {}
+
+
+def _clear_price_cache() -> None:
+    _PRICE_CACHE.clear()
+
+
 def fetch_price(code: str) -> float | None:
+    if code in _PRICE_CACHE:
+        return _PRICE_CACHE[code]
     out = ptrade2("fetch-price", code)
     m = re.search(r"当前价格:\s*¥([\d.]+)", out)
-    return float(m.group(1)) if m else None
+    px = float(m.group(1)) if m else None
+    if px is not None:
+        _PRICE_CACHE[code] = px
+    return px
 
 
 def fetch_price_any(code: str) -> float | None:

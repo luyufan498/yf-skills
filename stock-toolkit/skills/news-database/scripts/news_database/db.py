@@ -146,6 +146,21 @@ CREATE TABLE IF NOT EXISTS task_schedule (
     last_result TEXT                  -- 上次轮次摘要
 );
 
+-- analysis_schedule（2026-09-04 analysis-ttl 方案 §三）：批量分析 TTL 滚动状态真源（池内每股一行）。
+-- 替代 stock-batch-analysis 每日全量扫 50 只：TTL 到期（默认 3 交易日，真源 trading_calendar）
+-- 或事件强制刷新（插队优先）→ 入待分析队列。读写函数在 analysis_schedule.py；
+-- 外部强制刷新请求走 task_events ANALYSIS_REFRESH 事件（consumer=analysis-watch）。
+-- refreshed_at 为方案 §三 表的补充列：refresh 组内"按打标时间旧→新"排序需要（原方案无此列）。
+CREATE TABLE IF NOT EXISTS analysis_schedule (
+    stock            TEXT PRIMARY KEY,   -- 池内股票名
+    last_analyzed_at TEXT,               -- 最近完整分析时间(ISO)。NULL=从未分析→最优先
+    refresh_required INTEGER NOT NULL DEFAULT 0,  -- 1=事件强制刷新待处理(插队优先)
+    refresh_reason   TEXT,               -- 触发原因: ttl/news_signal/price_move/external
+    refresh_source   TEXT,               -- 触发源引用(如 ND#xxx 事件号 / daymove / CALENDAR#)
+    refreshed_at     TEXT,               -- 最近打标强制刷新时间(排序用旧→新)
+    last_result      TEXT                -- 最近分析结论摘要(供晨审读)
+);
+
 -- stale_check_log（2026-09-03 M1，方案 §2.B/§3：T5 空置探索检查留痕）。
 -- T5 不建逐股状态行（§3：派生查询即候选清单）；本表只记"翻过谁/何时/翻到否"，
 -- 供"连续 2 轮（14 天）翻不到→上报用户"判定（M3）。code PK，重复检查覆盖。

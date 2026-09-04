@@ -13,7 +13,10 @@ TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNA
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
          # COLLECT 独立新增（不复用 REFRESH——REFRESH 已定归 C2/msg-watch，
          # 复用会翻转 v12 归属矩阵；REFRESH 退役路径在迁移 M2 处理）
-         "COLLECT"]
+         "COLLECT",
+         # 批量分析外部强制刷新（2026-09-04 analysis-ttl 方案 §三）：分析刷新外部请求，
+         # consumer=analysis-watch（专用心跳 analysis-watch-monitor 认领）
+         "ANALYSIS_REFRESH"]
 STATUSES = ["pending", "processing", "done", "failed"]
 
 # v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='msg-watch'）可认领；
@@ -26,6 +29,12 @@ MSG_CONSUMER = "msg-watch"
 # msg-watch 既有逻辑，只加 COLLECT 分支）。
 COLLECT_TYPES = ("COLLECT",)
 COLLECT_CONSUMER = "news-collect"
+
+# analysis-ttl 改造（2026-09-04 方案 §三）：ANALYSIS_REFRESH 仅专用心跳
+# （consumer='analysis-watch'）可认领；存量类型不校验（同 COLLECT 模式 fail-closed，
+# 只加 ANALYSIS 分支）。分析刷新外部请求：事件强制插队重跑池内股批量分析。
+ANALYSIS_TYPES = ("ANALYSIS_REFRESH",)
+ANALYSIS_CONSUMER = "analysis-watch"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
@@ -113,6 +122,12 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
                 f"#{task_id} [{row['type']}] 属采集任务链路，唯一消费者={COLLECT_CONSUMER}"
                 f"（专用心跳 news-collect）；当前 consumer={who}。"
                 f"存量消费者请跳过 COLLECT 类型（唯一消费者保证）")
+        if row["type"] in ANALYSIS_TYPES and consumer != ANALYSIS_CONSUMER:
+            who = consumer or "(未提供 --consumer)"
+            raise PermissionError(
+                f"#{task_id} [{row['type']}] 属批量分析刷新链路，唯一消费者={ANALYSIS_CONSUMER}"
+                f"（专用心跳 analysis-watch）；当前 consumer={who}。"
+                f"存量消费者请跳过 ANALYSIS_REFRESH 类型（唯一消费者保证）")
         cur = conn.execute(
             "UPDATE task_events SET status='processing', claimed_at=datetime('now','localtime') "
             "WHERE id=? AND status='pending'",

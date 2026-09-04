@@ -65,12 +65,14 @@ def claim_event(
         None, "--consumer",
         help="消费者标识（写入 payload.claimed_by 供审计）。MSG_CANDIDATE/MSG_ORDER/"
              "MSG_REJUDGE 三类必须传 'msg-watch'（专用心跳），COLLECT 必须传 "
-             "'news-collect'（采集心跳），否则拒绝认领"),
+             "'news-collect'（采集心跳），ANALYSIS_REFRESH 必须传 "
+             "'analysis-watch'（分析刷新心跳），否则拒绝认领"),
 ):
     """原子认领事件（pending→processing）。已被认领返回失败。
 
     硬门：news 挂单三类型仅 consumer=msg-watch 可认领；COLLECT 仅
-    consumer=news-collect 可认领（唯一消费者保证）；存量类型（CANDIDATE/
+    consumer=news-collect 可认领；ANALYSIS_REFRESH 仅 consumer=analysis-watch
+    可认领（批量分析刷新链路，唯一消费者保证）；存量类型（CANDIDATE/
     CALENDAR/SLEEVE_FILL…）不校验，晨审/旧心跳照常 claim。
     """
     try:

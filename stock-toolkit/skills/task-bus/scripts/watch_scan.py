@@ -1128,6 +1128,10 @@ def run_price_scope() -> int:
     lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
     lines.extend(check_orphan_slots())      # E1b：孤儿槽（开槽未挂单，v12 断链兜底）
     lines.extend(check_price_triggers())    # E6：保护链（全账户含 NEWS 段）
+    lines.extend(check_watch_points())      # E7：技术组 watchpoint buy/eval 触发（2026-09-04
+                                            #   C1 吸收 legacy——C1=唯一股价盯盘心跳，脚本前置触发
+                                            #   →WATCH_ALERT 事件供 C1 消费核验/复检）
+    lines.extend(check_naked_conditions())  # E8：裸奔告警（无保护链的实际持仓段，同属股价盯盘）
     if not lines:
         print("IDLE")
         return 0
@@ -1290,9 +1294,6 @@ def main() -> int:
     lines.extend(atr_sync_daily())
     lines.extend(check_sleeve_fill_event())   # SLEEVE_FILL 事件入队（到期 pending 槽）
     lines.extend(check_sleeve_pending())
-    lines.extend(check_price_triggers())
-    lines.extend(check_naked_conditions())
-    lines.extend(check_watch_points())
     lines.extend(check_calendar())
     lines.extend(audit_inconsistencies())
     lines.extend(check_market_shock())

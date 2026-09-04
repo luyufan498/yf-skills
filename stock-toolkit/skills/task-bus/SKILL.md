@@ -37,7 +37,8 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 | `REFRESH` | 新闻库缺信息需补搜 | 分析 agent | 新闻（news-collector） |
 | `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
 | `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
-| `REVIEW` | [退役-2026-09-04] 组合审查触发——存量 0 从未流通；组合审查固定走 cron（decide-portfolio 06:05，原 stock-portfolio-review 改名），不进事件总线。原语义即 PORTFOLIO_CHECK（组合状态裁决），由晨审 cron 承担 | — | — |
+| `REVIEW` | [退役-2026-09-04] 组合审查触发——存量 0 从未流通；组合审查固定走 cron（decide-portfolio 06:05），不进事件总线。原语义即 PORTFOLIO_CHECK（组合状态裁决），由晨审 cron 承担 | — | — |
+| `ANALYSIS_REFRESH` | 批量分析外部强制刷新请求（analysis-ttl 方案 2026-09-04：替代旧 05:05 全量批跑）。池内股需完整重析时才用；TTL 自然到期由 analysis-watch monitor 直读 analysis_schedule 表，**不走事件总线** | 晨审/人工/上游 agent | **仅 analysis-watch**（claim `--consumer analysis-watch` 硬门，同 MSG_*/COLLECT 三链同构；legacy check_tasks 已排除）|
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
 | `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
 | `L3_SNAPSHOT` | [退役-M2] 午间次优候选快照（2026-08-31 加入）——M2 起 stock-l3-scan 重写为消息组收编扫描，本类型停用 | stock-l3-scan（13:35，旧行为） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义） |

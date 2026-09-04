@@ -213,7 +213,7 @@ def check_tasks() -> list[dict]:
             "'MSG_CANDIDATE','MSG_ORDER','MSG_REJUDGE',"
             # analysis-ttl（9/4）：ANALYSIS_REFRESH 唯一消费者=analysis-watch，
             # legacy 连 [EVENT] 列表都不该看到（claim 硬门是二道保险）
-            "'ANALYSIS_REFRESH') "
+            "'ANALYSIS_REFRESH','WATCH_ALERT') "
             "ORDER BY priority ASC, id DESC LIMIT 30").fetchall()]
     finally:
         conn.close()

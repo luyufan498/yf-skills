@@ -10,12 +10,13 @@ DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 # 退役说明：CANDIDATE（2026-09-04）——新入池触发分析由 analysis_schedule TTL 队列取代
 # （seed_pool 幂等 sync，入池股 last_analyzed_at=NULL 最优先），不再需要单独事件；
 # ROTATION_EXIT（2026-09-04）——存量 0 从未流通，轮换卖单走 watchpoint sell 由 C1 覆盖。
-TYPES = ["REFRESH", "DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL",
+# REFRESH（2026-09-04）——存量 0 从未流通；历史语义漂移（补搜→C2）已被 COLLECT 取代，
+# 外部强制分析刷新走 ANALYSIS_REFRESH（唯一消费者 analysis-watch 硬门）。
+TYPES = ["DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
          "MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE",
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
-         # COLLECT 独立新增（不复用 REFRESH——REFRESH 已定归 C2/msg-watch，
-         # 复用会翻转 v12 归属矩阵；REFRESH 退役路径在迁移 M2 处理）
+         # COLLECT 独立新增（不复用 REFRESH——已退役，见上）
          "COLLECT",
          # 批量分析外部强制刷新（2026-09-04 analysis-ttl 方案 §三）：分析刷新外部请求，
          # consumer=analysis-watch（专用心跳 analysis-watch-monitor 认领）
@@ -42,7 +43,7 @@ ANALYSIS_CONSUMER = "analysis-watch"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL,               -- CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/CALENDAR
+    type        TEXT NOT NULL,               -- DEEP_DIVE/WATCH_ALERT/CALENDAR/MSG_*/COLLECT/ANALYSIS_REFRESH
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending/processing/done/failed
     priority    INTEGER NOT NULL DEFAULT 3,  -- 1 最高，5 最低
     source      TEXT,                        -- 生产者: news-collector/x-scan/scan/analysis/user

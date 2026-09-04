@@ -20,7 +20,7 @@ def init():
 
 @app.command("add")
 def add_event(
-    type_: str = typer.Argument(..., help="事件类型: CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/CALENDAR"),
+    type_: str = typer.Argument(..., help="事件类型: DEEP_DIVE/WATCH_ALERT/CALENDAR/MSG_*/COLLECT/ANALYSIS_REFRESH"),
     entity: str = typer.Argument(..., help="实体: 股票代码/行业名/事件id"),
     source: str = typer.Option("user", "--source", help="生产者标识"),
     priority: int = typer.Option(3, "--priority", min=1, max=5, help="优先级 1 最高"),

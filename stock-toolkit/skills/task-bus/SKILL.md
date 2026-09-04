@@ -33,8 +33,8 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 
 | 类型 | 含义 | 典型生产者 | 消费者 agent |
 |------|------|-----------|-------------|
-| `CANDIDATE` | 发现新候选标的/行业（新闻或扫描） | news-collector、市场扫描 | 分析（stock-daily-analysis） |
-| `REFRESH` | 新闻库缺信息需补搜 | 分析 agent | 新闻（news-collector） |
+| `CANDIDATE` | [退役-2026-09-04] 新入池触发分析由 analysis_schedule TTL 队列取代（seed_pool 幂等 sync，入池股 last_analyzed_at=NULL 最优先） | — | — |
+| `REFRESH` | [退役-2026-09-04] 存量 0 从未流通；历史语义漂移（补搜→C2）已被 COLLECT 取代，外部强制分析刷新走 ANALYSIS_REFRESH | — | — |
 | `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
 | `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
 | `REVIEW` | [退役-2026-09-04] 组合审查触发——存量 0 从未流通；组合审查固定走 cron（decide-portfolio 06:05），不进事件总线。原语义即 PORTFOLIO_CHECK（组合状态裁决），由晨审 cron 承担 | — | — |
@@ -209,17 +209,9 @@ taskbus watchpoint remove 赛力斯                # 移除价格点
 ### 生产者（写事件，立即返回，不阻塞）
 
 ```bash
-# news-collector 发现新候选
-taskbus add CANDIDATE <代码或行业> --source news-collector --priority 2 \
-  --payload '{"evidence":"...","importance":4}'
-
 # x-scan 发现需多平台补充的消息
 taskbus add DEEP_DIVE <代码> --source x-scan --priority 3 \
   --payload '{"reason":"X消息需雪球/知乎印证"}'
-
-# 分析 agent 发现新闻库缺解释
-taskbus add REFRESH <代码> --source analysis --priority 2 \
-  --payload '{"signal":"异动无解释"}'
 ```
 
 ### 消费者（心跳路由 agent，串行消费）

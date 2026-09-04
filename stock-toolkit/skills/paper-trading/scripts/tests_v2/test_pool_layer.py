@@ -45,12 +45,13 @@ def test_init_show(mpm):
 def test_watchlist_tiers(ws):
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist(ws / 'master_pool.db')
-    w.add('赛力斯', 'sh603527', strategy='L1', source='manual', reason='用户锁定')
+    w.add('赛力斯', 'sh603527', strategy='L1', source='manual', reason='用户锁定', pin=True)
     w.add('英维克', 'sz000301', strategy='L2', source='agent')
     w.add('铂科新材', 'sz300811', strategy='L3', source='agent')
     stocks = w.list()
     assert len(stocks) == 3
     assert {s['strategy'] for s in stocks} == {'L1', 'L2', 'L3'}
+    # v11：防删靠 pin（L1 档本身不锁删）；pin=1 禁止删除但允许降级
     with pytest.raises(ValueError):
         w.remove('赛力斯', source='agent')
     w.remove('英维克', source='agent')
@@ -79,20 +80,20 @@ def test_allocate_over_budget(mpm):
 
 
 def test_allocate_slot_limit(mpm, ws):
-    """非 L1 段位满 8 后拒绝新 allocate；L1 豁免"""
+    """非 L1 段位满 20 后拒绝新 allocate；L1 豁免（v11 帽 8→20）"""
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist(ws / 'master_pool.db')
-    for i in range(8):
+    for i in range(20):
         name = f'股{i}'
         w.add(name, f'sz{100000+i:06d}', strategy='L2', source='agent')
         mpm.allocate(name, 100000, reason=f'第{i+1}只')
     with pytest.raises(ValueError, match="段"):
-        mpm.allocate('第九只', 100000, reason='满员')
-    # L1 豁免
+        mpm.allocate('第二十一只', 100000, reason='满员')
+    # L1 豁免段位帽
     w.add('L1股', 'sh600000', strategy='L1', source='manual')
     mpm.allocate('L1股', 1000000, reason='人工', source='manual')
     d = mpm.show()
-    assert d['open_segments'] == 9
+    assert d['open_segments'] == 21
 
 
 def test_topup(mpm, ws):
@@ -115,15 +116,6 @@ def test_topup_enforces_cumulative_30pct(mpm, ws):
     mpm.allocate('英维克', 3000000, reason='建仓')          # 30% of 10M
     with pytest.raises(ValueError, match="30%"):
         mpm.topup('英维克', 1000000, reason='超累计')        # 30%+10% = 40%
-
-
-def test_l1_release_requires_manual(mpm, ws):
-    from paper_trading_v2.watchlist import Watchlist
-    Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L1', source='manual')
-    mpm.allocate('赛力斯', 1000000, reason='人工', source='manual')
-    with pytest.raises(ValueError, match="L1"):
-        mpm.release('赛力斯', reason='agent想释放', source='agent')
-    mpm.release('赛力斯', reason='人工释放', source='manual')
 
 
 def test_reallocate_after_release_resets_account(mpm, ws):
@@ -180,23 +172,15 @@ def test_allocate_blocks_when_already_open(mpm, ws):
         mpm.allocate('科创新源', 500000, reason='重复分配')
 
 
-def test_l1_downgrade_rejected(ws):
+def test_strategy_free_adjust_v11(ws):
+    """v11：档位自由设置（L1=allocate 联动档，也可手动指定）——agent 可降级/改档；
+    防删靠 pin（pin=1 允许降级但禁止删除，watchlist.add docstring 语义）。"""
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist(ws / 'master_pool.db')
     w.add('赛力斯', 'sh603527', strategy='L1', source='manual', reason='用户锁定')
-    with pytest.raises(ValueError, match="L1"):
-        w.add('赛力斯', strategy='L2', source='agent', reason='agent想降级')
-    # 人工可降级
-    w.add('赛力斯', strategy='L2', source='manual', reason='人工降级')
+    # agent 降级放行（旧 v2/v9 L1 锁定语义已废除）
+    w.add('赛力斯', strategy='L2', source='agent', reason='agent调整')
     assert w.get('赛力斯')['strategy'] == 'L2'
-
-
-def test_l1_allocate_requires_manual(mpm, ws):
-    from paper_trading_v2.watchlist import Watchlist
-    Watchlist(ws / 'master_pool.db').add('赛力斯', 'sh603527', strategy='L1', source='manual')
-    with pytest.raises(ValueError, match="L1"):
-        mpm.allocate('赛力斯', 1000000, reason='agent想开L1仓')
-    mpm.allocate('赛力斯', 1000000, reason='人工开仓', source='manual')
 
 
 def test_show_reflects_realized_pnl(mpm, ws):

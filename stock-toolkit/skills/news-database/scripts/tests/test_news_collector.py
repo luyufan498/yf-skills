@@ -128,7 +128,7 @@ def test_run_task_nonstring_result_serialized(db_path):
 _NOW = "2026-09-03 12:00:00"
 
 
-def _seed_watch_stock(conn, code, name, msg_age_days=None, watchlist=1):
+def _seed_watch_stock(conn, code, name, msg_age_days=None, watchlist=1, now_base=None):
     """造 watchlist 股 + （可选）N 天前的消息关联。"""
     storage.upsert_stock(conn, code, name, is_watchlist=watchlist)
     if msg_age_days is None:
@@ -137,9 +137,11 @@ def _seed_watch_stock(conn, code, name, msg_age_days=None, watchlist=1):
     storage.link_event_stock(conn, eid, code)
     storage.add_message(conn, eid, f"{name}快讯")
     # add_message fetched_at=now → 手动回拨到 N 天前，模拟旧关联
-    old = "2026-09-03 12:00:00"
+    # 2026-09-04 时间敏感修复：回拨基准曾写死 2026-09-03，随真实日期漂移（9/4 跑
+    # → days=9≠期望 8）。now_base：调用方注入固定时钟(_NOW)则传之保持一致；缺省=真实 now。
     from datetime import datetime, timedelta
-    ts_old = (datetime.strptime(old, "%Y-%m-%d %H:%M:%S")
+    _now = now_base or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts_old = (datetime.strptime(_now, "%Y-%m-%d %H:%M:%S")
               - timedelta(days=msg_age_days)).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute("UPDATE messages SET fetched_at=? WHERE event_id=?", (ts_old, eid))
     conn.commit()
@@ -148,7 +150,7 @@ def _seed_watch_stock(conn, code, name, msg_age_days=None, watchlist=1):
 def test_stale_candidates_recent_message_not_candidate(db_path):
     """7 天内有消息关联 → 非候选。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2)
+    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2, now_base=_NOW)
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert [c["code"] for c in cands] == []
     conn.close()
@@ -157,7 +159,7 @@ def test_stale_candidates_recent_message_not_candidate(db_path):
 def test_stale_candidates_old_message_is_candidate(db_path):
     """仅 8 天前消息 → 候选，days=8，last_related_at=旧时间。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8)
+    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8, now_base=_NOW)
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert len(cands) == 1
     c = cands[0]
@@ -193,8 +195,8 @@ def test_stale_candidates_non_watchlist_ignored(db_path):
 def test_stale_candidates_mixed_sorted_worst_first(db_path):
     """混合：从未关联 > 8 天 > 6 天内；排序最久在前。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2)    # 非候选
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8)  # 8 天
+    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2, now_base=_NOW)    # 非候选
+    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8, now_base=_NOW)  # 8 天
     _seed_watch_stock(conn, "300034.SZ", "钢研高纳")                  # 从未关联
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert [c["code"] for c in cands] == ["300034.SZ", "600519.SH"]

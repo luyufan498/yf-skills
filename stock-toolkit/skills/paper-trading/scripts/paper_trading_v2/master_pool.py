@@ -488,7 +488,11 @@ class MasterPoolManager:
                     # v11 信封化：pool.free 分文不动（budget=计划层承诺，可超售）；
                     # 段认领=条件 INSERT（同票活跃段互斥 + 20 段位帽，原子守卫保留）
                     pos_strategy = 'L1'
-                    cap_guard = ("AND (SELECT COUNT(*) FROM position WHERE status='open' "
+                    # v11 重构 bug 修复（2026-09-04）：L467 显式检查对 L1 豁免段位帽，
+                    # 但 cap_guard 无条件拼 20 帽 → L1 在 INSERT 层仍被拦（豁免落空）。
+                    # 修正：cap_guard 仅非 L1 拼（L1 豁免与显式检查语义对齐）。
+                    cap_guard = ("" if strat == 'L1' else
+                                 "AND (SELECT COUNT(*) FROM position WHERE status='open' "
                                  f"AND {_MAIN_SEG_FILTER}) < 20")
                     cur = conn.execute(
                         "INSERT INTO position (stock, code, strategy, status, budget, "

@@ -26,10 +26,16 @@ def test_cli_watchlist_add_remove(ws):
     r = runner.invoke(app, ["watchlist-list"])
     assert r.exit_code == 0
     assert "赛力斯" in r.output
-    # L1 不能被 agent 移除
+    # v11：档位不锁删（L1 可 agent 移除）——防删靠 pin 保护标记
     r = runner.invoke(app, ["watchlist-remove", "赛力斯", "--source", "agent"])
+    assert r.exit_code == 0
+    # pin=1 股禁止删除（pin 在 watchlist-add --pin 设，无独立 set-pin 命令）
+    r = runner.invoke(app, ["watchlist-add", "英维克", "--code", "sz000301",
+                            "--strategy", "L2", "--source", "manual", "--pin", "--reason", "锁定"])
+    assert r.exit_code == 0
+    r = runner.invoke(app, ["watchlist-remove", "英维克", "--source", "agent"])
     assert r.exit_code == 1
-    assert "L1" in r.output
+    assert "pin" in r.output.lower() or "锁" in r.output
 
 
 def test_cli_allocate_topup_release(ws):

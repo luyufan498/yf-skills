@@ -461,10 +461,13 @@ def test_cli_sleeve_open_place_one_shot(sleeve_ready):
     assert r.exit_code == 1 and '--anchor' in r.output, r.output
 
     # --place 齐参 → open + 自动挂单 pending_order
+    # 2026-09-04 时间敏感修复：TTL 必须=下一交易节收盘（fail-closed 校验），写死日期/随意未来值都会拒
+    from paper_trading_v2.sleeve_order import next_session_close
+    _ttl = next_session_close().isoformat(timespec='seconds')
     r = _run(app, 'sleeve-open', '开单乙', '--budget', '100000',
              '--event-key', 'ND#812', '--news-kind', 'policy',
              '--code', 'sh600812', '--place', '--anchor', '10.0',
-             '--ttl', '2026-09-04T11:30:00', '--reason', '开槽即挂单')
+             '--ttl', _ttl, '--reason', '开槽即挂单')
     assert r.exit_code == 0, r.output
     assert '开槽即挂单' in r.output and 'pending_order' in r.output, r.output
     conn = get_connection(_db(sleeve_ready))

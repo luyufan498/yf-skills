@@ -160,13 +160,18 @@ def test_operations_list_all_and_days_filter(ws):
     from paper_trading_v2.cli import app
     from paper_trading_v2.storage import SqlStorage
     from paper_trading_v2.models import Account, CapitalPool, AccountHistory, Operation
+    # 2026-09-04 时间敏感修复：写死日期随真实时间漂移（8/1 距 9/4 已 34 天>30 被滤）
+    # → 动态相对日期：buy=10 天前（30 窗内应留）、init=40 天前（30 窗外应滤）
+    from datetime import datetime, timedelta
+    _d40 = (datetime.now() - timedelta(days=40)).strftime('%Y-%m-%dT%H:%M:%S')
+    _d10 = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%dT%H:%M:%S')
     s = SqlStorage()
     s.save_account(Account(stock_name='测试股', stock_code='sz000001',
         capital_pool=CapitalPool(total=500000, available=500000, used=0)))
     s.save_operations('测试股', AccountHistory(stock_name='测试股', operations=[
-        Operation(type='init', capital=500000, timestamp='2026-01-01T09:00:00'),
+        Operation(type='init', capital=500000, timestamp=_d40),
         Operation(type='buy', price=100.0, quantity=100, amount=10000,
-                  timestamp='2026-08-01T10:00:00'),
+                  timestamp=_d10),
     ]))
     # 不指定股票 → 列出全部（多账户分支打印 op.type.value）
     r = runner.invoke(app, ["operations"])
@@ -177,7 +182,7 @@ def test_operations_list_all_and_days_filter(ws):
     # --days 365 时间窗覆盖两条操作（均为近一年内）
     r = runner.invoke(app, ["operations", "--days", "365"])
     assert r.exit_code == 0
-    # --days 30 只保留 2026-08-01 的 buy，过滤掉 2026-01-01 的 init
+    # --days 30 只保留 10 天前的 buy，过滤掉 40 天前的 init
     r = runner.invoke(app, ["operations", "--days", "30"])
     assert r.exit_code == 0
     assert "buy" in r.output

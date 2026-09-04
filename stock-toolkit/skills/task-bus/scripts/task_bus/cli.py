@@ -20,7 +20,7 @@ def init():
 
 @app.command("add")
 def add_event(
-    type_: str = typer.Argument(..., help="事件类型: CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/REVIEW/CALENDAR"),
+    type_: str = typer.Argument(..., help="事件类型: CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/CALENDAR"),
     entity: str = typer.Argument(..., help="实体: 股票代码/行业名/事件id"),
     source: str = typer.Option("user", "--source", help="生产者标识"),
     priority: int = typer.Option(3, "--priority", min=1, max=5, help="优先级 1 最高"),
@@ -71,7 +71,7 @@ def claim_event(
 
     硬门：news 挂单三类型仅 consumer=msg-watch 可认领；COLLECT 仅
     consumer=news-collect 可认领（唯一消费者保证）；存量类型（CANDIDATE/
-    CALENDAR/REVIEW/SLEEVE_FILL…）不校验，晨审/旧心跳照常 claim。
+    CALENDAR/SLEEVE_FILL…）不校验，晨审/旧心跳照常 claim。
     """
     try:
         row = db.claim(task_id, consumer=consumer)

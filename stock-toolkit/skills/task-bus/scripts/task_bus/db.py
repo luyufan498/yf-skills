@@ -7,7 +7,7 @@ ENV = "STOCK_TASKS_DB"
 DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 
 # 事件类型（任务域 intents）：与信息域（newsdb events 事实）分离
-TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "REVIEW", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
+TYPES = ["CANDIDATE", "REFRESH", "DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL", "ROTATION_EXIT",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
          "MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE",
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
@@ -30,7 +30,7 @@ COLLECT_CONSUMER = "news-collect"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL,               -- CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/REVIEW/CALENDAR
+    type        TEXT NOT NULL,               -- CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/CALENDAR
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending/processing/done/failed
     priority    INTEGER NOT NULL DEFAULT 3,  -- 1 最高，5 最低
     source      TEXT,                        -- 生产者: news-collector/x-scan/scan/analysis/user

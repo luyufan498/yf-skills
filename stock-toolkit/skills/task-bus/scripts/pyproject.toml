@@ -1,7 +1,7 @@
 [project]
 name = "task-bus"
 version = "0.1.0"
-description = "股票任务总线 - 事件驱动 agent 任务队列（CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/REVIEW/CALENDAR）"
+description = "股票任务总线 - 事件驱动 agent 任务队列（CANDIDATE/REFRESH/DEEP_DIVE/WATCH_ALERT/CALENDAR）"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

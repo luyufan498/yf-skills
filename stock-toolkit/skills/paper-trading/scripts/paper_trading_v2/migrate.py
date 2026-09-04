@@ -167,7 +167,7 @@ def migrate_existing(source_tradings_dir: Path, db_path: Path, archive_dir: Path
                             "capital, timestamp, note, seq FROM operations WHERE account_id=?",
                             (aid, now, seg_id, aid))
                         conn.execute("DELETE FROM operations WHERE account_id=?", (aid,))
-                        conn.execute("DELETE FROM positions WHERE account_id=?", (aid,))
+                        conn.execute("DELETE FROM trades WHERE account_id=?", (aid,))
                         conn.execute(
                             "UPDATE accounts SET capital_total=0, capital_available=0, "
                             "capital_used=0, fifo_index=-1, fifo_offset=0, updated_at=? "

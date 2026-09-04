@@ -88,7 +88,9 @@ class SqlStorage(StorageBackend):
         return get_connection(self.db_path)
 
     def _get_account_dir(self, stock_name: str) -> Path:
-        """兼容 shim：conditions_manager 用文件模式写条件（Task 5 才迁 SQL 表）"""
+        """[v10 债标注 2026-09-04] 兼容 shim：conditions_manager 文件模式写条件——
+        仅 migrate_existing（旧文件数据迁移）依赖；运行时保护链已全 SQL 化（v12 E6
+        读 conditions 表），新代码勿走文件 CM。"""
         from paper_trading_v2.config import get_workspace_config
         return get_workspace_config()['tradings_dir'] / stock_name
 

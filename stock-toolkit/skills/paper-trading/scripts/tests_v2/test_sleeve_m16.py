@@ -280,15 +280,15 @@ def test_v9_migration_synthetic_v8_db(ws):
     # trades 行随迁（account_id=段 id）
     assert conn.execute("SELECT COUNT(*) FROM trades WHERE account_id=11").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM trades WHERE account_id=12").fetchone()[0] == 2
-    # accounts 退役 + 兼容视图
+    # accounts 退役（2026-09-04 v10 债清理后无 U1 兼容视图——迁移不再建 positions 视图）
     assert conn.execute("SELECT COUNT(*) FROM accounts_old").fetchone()[0] == 2
     views = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
-    assert 'positions' in views
-    # 兼容视图可写（INSTEAD OF 触发器）
-    conn.execute("INSERT INTO positions (account_id, seq, operation, quantity) "
+    assert 'positions' not in views
+    # 新代码直写 trades（垫片已清：视图/触发器路径不再存在）
+    conn.execute("INSERT INTO trades (account_id, seq, operation, quantity) "
                  "VALUES (11, 9, 'buy', 1)")
     assert conn.execute("SELECT COUNT(*) FROM trades WHERE seq=9").fetchone()[0] == 1
-    conn.execute("DELETE FROM positions WHERE seq=9")
+    conn.execute("DELETE FROM trades WHERE seq=9")
     # FK 零违规
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     conn.close()

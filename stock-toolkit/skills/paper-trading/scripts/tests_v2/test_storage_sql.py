@@ -25,7 +25,8 @@ def test_schema_created(ws):
     assert 'accounts' not in tables, "accounts 应已退役（仅存 accounts_old）"
     views = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='view'").fetchall()]
-    assert 'positions' in views, "positions 兼容视图（INSTEAD OF 触发器垫片）应存在"
+    # 2026-09-04 v10 债清理：U1 兼容视图+触发器垫片已删（新代码全走 trades 表）
+    assert 'positions' not in views, "U1 垫片已清：positions 视图不应存在（直读 trades）"
     conn.close()
 
 def test_save_load_account_roundtrip(store):

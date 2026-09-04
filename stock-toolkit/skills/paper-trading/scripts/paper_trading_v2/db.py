@@ -302,31 +302,6 @@ CREATE TABLE trades (
 );
 """
 
-# 旧代码兼容垫片（U1）：单表视图 + INSTEAD OF 三触发器 = 完整可写
-# （实测 SQLite 对无 INSTEAD OF 触发器的视图一律只读："cannot modify positions
-#   because it is a view"——任务书"单表视图可写"预判不成立，垫片按触发器实现）。
-# 旧代码零改动立即正常（SELECT 直读；INSERT/UPDATE/DELETE 经触发器落 trades）；
-# 视图与触发器删除留给 v10。新代码一律写 trades。
-TRADES_VIEW_V9_DDL = "CREATE VIEW positions AS SELECT * FROM trades"
-
-TRADES_VIEW_TRIGGERS_V9 = """
-CREATE TRIGGER trg_positions_ins_v9 INSTEAD OF INSERT ON positions BEGIN
-    INSERT INTO trades (account_id, seq, operation, stock_code, quantity, price,
-                        total_cost, timestamp, note)
-    VALUES (NEW.account_id, NEW.seq, NEW.operation, NEW.stock_code, NEW.quantity,
-            NEW.price, NEW.total_cost, NEW.timestamp, NEW.note);
-END;
-CREATE TRIGGER trg_positions_upd_v9 INSTEAD OF UPDATE ON positions BEGIN
-    UPDATE trades SET account_id=NEW.account_id, seq=NEW.seq, operation=NEW.operation,
-        stock_code=NEW.stock_code, quantity=NEW.quantity, price=NEW.price,
-        total_cost=NEW.total_cost, timestamp=NEW.timestamp, note=NEW.note
-    WHERE id=OLD.id;
-END;
-CREATE TRIGGER trg_positions_del_v9 INSTEAD OF DELETE ON positions BEGIN
-    DELETE FROM trades WHERE id=OLD.id;
-END;
-"""
-
 OPERATIONS_V9_DDL = """
 CREATE TABLE operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -790,6 +765,8 @@ def _v9_audit_before(conn, mapping) -> list:
     for old_aid, seg_id in mapping.items():
         a = conn.execute("SELECT * FROM accounts WHERE id=?", (old_aid,)).fetchone()
         seg = conn.execute("SELECT * FROM position WHERE id=?", (seg_id,)).fetchone()
+        # 2026-09-04 v10 债清理注：此处读 positions 是**迁移源库 v8 真表**（U1 rename
+        # 在 audit 之后 L872 才发生）——非 U1 兼容视图。勿改 trades（audit 时 trades 不存在）。
         rows = conn.execute("SELECT operation, quantity, total_cost, timestamp FROM positions "
                             "WHERE account_id=? ORDER BY seq", (old_aid,)).fetchall()
         qty_all, cost_all = _fifo_residual_rows(rows)
@@ -917,8 +894,8 @@ def _migrate_v9_body(conn: sqlite3.Connection):
                 f"INSERT INTO {new} ({cols_sql}) SELECT {select_sql} FROM {staged} j "
                 f"JOIN _v9_map m ON m.old_id=j.account_id")
         conn.execute(f"DROP TABLE {staged}")
-    conn.execute(TRADES_VIEW_V9_DDL)          # U1 兼容视图（旧代码零改动）
-    conn.executescript(TRADES_VIEW_TRIGGERS_V9)
+    # U1 兼容视图+触发器垫片已清（2026-09-04 v10 债）：新代码全走 trades 表，
+    # 视图/触发器删除留给 v10 注释兑现；生产库 DROP VIEW positions + 触发器单独执行。
     conn.execute("DROP TABLE _v9_map")
 
     # 4. accounts 退役：RENAME accounts_old 保留（安全迁移模式，禁 DROP）

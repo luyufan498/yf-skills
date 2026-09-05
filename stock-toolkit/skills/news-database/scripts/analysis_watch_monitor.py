@@ -38,7 +38,7 @@ def query_due_lines(conn, now) -> list[str]:
     """查 a) analysis_schedule 待分析队列 → 输出行列表（TOP N，含原因）。"""
     now_s = asched._fmt(now)
     lines = []
-    for row in asched.due_stocks(conn, now=now_s):
+    for row in asched.due_stocks(conn, now=now_s, limit=6):  # 2026-09-05: 5→6（每轮上限同步 prompt）
         last = row["last_analyzed_at"] if row["last_analyzed_at"] else "never"
         reason = asched.due_reason(row, now=now_s)
         lines.append(f"[ANALYSIS-DUE] {row['stock']} 上次 {last} 原因={reason}")

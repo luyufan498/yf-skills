@@ -171,11 +171,11 @@ python3 scripts/etf_rank.py search 汽车
 
 广发证券数据获取后，请参考下列命令将分析报告保存。
 
-💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能，自动确定保存路径
+💾 保存方式：使用 ptrade2 CLI 工具的临时数据存储功能，自动确定保存路径
 
 ### 保存命令
 
-**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据**
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade2 temp-data 命令保存数据**
 
 ```bash
 # 1. 先将广发证券数据汇总保存到临时文件（使用 date +%s 生成唯一时间戳）
@@ -206,7 +206,7 @@ cat > "/tmp/{股票名称}_gf_summary_$(date +%s).md" << 'EOF'
 EOF
 
 # 2. 使用 --file 参数归档
-ptrade temp-data "股票名称" \
+ptrade2 temp-data "股票名称" \
   --action save \
   --category gf-summary \
   --file "/tmp/{股票名称}_gf_summary_$(date +%s).md"
@@ -214,7 +214,7 @@ ptrade temp-data "股票名称" \
 
 ### 实施检查清单
 
-- [ ] 使用 `ptrade temp-data` 命令，指定 `--category gf-summary`
+- [ ] 使用 `ptrade2 temp-data` 命令，指定 `--category gf-summary`
 - [ ] 数据内容包含所有获取到的数据（龙虎榜/财务/ETF）
 - [ ] 数据来源标注为广发证券
 - [ ] 文件成功写入磁盘

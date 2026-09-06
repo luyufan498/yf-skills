@@ -19,6 +19,8 @@ description: 深度浏览补充采集 agent——用裸 CDP 驱动真实 Chrome(
 
 ## 环境(关键，别踩坑)
 
+> ⚠️ **委托子代理写库陷阱（9/5 实锤）**：delegate 出的子代理不继承主会话 export，newsdb 不带 STOCK_NEWS_DB 会静默落 `~/.agent-browser/data/news/news.db`（空库，新建事件 id=1,2,3 即铁证）。委托 prompt 必须要求**每条 newsdb 命令显式 env 传 STOCK_NEWS_DB**，完成后用 sqlite 读回正确库验证 fetched_at 才许报成功；主代理收到汇总后同样读回验证。
+
 ```bash
 export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db
 export DIVE_SCRIPTS=/home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/news-deep-browser/scripts
@@ -39,7 +41,7 @@ python3 "$DIVE_SCRIPTS/zh_cookie_clean.py"
 | 雪球今日话题 | `cdp_drive.py new "https://xueqiu.com/today"` → `read <tid>` | — |
 | 知乎搜索(中期前瞻) | `python3 "$DIVE_SCRIPTS/zh_search.py" "预计XX"` | JSON：`{count, results[]}` |
 | 知乎问题页 | 先 `zh_cookie_clean.py`，再 `cdp_drive.py navigate <tid> <url>` + `read <tid>` | — |
-| X 推荐流(For you+趋势) | `python3 "$DIVE_SCRIPTS/x_scan.py" --both` | JSON：home.tweets + explore.trends |
+| X 推荐流(For you+趋势) | `python3 "$DIVE_SCRIPTS/x_scan.py" --home --explore` | JSON：home.tweets + explore.trends |
 | X 定向搜索 | `python3 "$DIVE_SCRIPTS/x_search.py" "AI chip" --f live --since 2026-08-09 --min-faves 50` | JSON：tweets[{author,text,url}] |
 | 手动底层命令 | `python3 "$DIVE_SCRIPTS/cdp_drive.py" <cmd>`：list/new/close/dedupe/clean/navigate/eval/read/click/scroll/wait/paginate/captcha/title | — |
 
@@ -56,7 +58,7 @@ python3 "$DIVE_SCRIPTS/zh_cookie_clean.py"
 
 ## 📉 MARKET_SHOCK 大盘异动社区声音收集（2026-08-19 加入）
 
-当 taskbus 有 `MARKET_SHOCK` 事件（大盘单日大跌，心跳触发深度研究）时，**本 agent 优先级最高**——收集社区声音补充深度研究的情绪面：
+当 taskbus 有 `MARKET_SHOCK` 事件（大盘单日大跌深度研究）时，**本 agent 优先级最高**——收集社区声音补充深度研究的情绪面。**驱动方式（2026-09-06 更新）**：MARKET_SHOCK 不再由 watch_scan 直接触发心跳——由 news-collect 心跳认领相应事件后**委托本 agent 执行**社区声音收集（本 agent 自身无独立心跳）。
 
 1. **雪球 7×24 + 今日话题**：`cdp_drive.py new "https://xueqiu.com/today#/livenews"` 看实时舆情；今日话题看多空焦点
 2. **雪球个股讨论**：对池内**重挫股**（跌幅榜前 5）跑 `xq_dig.py <代码> --pages 2`——投资者是"恐慌割肉"还是"错杀抄底"？
@@ -85,7 +87,7 @@ newsdb industry-stocks add --industry <行业名> --stock 600879 --relevance 80 
 - 先 `newsdb industry-stocks query --code <代码>` 查是否已登记，避免重复
 - 行业不存在时先 `newsdb industry-aliases add` 或直接建行业
 - 每轮深挖顺手补录 ≤5 条，不因补录打断主线任务
-- 补录后该股未来行业事件触发时会自动成为 CANDIDATE 候选
+- 补录后该股未来行业事件触发时会自动经 analysis_schedule 队列安排分析（2026-09-04 起 CANDIDATE 事件已退役）
 
 ## 🆕 新行业探索执行（2026-08-19 加入，消费 industry deepdive）
 
@@ -99,8 +101,8 @@ newsdb industry-stocks add --industry <行业名> --stock 600879 --relevance 80 
    # 每段 1 只龙头 rel=80，其余 rel=60；总数 6-10 只，避免泛化沾边股
    ```
 4. **产业链映射**：上下游行业 → relations 登记（`upstream`/`downstream`，strength≥60 才记）
-5. **产出候选**：核心成分（rel≥70）→ CANDIDATE 入队（payload 带 `layer:industry-init`）
-6. **完成**：`newsdb ack-deepdive <id>` + 总结写入 newsdb（新行业初始化报告，entity_type=industry + info_type=analysis + tag=new-industry）
+5. **产出候选**：核心成分（rel≥70）→ `watchlist-add` 入池 + `analysis_pool_sync.py` 同步 analysis_schedule（2026-09-04 起 CANDIDATE 事件已退役，来源层 `layer:industry-init` 语义迁 refresh_reason）
+6. **完成**：`newsdb ack-deepdive <id>` + 总结写 master_pool.db `reports` 表（2026-09-06 起新深度分析一律落 reports 表；**不再写 newsdb analysis 事件**——原 entity_type=industry + info_type=analysis + tag=new-industry 模式仅存量历史）
 
 > **探索质量要点**：社区反复点名的真龙头 > 概念板块沾边股（同花顺概念名单泛化严重，如商业航天含中国电信/南钢——这类不录）；只录"行业业务占比高/核心受益"的标的。
 

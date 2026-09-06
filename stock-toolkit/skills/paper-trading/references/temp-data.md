@@ -1,5 +1,8 @@
 # Paper Trading 临时数据存储功能使用指南
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳，调用即提示改用 ptrade2）。
+
+
 ## 概述
 
 Paper Trading CLI 提供了临时数据存储功能，用于保存和读取各种分析中间结果数据。这个功能特别适合保存深度搜索结果、历史分析连续性、广发证券数据等专业分析过程中生成的中间数据。
@@ -44,7 +47,7 @@ workspace/
 **方式 1: 直接传入内容（`--content`）**
 
 ```bash
-ptrade temp-data 赛力斯 --action save --category deep-search --content "# 分析内容"
+ptrade2 temp-data 赛力斯 --action save --category deep-search --content "# 分析内容"
 ```
 
 适用于简短的分析内容或测试数据。
@@ -52,7 +55,7 @@ ptrade temp-data 赛力斯 --action save --category deep-search --content "# 分
 **方式 2: 从文件读取（`--file`）**
 
 ```bash
-ptrade temp-data 赛力斯 --action save --category deep-search --file search_result.md
+ptrade2 temp-data 赛力斯 --action save --category deep-search --file search_result.md
 ```
 
 适用于已经保存为文件的分析结果。
@@ -60,7 +63,7 @@ ptrade temp-data 赛力斯 --action save --category deep-search --file search_re
 **方式 3: 从 stdin 读取（`--stdin`）**
 
 ```bash
-ptrade temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
+ptrade2 temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
 # 广发证券数据分析
 ## 龙虎榜数据
 ...
@@ -78,7 +81,7 @@ EOF
 
 ```bash
 # 读取最新数据
-ptrade temp-data 赛力斯 --action read --category deep-search
+ptrade2 temp-data 赛力斯 --action read --category deep-search
 ```
 
 读取指定类别下最新保存的数据。如果该类别下没有数据，会返回错误。
@@ -87,13 +90,13 @@ ptrade temp-data 赛力斯 --action read --category deep-search
 
 ```bash
 # 列出某股票所有类别
-ptrade temp-data 赛力斯 --action list
+ptrade2 temp-data 赛力斯 --action list
 
 # 列出某股票某类别的数据
-ptrade temp-data 赛力斯 --action list --category deep-search
+ptrade2 temp-data 赛力斯 --action list --category deep-search
 
 # 列出所有股票的数据
-ptrade temp-data all --action list
+ptrade2 temp-data all --action list
 ```
 
 用于查看已保存的数据记录。
@@ -138,7 +141,7 @@ lrwxrwxrwx 1 user user   21 Apr  9 11:02 最新.md -> 2026-04-09-110020.md  # �
 
 ```bash
 export STOCK_ANALYSIS_WORKSPACE=/custom/path
-ptrade temp-data 赛力斯 --action save --category deep-search --content "测试"
+ptrade2 temp-data 赛力斯 --action save --category deep-search --content "测试"
 # 数据保存到 /custom/path/temp-data/赛力斯/deep-search/
 ```
 
@@ -170,18 +173,18 @@ ptrade temp-data 赛力斯 --action save --category deep-search --content "测�
 
 ```bash
 # subagent 1: 深度搜索
-ptrade temp-data 赛力斯 --action save --category deep-search --stdin < search_result.txt
+ptrade2 temp-data 赛力斯 --action save --category deep-search --stdin < search_result.txt
 
 # subagent 2: 历史分析
-ptrade temp-data 赛力斯 --action save --category history-continuity --stdin < history_analysis.txt
+ptrade2 temp-data 赛力斯 --action save --category history-continuity --stdin < history_analysis.txt
 
 # subagent 3: 广发数据
-ptrade temp-data 赛力斯 --action save --category gf-summary --stdin < gf_data.txt
+ptrade2 temp-data 赛力斯 --action save --category gf-summary --stdin < gf_data.txt
 
 # 主 agent: 收集所有中间数据
-ptrade temp-data 赛力斯 --action read --category deep-search
-ptrade temp-data 赛力斯 --action read --category history-continuity
-ptrade temp-data 赛力斯 --action read --category gf-summary
+ptrade2 temp-data 赛力斯 --action read --category deep-search
+ptrade2 temp-data 赛力斯 --action read --category history-continuity
+ptrade2 temp-data 赛力斯 --action read --category gf-summary
 ```
 
 ### 场景 2: 数据持久化
@@ -193,9 +196,9 @@ import subprocess
 
 analysis_result = generate_analysis()
 
-# 通过 stdin 传递给 ptrade
+# 通过 stdin 传递给 ptrade2
 process = subprocess.Popen([
-    'ptrade', 'temp-data', '赛力斯',
+    'ptrade2', 'temp-data', '赛力斯',
     '--action', 'save',
     '--category', 'custom-analysis',
     '--stdin'
@@ -210,10 +213,10 @@ process.communicate(input=analysis_result.encode('utf-8'))
 
 ```bash
 # 保存当前搜索结果
-ptrade temp-data 赛力斯 --action save --category deep-search --file search_$(date +%Y%m%d).md
+ptrade2 temp-data 赛力斯 --action save --category deep-search --file search_$(date +%Y%m%d).md
 
 # 查看历史保存情况
-ptrade temp-data 赛力斯 --action list --category deep-search
+ptrade2 temp-data 赛力斯 --action list --category deep-search
 ```
 
 ## 注意事项

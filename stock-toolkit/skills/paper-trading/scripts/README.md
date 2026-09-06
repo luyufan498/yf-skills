@@ -1,5 +1,11 @@
 # Paper Trading - 模拟盘交易系统
 
+> ⚠️ **v1 警示（2026-09-06）**：本 README 描述的 v1 `ptrade` 独立资金池命令面已**退役为警告壳**（调用即提示改用 ptrade2）。**生产一律用 ptrade2**：
+> - 建仓/开段：`ptrade2 master-pool-allocate`（替代 v1 `ptrade init --capital`——v9+ 段即账户，禁 init 建账户；`init --capital` 旧资金模型已废弃，总池初始化走 `ptrade2 master-pool-init` 一次性）
+> - 总池/持仓/组合：`ptrade2 master-pool-show` / `ptrade2 portfolio` / `ptrade2 profit`
+> - **v2 无 `analyze` 命令**（本文下文 analyze 章节为 v1 残留，勿引用）
+> - v2 CLI 实际 48 命令，详见 [../SKILL.md](../SKILL.md)
+
 一个功能完善的模拟盘交易系统，支持A股、港股和美股的模拟交易，管理独立资金池和持仓。
 
 ## 功能特性
@@ -99,7 +105,7 @@ ptrade list
 
 ```bash
 # 查看所有账户的收益统计
-ptrade analyze
+ptrade analyze   # ⚠️ [幽灵命令] v2 无 analyze——生产用 ptrade2 profit / ptrade2 portfolio
 ```
 
 ### 6. 数据导出
@@ -179,6 +185,8 @@ ptrade analysis 不存在的股票 --action save --content "# 分析"  # 验证�
 ### 交易命令
 
 #### init - 初始化账户
+
+> ⚠️ **v2 警示**：`init --capital` 旧资金模型已废弃（v9+ 段即账户，禁 init 建账户）。生产建仓走 `ptrade2 master-pool-allocate`；总池初始化走 `ptrade2 master-pool-init --amount`（一次性）。
 
 ```bash
 ptrade init STOCK_NAME --capital CAPITAL [--code CODE] [--force]
@@ -287,6 +295,8 @@ ptrade search 苹果 --limit 5
 ### 工具命令
 
 #### analyze - 性能分析
+
+> ⚠️ **幽灵命令**：v2 CLI 无 `analyze` 命令（本节为 v1 残留文档）。生产用 `ptrade2 profit`（收益报告）/ `ptrade2 portfolio`（组合报表）/ `ptrade2 master-pool-show`（总池对账）。
 
 ```bash
 ptrade analyze

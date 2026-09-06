@@ -46,20 +46,22 @@ uv tool install --editable .
 | `newsdb query-industry <name> [--days N]` | 该行业相关事件 |
 | `newsdb query-market [--days N]` | 宏观/政策/大盘事件 |
 | `newsdb important [--min-importance 4] [--days N]` | 高重要度事件 |
-| `newsdb research [--entity-type X] [--tag X] [--days N]` | **深度研究列表**（info_type='analysis'，可按对象/标签过滤） |
+| `newsdb research [--entity-type X] [--tag X] [--days N]` | **深度研究列表**（info_type='analysis'，可按对象/标签过滤）。**存量历史只读**——2026-09-06 起新深度分析一律写 master_pool.db `reports` 表，newsdb 不再新增 analysis |
 | `newsdb search "关键词"` | FTS 全文检索 |
 | `newsdb refresh-requests [--status pending]` | 读异动刷新请求 |
 
 ## 信息性质与标签（2026-08-19 加入）
 
 **`--info-type`（信息性质，正交于 entity_type）**：analysis / news / fact / rumor
-- `analysis`=深度研究/分析（逻辑链+判断，需置信度，事后可验证 verdict）
+- `analysis`=深度研究/分析（逻辑链+判断，需置信度；verdict 机制未实现——8/19 设计未落地）
 - `news`=新闻快讯（报道发生了什么）｜`fact`=事实公告（财报/中标/监管）｜`rumor`=流言舆情（未经证实，不推动交易）
 - 默认 `news`；旧库自动迁移补列
 
 **`--tags`（弹性标签，N 个任意组合）**：写入 event_tags 表，随用随加
 - 常用：market-shock / panic-selloff / trend-reversal / rate-shock / semiconductor / high-confidence / oversold-bounce ...
 - 查询：`newsdb research --tag rate-shock`；`newsdb event <id>` 显示标签
+
+> **2026-09-06 裁决注**：深度分析不再写 newsdb events（新报告一律落 master_pool.db `reports` 表单独管理）；info_type=analysis 仅存量历史只读（存量 49 条）。news-web /api/events 已默认排除 analysis。
 
 ## 行业成分股与产业链（2026-08-19 加入）
 
@@ -71,14 +73,14 @@ uv tool install --editable .
 | `newsdb industry-stocks query --code 600879` | 查某股票属于哪些行业 |
 
 - **维护节奏**：初始灌入（手工）→ **日常探索顺手收集**（news-deep-browser 逛雪球/知乎/X、news-collector 搜索时，发现行业龙头/潜力股 → `industry-stocks add` 补录，发现即补）→ 季度审计（组合审查复查）
-- **缺失兜底**：查不到成分股时 agent 现场搜索受益标的（searxng/brave/web_search），先补录再入队 CANDIDATE，不断链
+- **缺失兜底**：查不到成分股时 agent 现场搜索受益标的（searxng/brave/web_search），先补录再经 analysis_schedule 队列安排分析，不断链
 - **数据源（2026-08-19 定案，不做自动化抓取）**：
   - ❌ **东财 push2 API**：服务器 IP 被风控（curl/浏览器 fetch 均 RST），akshare 同域接口同样失败
   - ❌ **同花顺概念**：成分泛化（商业航天含中国电信/南钢/金风科技，核心龙头航天电子/中国卫星反而不在）——已弃用，不维护抓取脚本
   - ✅ **核心成分 = 手工知识 + 日常探索顺手收集**：雪球/知乎/X 分析帖、搜索结果的行业龙头线索，比任何概念板块名单更贴近"值得关注的标的"；`ths_boards_raw.json` 参考名单在 daily-stock-workspace/data/industry/（仅候选池参考，不作核心依据）
 
 **`relations` 表（上下游产业链传导）**：`industry→industry`，rel_type=upstream/downstream/related，strength=0-100
-- 行业事件传导时沿 relations 扩散到上下游行业 → 查其成分股 → 核心入队 CANDIDATE（strength>=60 才传导）
+- 行业事件传导时沿 relations 扩散到上下游行业 → 查其成分股 → 核心经 analysis_schedule 队列安排分析（strength>=60 才传导）
 - 已灌：商业航天→卫星互联网/钢铁/化工、半导体→设备/消费电子、算力→GPU/服务器/液冷/存储、AI→算力/大模型 等 16 条
 
 ## 协作端命令

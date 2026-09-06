@@ -1,5 +1,7 @@
 # 📋 交易纪律参考手册
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade ` v1 前缀已退役为警告壳）。移动止损两级模型（2026-09-05 定稿）：首次破位减 50% → 重建现价×0.95 恢复期线 → 再破清剩余，破位=事件触发不等收盘（见 2.4）。旧"三档（L1/L2/L3）"已改两组两层（见 8.3）。历史章节中 v1 独立资金池语境仅作注记保留。
+
 本文档定义 `stock-daily-analysis` skill 生成投资建议时必须遵循的交易纪律，包括卖出纪律、加仓纪律和通用约束。所有 subagent 在执行股票分析任务前应先阅读本文档。
 
 ---
@@ -57,7 +59,7 @@
 
 ### 2.2 移动止损规则（ATR 驱动）
 
-移动止损由 ATR 动态计算，`ptrade atr-sync` 每日同步：
+移动止损由 ATR 动态计算，`ptrade2 atr-sync` 每日同步：
 
 | 要素 | 计算 | 说明 |
 |------|------|------|
@@ -68,7 +70,7 @@
 
 > ⚠️ 移动止损位一旦上移，**不得下调**（`max(旧止损, 新算值)` 保证）。ATR 变大只会让"新算值"变小，但 max 兜底使止损不降；只有 peak 上移（且上移幅度 > ATR 增量）才推高止损。**唯一例外**：旧 peak 来自上一轮被识别为污染时，按上面"旧 peak 污染重置"行纠错性下移，不走 max。
 >
-> **与旧规则的区别**：旧规则按浮盈档位（1.05/1.10/1.20）手动 update，回测显示建仓以来从未上移、基本失效。ATR 驱动由 `ptrade atr-sync` 自动同步，回测验证（两个独立样本）样本外夏普 +0.53。
+> **与旧规则的区别**：旧规则按浮盈档位（1.05/1.10/1.20）手动 update，回测显示建仓以来从未上移、基本失效。ATR 驱动由 `ptrade2 atr-sync` 自动同步，回测验证（两个独立样本）样本外夏普 +0.53。
 
 ### 2.3 亏损状态处理
 
@@ -93,7 +95,7 @@
 
 > **目标价止盈已废弃（2026-08-30）**：原"触及分析报告目标价→减仓20%"（soft）从未挂载过（0/12），且与 2.1 止盈三件套双重触发会乱。分析报告目标价仅作展示与升级评估参考，**不再单独设 take_profit 条件**——上涨方向卖出触发统一由三件套阶梯（+30%/+50% 各 1/3 + 余仓 2.5×ATR）执行。
 
-> **成本保护语义说明（ATR 驱动）**：保护价由 `ptrade atr-sync` 每日同步（`auto_link_cost=True`）：
+> **成本保护语义说明（ATR 驱动）**：保护价由 `ptrade2 atr-sync` 每日同步（`auto_link_cost=True`）：
 > - **正常持仓**：保护价 = 成本 − 2.0 × ATR(14)，加 `成本 × 80%` 底线（防 ATR 异常放大）。波动大保护位低（早止损），波动小保护位高（给足空间）。
 > - **无 ATR 时退回固定缓冲**（buy 钩子零网络依赖）：建仓3天内 `成本 × (1−3%)`，3天后 `成本 × (1−1.5%)`。
 > - **与 trailing_stop 语义不同**：cost_protection **不套只升不降**（成本变了应重算，加仓摊低成本时保护位理应下移），仅设 80% 底线；trailing_stop 硬只升不降（套 max）。两者勿混。
@@ -102,12 +104,12 @@
 
 ### 2.5 止损触发检测（持仓时必须执行）
 
-设了止损位 ≠ 止损会触发——`ptrade conditions --template trigger-table` 的"未触发/已触发"只反映**有没有人手动 `--action trigger` 标记过**，**不**反映现价是否已跌破止损价。8/2 实测中科曙光移动止损 ¥91.49 被现价 ¥83.84 跌破却仍报"未触发"，cron 全自动下差点漏掉——靠人工读报告才识别。本条补上"检测"这环。
+设了止损位 ≠ 止损会触发——`ptrade2 conditions --template trigger-table` 的"未触发/已触发"只反映**有没有人手动 `--action trigger` 标记过**，**不**反映现价是否已跌破止损价。8/2 实测中科曙光移动止损 ¥91.49 被现价 ¥83.84 跌破却仍报"未触发"，cron 全自动下差点漏掉——靠人工读报告才识别。本条补上"检测"这环。
 
 | 步骤 | 命令 | 说明 |
 |------|------|------|
-| ① 同步止损位 | `ptrade atr-sync "<股票名>"` | 先更新 trailing_stop / cost_protection（规则 2.2/2.4）。空仓或 K 线不足自动跳过 |
-| ② 检测破位 | `ptrade check-triggers "<股票名>"` | 对比实时价与所有 ACTIVE 硬条件，按方向判定（止损/保护/破位类=跌破，止盈/目标类=涨破），返回 breach 清单（穿透金额/比例）。退出码 1=有破位 |
+| ① 同步止损位 | `ptrade2 atr-sync "<股票名>"` | 先更新 trailing_stop / cost_protection（规则 2.2/2.4）。空仓或 K 线不足自动跳过 |
+| ② 检测破位 | `ptrade2 check-triggers "<股票名>"` | 对比实时价与所有 ACTIVE 硬条件，按方向判定（止损/保护/破位类=跌破，止盈/目标类=涨破），返回 breach 清单（穿透金额/比例）。退出码 1=有破位 |
 | ③ 处理破位 | 按 breach 条件的 action 执行 | 有破位则**优先**按 action（减仓/清仓）卖出，**不得**按原报告买点继续建仓。无破位（退出码 0）才进入建仓判定 |
 
 > ⚠️ **check-triggers 只检测不自动卖出**。缺口跳空、瞬时插针、除权日等场景仍需按本手册纪律人工/LLM 判断后执行——避免机械化止损误杀。但"检测"这一步本身是强制的：持仓时若不跑 check-triggers，止损位形同虚设。
@@ -185,7 +187,7 @@
 > **判定顺序**：第 0 条（中期趋势门）为**一票否决前置门**，必须首先判定。若第 0 条不通过，直接判"空仓观察"，**不再进入第 1-6 条判定**。第 0 条通过后，才依次检查第 1-6 条。
 
 0. **个股中期趋势门（建仓前置，权重最高，必须首先判定）**：
-   建仓前必须用**周K线**判定个股中期趋势。使用 `ptrade fetch-kline <代码> --type week --count 12`（或 `ptrade market-summary <代码>` 的周K部分），计算 **10 周均线**（近 10 根周K收盘均价）与近 12 周最高周收盘。
+   建仓前必须用**周K线**判定个股中期趋势。使用 `ptrade2 fetch-kline <代码> --type week --count 12`（或 `ptrade2 market-summary <代码>` 的周K部分），计算 **10 周均线**（近 10 根周K收盘均价）与近 12 周最高周收盘。
 
    **以下情形禁止建仓**（满足任一即成立，直接判"空仓观察"，在报告中注明所触发的禁止情形）：
 
@@ -227,7 +229,7 @@
    > 事件前必查该事件锚定持仓是否在持**——在持段的评估/回查事件是义务非残留，关停=段裸奔无退出闸。
    > 9/3 曾误删 10 条在持试探仓时限评估（后全量恢复 #249-269），教训记档：判断"退役残留"必须看
    > 事件引用的仓是否还在 position open。
-   - **动量甜点区**：近 10 日涨幅 ∈ [15%, 25%]（`ptrade fetch-kline --type day --count 15` 计算；追高区 >25% 不适用）；
+   - **动量甜点区**：近 10 日涨幅 ∈ [15%, 25%]（`ptrade2 fetch-kline --type day --count 15` 计算；追高区 >25% 不适用）；
    - **大盘非阴磨**：上证/沪深300 近 20 日跌幅 ≤3%（急跌 m20<-3% 反而是**放行**态；**低位阴磨 0~3% 不适用**——阴磨中动量不可靠，2024 -6.26%/胜22%）；大盘已站回 10 周线上方属正常建仓态，走常规流程；
    - **非连亏股**：非"连亏>3年"或"2025 转亏股"（连亏/转亏股动量失效 -4.47%/胜29%）；
    - **反弹延续确认**：日线站上 5 日线 + 最近 1 根日K收阳（反弹在延续，非单日脉冲）；周K尚未收复 10 周均线（否则走上方修复豁免）；
@@ -357,15 +359,15 @@
 
 ```bash
 # 买点下沿（soft，7天有效）
-ptrade conditions "股票名" --action event-set --event-type add_position \
+ptrade2 conditions "股票名" --action event-set --event-type add_position \
   --price 80.00 --action-str "买点下沿-建仓40%" --category soft --expiry-days 7
 
 # 买点中沿（soft，7天有效）
-ptrade conditions "股票名" --action event-set --event-type add_position \
+ptrade2 conditions "股票名" --action event-set --event-type add_position \
   --price 81.00 --action-str "买点中沿-建仓30%" --category soft --expiry-days 7
 
 # 买点上沿（soft，7天有效）
-ptrade conditions "股票名" --action event-set --event-type add_position \
+ptrade2 conditions "股票名" --action event-set --event-type add_position \
   --price 82.00 --action-str "买点上沿-建仓20%" --category soft --expiry-days 7
 ```
 
@@ -374,7 +376,7 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 **查看事件状态**：
 
 ```bash
-ptrade conditions "股票名" --action event-list
+ptrade2 conditions "股票名" --action event-list
 ```
 
 输出示例：
@@ -388,8 +390,8 @@ ptrade conditions "股票名" --action event-list
 **触发后移除其他事件**（示例：¥81 触发后，判断已满足目标仓位，移除 ¥80 和 ¥82）：
 
 ```bash
-ptrade conditions "股票名" --action event-remove --event-id d4a80f4d
-ptrade conditions "股票名" --action event-remove --event-id dcaddef6
+ptrade2 conditions "股票名" --action event-remove --event-id d4a80f4d
+ptrade2 conditions "股票名" --action event-remove --event-id dcaddef6
 ```
 
 **调整某个买点价位**（示例：¥82 调整为 ¥81.5）：
@@ -398,9 +400,9 @@ ptrade conditions "股票名" --action event-remove --event-id dcaddef6
 
 ```bash
 # 1. 移除原事件
-ptrade conditions "股票名" --action event-remove --event-id dcaddef6
+ptrade2 conditions "股票名" --action event-remove --event-id dcaddef6
 # 2. 重新设定新价位
-ptrade conditions "股票名" --action event-set --event-type add_position \
+ptrade2 conditions "股票名" --action event-set --event-type add_position \
   --price 81.50 --action-str "买点上沿-建仓20%" --category soft --expiry-days 7
 ```
 
@@ -431,7 +433,7 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 - 建仓期间股价在 ¥80-82 波动 → 按计划分批建仓，不触发止损
 - 建仓完成后股价跌到 ¥77.70 → 触发成本保护清仓（ATR 止损）
 
-> **agent 无需手动操作**：此调整由 CLI 在 `buy`/`atr-sync` 后自动同步。`ptrade atr-sync` 每日同步 ATR 止损位。agent 只需在步骤 7 审查时理解当前保护价为何低于成本（建仓期间由买点底线决定），并在报告的"利润保护追踪"章节正确解读。若 agent 主动 `event-remove` 移除了某个买点事件（如已完成建仓），下次 `sync_cost_protection` 会自动切换为纯 ATR 模式。
+> **agent 无需手动操作**：此调整由 CLI 在 `buy`/`atr-sync` 后自动同步。`ptrade2 atr-sync` 每日同步 ATR 止损位。agent 只需在步骤 7 审查时理解当前保护价为何低于成本（建仓期间由买点底线决定），并在报告的"利润保护追踪"章节正确解读。若 agent 主动 `event-remove` 移除了某个买点事件（如已完成建仓），下次 `sync_cost_protection` 会自动切换为纯 ATR 模式。
 
 #### 3.0.6.1 重新建仓的保护位重置
 
@@ -444,11 +446,11 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 
 **问题场景**：若上一轮持仓的保护位（基于旧成本）低于新仓成本，沿用旧保护位会让新仓在浮亏远超预期时才触发清仓；若沿用上一轮 peak（远高于当前价），`peak−2.5×ATR` 会把止损一次性抬到接近当前价，次日就触发清仓。
 
-> **强制重置操作**：重新建仓后，执行 `ptrade atr-sync` 自动重算成本保护（按新成本−2×ATR）并重置 peak：
+> **强制重置操作**：重新建仓后，执行 `ptrade2 atr-sync` 自动重算成本保护（按新成本−2×ATR）并重置 peak：
 >
 > ```bash
 > # 重新建仓后重置 peak + 同步 ATR 止损
-> ptrade atr-sync "<股票名>" --reset-peak
+> ptrade2 atr-sync "<股票名>" --reset-peak
 > ```
 >
 > `--reset-peak` 将 peak 重置为当前价（不继承上一轮 peak），随后按 ATR 重算两个止损位。无需手动 `conditions update`。
@@ -535,7 +537,7 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 分析 agent 在步骤 7 判定时，对满足 3.4.1 条件的标的打 `strong-signal` 标记（写入分析报告 + newsdb 事件标注），心跳/交易 agent 据此执行**消息试探仓**建仓（建段 5% + 段内试探 5-20%）。识别要点：
 - 消息来源以 newsdb `query-stock --days 14` 的 confidence≥3 事件为准
 - 龙虎榜/资金流佐证来自 gf-finance 数据（机构净买/北向流入）
-- 动量用 `ptrade fetch-kline --type day --count 15` 计算 10 日涨幅
+- 动量用 `ptrade2 fetch-kline --type day --count 15` 计算 10 日涨幅
 
 ---
 
@@ -656,7 +658,7 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 
 生成每日分析报告时：
 
-1. **交易纪律与触发条件**部分：直接粘贴 `ptrade conditions "<股票名>" --format markdown --template all` 的输出。
+1. **交易纪律与触发条件**部分：直接粘贴 `ptrade2 conditions "<股票名>" --format markdown --template all` 的输出。
 2. **利润保护追踪**部分：填写最高浮盈、当前浮盈、回撤幅度、止损位等指标。
 3. 具体的纪律规则说明（如梯度档位、加仓类型、事件优先级）**不再在报告中重复**，改为引用本文档。
 4. 投资建议的"第一步：条件触发审查"必须基于本文档规则给出审查结论。
@@ -667,20 +669,20 @@ ptrade conditions "股票名" --action event-set --event-type add_position \
 
 ```bash
 # 查看当前条件
-ptrade conditions "<股票名>" --format markdown --template all
+ptrade2 conditions "<股票名>" --format markdown --template all
 
 # 更新移动止损
-ptrade conditions "<股票名>" --action update --type trailing_stop --price XX.XX
+ptrade2 conditions "<股票名>" --action update --type trailing_stop --price XX.XX
 
 # 设定加仓条件（事件条件，支持同类型多实例）
-ptrade conditions "<股票名>" --action event-set --event-type add_position \
+ptrade2 conditions "<股票名>" --action event-set --event-type add_position \
   --price XX.XX --action-str "成本区补仓-加仓30%" --category soft --expiry-days 7
 
 # 查看事件条件
-ptrade conditions "<股票名>" --action event-list
+ptrade2 conditions "<股票名>" --action event-list
 
 # 保存分析报告
-ptrade analysis "<股票名>" --action save --file report.md
+ptrade2 analysis "<股票名>" --action save --file report.md
 ```
 
 ## 八、总池资金纪律（ptrade2 弹性组合）
@@ -708,15 +710,16 @@ ptrade analysis "<股票名>" --action save --file report.md
    - 候选 > 场内最低分 → `allocate --rotation-out CODE`：入场放行 + 自动挂卖出 watchpoint（mode=sell，price=现价×0.99 次日可成交限价，禁梦价——2026-09-04 起，ROTATION_EXIT 事件已退役，卖单走 watchpoint sell 机制由 C1 心跳消费）；一换一原子对，audit 记 rotation_in/out。
    - 找不到更弱的 → 入场拒绝，等释放/止损降承诺率。20% floor 只作换仓窗口缓冲（义务未回款前允许穿底一次），非轮换穿底禁止。
 
-### 8.3 三档策略
+### 8.3 两组两层策略（2026-09-01 定稿；旧"三档"退役——L3 已并入技术组 L2）
 
-| 档位 | 池:持仓 | 入池节奏 | 空仓去留 | 买卖自主度 |
+| 组/档位 | 池:持仓 | 入池节奏 | 空仓去留 | 买卖自主度 |
 |------|---------|----------|----------|------------|
-| **L1 锁定** | 人工，不限额 | 人工 | 永不移除 | 全人工；release/降级/变更一律 `--source manual`，AI 无权 |
-| **L2 稳健** | 池可 15~30 只，持仓 ≤20 | 定期 + 事件驱动 | 留池（可降级） | agent 自主，释放需"空仓 + ≥5 日无触发 + 分析不支持"三重条件 |
-| **L3 投机** | 池 30+ 只，持仓 ≤20 | 每日扫描候选 | 空仓即移除 | agent 完全自由，空仓即剔 |
+| **技术组 L1**（原 L1 锁定） | 人工，不限额 | 人工 / allocate 自动升级 | 永不移除 | 全人工；release/降级/变更一律 `--source manual`，AI 无权 |
+| **技术组 L2**（待命，原 L2 稳健 + L3 合并） | 池可 15~30 只，持仓 ≤20 | 定期 + 事件驱动 | 留池（可降级） | agent 自主，释放需"空仓 + ≥5 日无触发 + 分析不支持"三重条件 |
+| ~~L3 投机~~ | **[退役-2026-09-01]** 原 L3 观察窗并入技术组 L2 待命层（strategy 'L3'→'L2' 数据合并）；语义不再使用 | — | — | — |
+| **消息组 NEWS**（信号缓冲 → L1 事件槽） | 消息池 ≤总资金 20%，20 事件坑 | 收编扫描 G1-G4 清单闸落库 | TTL 2 交易日作废 | 机械 G 闸；禁设价格点/禁 conditions/禁技术档位语言 |
 
-> **有持仓= L1（2026-08 语义统一）**：触发买入（allocate 建段）即档位进 L1，L1 不限额持仓数；release 空仓后回落原档位（L2 留池/L3 可剔）。消息仓（小仓位试探）与正式建仓的区别只在仓位大小，不影响档位。
+> **有持仓= L1（2026-08 语义统一）**：触发买入（allocate 建段）即档位进 L1，L1 不限额持仓数；release 空仓后回落原档位（技术组 L2 留池/NEWS 段清零槽释放）。消息仓（小仓位试探）与正式建仓的区别只在仓位大小，不影响档位。
 
 ### 8.4 释放与冷却
 

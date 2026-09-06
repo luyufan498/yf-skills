@@ -507,7 +507,7 @@ class ConditionRules:
             level=ConditionLevel.BLOCKED,
             message=f"❌ 成本保护必须等于 成本价×(1-1.5%) = ¥{expected_fixed:.2f}（成本¥{avg_cost:.2f}）。"
                    f"请求: ¥{new_price:.2f}，偏差 ¥{abs(new_price - expected_fixed):.2f}。"
-                   f"如需修改，请使用 --override-trigger 解锁，或通过 `ptrade atr-sync` 自动按 ATR 设定。",
+                   f"如需修改，请使用 --override-trigger 解锁，或通过 `ptrade2 atr-sync` 自动按 ATR 设定。",
             requires_log=True,
             requires_warning=True,
         )
@@ -587,7 +587,7 @@ def format_trigger_table(conditions: List[Condition], current_date: str = None) 
     lines.extend([
         "",
         "> **类别说明**：🔒硬条件=持仓周期内有效，修改受规则约束；🔧软条件=从设定日起7个自然日失效",
-        "> **条件来源**: 本期条件来自 `ptrade conditions` 系统记录",
+        "> **条件来源**: 本期条件来自 `ptrade2 conditions` 系统记录",
         "> **校验状态**: ✅ 所有条件已通过规则引擎校验",
     ])
 

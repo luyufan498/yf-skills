@@ -103,7 +103,7 @@ def save(
         help="信号类型 buyback/reduction/earnings_preview/win_bid/...（仅与 --signal-direction 搭配使用）"),
     info_type: str = typer.Option(
         "news", "--info-type",
-        help="信息性质 analysis/news/fact/rumor（2026-08-19 加入；analysis=深度研究需置信度+verdict）"),
+        help="信息性质 analysis/news/fact/rumor（2026-08-19 加入；9/6 起深度分析落 master_pool.db reports 表，此值仅兼容存量历史）"),
     tags: str = typer.Option(
         None, "--tags",
         help="逗号分隔的弹性标签（如 panic-selloff,rate-shock；2026-08-19 加入 event_tags 表）"),
@@ -333,7 +333,11 @@ def research(entity_type: str = typer.Option(None, "--entity-type",
                                              help="过滤研究对象 stock/industry/policy/market"),
              tag: str = typer.Option(None, "--tag", help="按标签过滤"),
              days: int = typer.Option(None, "--days")):
-    """列出深度研究（info_type='analysis'）。可按对象/标签/时间过滤。"""
+    """列出深度研究（info_type='analysis'）。可按对象/标签/时间过滤。
+
+    存量历史查询：2026-09-06 起新深度分析一律写 master_pool.db reports 表，
+    newsdb 不再新增 analysis 事件——本命令仅用于查看存量 49 条历史。
+    """
     conn = _open()
     sql = "SELECT e.* FROM events e WHERE e.info_type='analysis'"
     params = []

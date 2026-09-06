@@ -12,15 +12,16 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 **硬规则：买卖（allocate+buy / sell）只能在交易时段执行**。执行 agent 操作前先 `date +%H:%M` 判断当前时间，非交易时段**禁止直接买卖**。
 
 **非交易时段（凌晨/午休/收盘后）发现交易信号 → 挂买卖点，开盘后由心跳价格触发**：
-- **建仓信号**（l3-scan 复核通过 / 组合审查通道判定通过 / 分析设点）：不直接 buy → `taskbus watchpoint add <股> --price <触发价> --mode buy --amount <预算> --code <代码> --note "非交易时段判定，开盘触发:<原因>"`（**必须 --mode buy**——默认 eval 次日触发只唤醒评估不建仓，链路断裂）→ 开盘后心跳检测现价≤触发价 → 交易时段内执行
-- **止损信号**（非交易时段价格触及止损位）：**不建 watchpoint**（CLI 无 sell 模式）——止损位已存在 conditions 表（cost_protection/trailing_stop），`check_price_triggers` 次日交易时段自动检测破位触发执行，无需额外挂点
+- **建仓信号**（NEWS_SNAPSHOT 收编判定通过 / 组合审查通道判定通过 / 分析设点）：不直接 buy → `taskbus watchpoint add <股> --price <触发价> --mode buy --amount <预算> --code <代码> --note "非交易时段判定，开盘触发:<原因>"`（**必须 --mode buy**——默认 eval 次日触发只唤醒评估不建仓，链路断裂）→ 开盘后心跳检测现价≤触发价 → 交易时段内执行
+- **止损信号**（非交易时段价格触及止损位）：可挂 `taskbus watchpoint add <股> --price <触发价> --mode sell --code <代码>`（**现价≥触发价触发**，2026-09-04 CLI 已支持）**或**沿用 conditions（止损位已存在 conditions 表 cost_protection/trailing_stop，`check_price_triggers` 次日交易时段自动检测破位触发执行）——**二选一**
+- **移动止损两级模型（2026-09-05 定稿）**：首次破位 → 减仓 50% → 剩余仓重建恢复期线 = 现价 × 0.95 → 再破 → 清仓剩余；**破位 = 事件触发**（C1 price-watch 15min 扫线写 WATCH_ALERT），不等收盘、不隔日
 - **紧急破位**：同样只标记不直接执行（模拟盘无真实滑点，等开盘触发即可）
 
 **例外**：无。交易时段约束是硬性的——凌晨/收盘后成交（如中际旭创 01:05 以隔夜收盘价建仓）视为执行纪律违规。
 
 ## ⚡ ptrade2（V2 弹性组合总池，推荐）
 
-> **2026-08-10 起 ptrade2 已完整上线**：命令面与 v1 完全对齐（35 命令），SQLite 深迁移存储 + 弹性组合总池 + 三档策略。旧 ptrade v1 保留但仅用于回退。
+> **2026-08-10 起 ptrade2 已完整上线**：CLI 实际 48 命令，SQLite 深迁移存储 + 弹性组合总池 + 两组两层策略（技术组 L1/L2 + 消息组 NEWS）。旧 ptrade v1 已退役为警告壳（2026-09-06：调用即提示改用 ptrade2），命令一律用 `ptrade2`。
 
 **核心区别**：
 - **存储**：`ptrade2` 用 SQLite（`master_pool.db`）单一事实源，取代 v1 的每账户 JSON 文件。命令 `ptrade2` 与 v1 命令同名同参，直接替换前缀即可。**2026-09-01 M1.6（schema v9）起"账户层退役、段即账户"**：每只股票的资金/持仓实体=**持仓段（position 行）**——段预算（budget）=分配的资金标签、段现金（cash）=未占用资金、FIFO 流水存 `trades` 表按段锚定；旧 `accounts` 表退役为 `accounts_old`（只读历史，寻址/读写全部走段）。CLI 命令名不变（`list`/`info`/`pool`/`holdings` 等输出为**段视角**）。
@@ -33,10 +34,10 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 ptrade2 master-pool-show              # total/free/占用率/活跃段/已实现盈亏
 
 # 池名单
-ptrade2 watchlist-list                # 三档名单
+ptrade2 watchlist-list                # 两组两层名单（技术组 L1/L2 + 消息组 NEWS）
 ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason 依据
 ptrade2 watchlist-add 股票 --strategy L1 --source manual --reason 人工锁定  # L1 必须 manual
-ptrade2 watchlist remove 股票 --reason 依据   # 出池（僵尸剔除/降级后移除）
+ptrade2 watchlist-remove 股票 --reason 依据   # 出池（僵尸剔除/降级后移除）
 
 ## 档位语义（2026-09-01 L3 Sleeve 架构：两组两层制）
 
@@ -62,8 +63,9 @@ taskbus watchpoint add 股票 --price 24.5 --mode buy --amount 500000 --code <�
 ptrade2 master-pool-allocate 股票 --amount 500000 --reason "建仓点触发"
 
 # ===== 消息组 =====
-# ⚠️ sleeve-* 六条写命令 M1/M2 阶段一律禁用（代码就绪、生产未投用），M3 灰度开放后才可调用；
-#    sleeve-show / sleeve-pool-init 只读与初始化，M3 前亦不投用。
+# M3 已于 2026-09-02 开闸投用（sleeve 命令不再 M1/M2 禁用）；sleeve=消息组 NEWS 槽专属，
+#    写命令 sleeve-open/fill/cancel/migrate/close-slot + 挂单四件套 sleeve-order-place/fill/expire/rejudge；
+#    sleeve-show / sleeve-pool-init 只读与初始化。
 ptrade2 watchlist-add 股票 --strategy NEWS --event-key ND#293 --news-kind policy --reason "收编"
 ptrade2 sleeve-open 股票A 股票B --budget 300000 --event-key ND#293 --news-kind policy  # 开槽（等权）[M3 启用]
 ptrade2 sleeve-fill                       # 心跳开盘后首扫：pending 按开盘价成交+挂三件套 [M3 启用]
@@ -175,7 +177,7 @@ G1-G4 清单闸机械执行 + news_kind 打标 + sleeve-open，禁任何甜点�
 > M3 开闸后才按本流程建槽。
 1. **不信任 payload 数据**——重新拉最新价格/动量/新闻/大盘验证通道条件（消息仓/价值反转/粘滞flag 之一）
 2. 成立 → **先判断交易时段**（`date +%H:%M`，交易时段=9:30-11:30/13:00-15:00）：交易时段内直接按"消息试探仓建仓执行"框架执行；**非交易时段 → 挂 watchpoint（`--mode buy --amount <预算>`，触发价=当前价或分析价，note 注明"非交易时段判定，开盘触发"），开盘后由心跳价格触发执行**
-   - **建段必须带 code**：`master-pool-allocate <股> <预算> --code <代码>`（从事件 payload 取 code，缺失则查 pool/accounts 兜底；严禁建段不带 code——否则网站持仓段代码列空白，且 fetch_prices 无法取价）
+   - **建段必须带 code**：`master-pool-allocate <股> <预算> --code <代码>`（从事件 payload 取 code，缺失则查 pool/position 段行兜底；严禁建段不带 code——否则网站持仓段代码列空白，且 fetch_prices 无法取价）
 3. 不成立 → taskbus 事件 resolve + 记录原因
 4. 防重复：单日消息仓限 3 只且总敞口≤10%（2026-09-01 修订，规则 3.4.4）；"已开过不重复开"；qwen 预筛事件不写 newsdb（19:00 审查不会重复判定）
 
@@ -248,7 +250,7 @@ G1-G4 清单闸机械执行 + news_kind 打标 + sleeve-open，禁任何甜点�
 - 新闻源：`newsdb important --min-importance 4 --days 3` + `newsdb query-market --days 3` 的高重要度 bullish 事件标的
 - 技术初筛：动量 15-25% 甜点区（适用域注记，方案 1.5：仅作技术组**候选发现/加仓**参考，禁止当消息组或技术组入场侧买入许可线）/ 周线收复 10 周均线 / 超跌企稳（`ptrade2 fetch-kline`）
 - 未在名单且双源有依据 → `watchlist-add --strategy L2 --source agent --reason "<事件摘要>; 动量+XX%"`
-- **入池后必须触发分析**：`taskbus add CANDIDATE <股> --source portfolio-review --priority 2 --payload '{"evidence":"<依据>"}'` → 心跳路由 agent 30 分钟内消费 → delegate 分析 subagent 完整分析并设定触发价。
+- **入池后必须触发分析**：入池即自动挂 `analysis_schedule` TTL 队列（analysis_pool_sync 幂等同步，入池股 last_analyzed_at=NULL 最优先），无需手工写事件 → 心跳/analysis-watch 到期消费 → delegate 分析 subagent 完整分析并设定触发价。
 - **入池 ≠ allocate**：新入池只进名单，等分析结果验证后才谈资金
 
 **出池候选识别（2026-08-25 职责分离：组合审查只识别、不执行删除）**：对**无持仓**股票评估（L2 待命），命中以下条件 → **标记为"出池候选"**（写入审查摘要，**不执行 `watchlist remove`**）：
@@ -260,7 +262,7 @@ G1-G4 清单闸机械执行 + news_kind 打标 + sleeve-open，禁任何甜点�
 
 > **为何组合审查不做删除（2026-08-25 拍板）**：组合审查是**正向流程**（通道判定/挂载触发/升级 L2/入池），删除是**负向操作**且不可逆——混在例行审查里，一旦审查信息不完整（截断/超时/单只分析过粗）就可能误删有价值标的（尤其有 watchpoint/CALENDAR 保护的票）。职责分离：**审查识别 → 人工/用户确认 → 执行删除**。出池候选在摘要里列出，等用户确认或专门指令再删。
 
-**与其他机制分工**：入池的"事件驱动"路径（taskbus CANDIDATE → 分析）管盘中新题材；组合审查主动扫描管"没上新闻雷达但技术面转好"的兜底 + 出池候选识别（不删除）。
+**与其他机制分工**：入池的"事件驱动"路径（MSG_* 消息链 + analysis_schedule TTL 队列）管盘中新题材；组合审查主动扫描管"没上新闻雷达但技术面转好"的兜底 + 出池候选识别（不删除）。
 
 # 开持仓段（从 free 拨预算段直建，v9 段即账户）——替代 v1 的 ptrade init
 ptrade2 master-pool-allocate 股票 --amount 200000 --reason 右侧建仓
@@ -431,9 +433,9 @@ ptrade check-triggers                   # 省略股票名则遍历所有持仓�
 
 当作为交易 agent 消费 taskbus 的 WATCH_ALERT 事件（`taskbus claim <id>` 后、执行 buy/sell 前），**必须核验**：
 
-1. **条件仍 active？** 查 `ptrade conditions "股票" --action event-list`，确认事件 payload 中的 `cond_id` 对应条件状态为 `active`。若已 `triggered`/`removed` → 说明此前已触发并处理过，**不执行交易**，直接 `taskbus done <id> --note "条件已触发/失效，重复事件，不执行"`。
-2. **近7日已执行过同向操作？** `ptrade operations "股票" --days 7` 检查是否已对该条件执行过买入/卖出（如"买点上沿-建仓10%"昨天已建仓）。已有 → 不重复执行，标 done。
-3. **仓位合理？** `ptrade info "股票"` 核对：buy 事件但仓位已达目标（区间捕捉建满）→ 不追加；sell 事件但已空仓 → 不重复卖出。
+1. **条件仍 active？** 查 `ptrade2 conditions "股票" --action event-list`，确认事件 payload 中的 `cond_id` 对应条件状态为 `active`。若已 `triggered`/`removed` → 说明此前已触发并处理过，**不执行交易**，直接 `taskbus done <id> --note "条件已触发/失效，重复事件，不执行"`。
+2. **近7日已执行过同向操作？** `ptrade2 operations "股票" --days 7` 检查是否已对该条件执行过买入/卖出（如"买点上沿-建仓10%"昨天已建仓）。已有 → 不重复执行，标 done。
+3. **仓位合理？** `ptrade2 info "股票"` 核对：buy 事件但仓位已达目标（区间捕捉建满）→ 不追加；sell 事件但已空仓 → 不重复卖出。
 4. **手动补录事件（cond_id=0 或无凭证）**：直接按"疑似重复"处理，核验后标 done，不执行交易（详见 task-bus skill「WATCH_ALERT 消费前置校验」）。
 
 > 爱司凯事故复盘（2026-08-13）：旧条件"买点上沿-建仓10%"（¥25.0）8/12 已触发并建仓 1100 股，8/13 现价 24.96 再次穿越被手动补录成新事件——若不校验条件状态会**重复建仓**。已修复：脚本层加 active 校验+对账，协议层加消费前置校验。

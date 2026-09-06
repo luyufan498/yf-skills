@@ -1,6 +1,8 @@
 # 条件管理命令详解
 
-本指南详细说明 `ptrade conditions` 条件管理命令，包括标准条件和事件条件的设定、查看、修改和触发。
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade ` v1 前缀已退役为警告壳）。止盈阶梯 take_profit_1/2 由 `ptrade2 atr-sync` **自动挂载，禁手工设定**；target_profit（目标价止盈，2026-08-30 废弃）与 profit_protect 四档利润梯度（废弃）**不再使用**，上涨方向卖出统一走止盈三件套（保本锁 + 阶梯 + 余仓 ATR 跟随）。
+
+本指南详细说明 `ptrade2 conditions` 条件管理命令，包括标准条件和事件条件的设定、查看、修改和触发。
 
 ## 目录
 
@@ -35,52 +37,52 @@
 
 ```bash
 # 默认格式（终端友好）
-ptrade conditions "股票名称"
+ptrade2 conditions "股票名称"
 
 # Markdown 格式
-ptrade conditions "股票名称" --format markdown --template all
+ptrade2 conditions "股票名称" --format markdown --template all
 
 # JSON 格式
-ptrade conditions "股票名称" --format json
+ptrade2 conditions "股票名称" --format json
 ```
 
 ### 设定条件
 
 ```bash
 # 设定移动止损（hard，持仓周期有效）
-ptrade conditions "股票名称" --action set --type trailing_stop --price 65.0 --action-str "减仓50%" --category hard
+ptrade2 conditions "股票名称" --action set --type trailing_stop --price 65.0 --action-str "减仓50%" --category hard
 
 # 设定止盈条件（soft，7天有效）
-ptrade conditions "股票名称" --action set --type take_profit_1 --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action set --type take_profit_1 --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
 
-# 设定成本保护（hard，自动跟随持仓成本。ATR 驱动：保护价=成本−2.0×ATR(14)，由 ptrade atr-sync 每日同步）
-ptrade conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "成本保护清仓" --category hard
+# 设定成本保护（hard，自动跟随持仓成本。ATR 驱动：保护价=成本−2.0×ATR(14)，由 ptrade2 atr-sync 每日同步）
+ptrade2 conditions "股票名称" --action set --type cost_protection --price 77.51 --action-str "成本保护清仓" --category hard
 ```
 
 ### 修改条件
 
 ```bash
 # 更新价格（受规则引擎约束）
-ptrade conditions "股票名称" --action update --type trailing_stop --price 75.0 --reason "支撑位上调"
+ptrade2 conditions "股票名称" --action update --type trailing_stop --price 75.0 --reason "支撑位上调"
 ```
 
 ### 移除条件
 
 ```bash
-ptrade conditions "股票名称" --action remove --type take_profit_1
+ptrade2 conditions "股票名称" --action remove --type take_profit_1
 ```
 
 ### 触发/过期/检查
 
 ```bash
 # 手动标记条件已触发
-ptrade conditions "股票名称" --action trigger --type trailing_stop --trigger-price 64.5
+ptrade2 conditions "股票名称" --action trigger --type trailing_stop --trigger-price 64.5
 
 # 手动标记条件过期
-ptrade conditions "股票名称" --action expire --type take_profit_1
+ptrade2 conditions "股票名称" --action expire --type take_profit_1
 
 # 检查过期条件
-ptrade conditions "股票名称" --action check
+ptrade2 conditions "股票名称" --action check
 ```
 
 ---
@@ -91,28 +93,28 @@ ptrade conditions "股票名称" --action check
 
 ```bash
 # 亏损预警（hard）
-ptrade conditions "股票名称" --action event-set --event-type loss_protect --price 68.6 --action-str "减仓20%" --category hard
+ptrade2 conditions "股票名称" --action event-set --event-type loss_protect --price 68.6 --action-str "减仓20%" --category hard
 
 # 技术破位（hard）
-ptrade conditions "股票名称" --action event-set --event-type tech_break --price 75.0 --action-str "减仓50%" --category hard
+ptrade2 conditions "股票名称" --action event-set --event-type tech_break --price 75.0 --action-str "减仓50%" --category hard
 
 # 目标价止盈（soft，7天有效）
-ptrade conditions "股票名称" --action event-set --event-type target_profit --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action event-set --event-type target_profit --price 90.0 --action-str "减仓20%" --category soft --expiry-days 7
 
 # 加仓条件（soft，支持同类型多实例）
-ptrade conditions "股票名称" --action event-set --event-type add_position --price 45.36 --action-str "成本区补仓-加仓30%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action event-set --event-type add_position --price 45.36 --action-str "成本区补仓-加仓30%" --category soft --expiry-days 7
 
 # 分批建仓条件（soft，空仓状态下首次建仓，通过多个独立事件覆盖买点区间）
-ptrade conditions "股票名称" --action event-set --event-type add_position --price 80.00 --action-str "买点下沿-建仓30%" --category soft --expiry-days 7
-ptrade conditions "股票名称" --action event-set --event-type add_position --price 81.00 --action-str "买点中沿-建仓30%" --category soft --expiry-days 7
-ptrade conditions "股票名称" --action event-set --event-type add_position --price 82.00 --action-str "买点上沿-建仓40%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action event-set --event-type add_position --price 80.00 --action-str "买点下沿-建仓30%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action event-set --event-type add_position --price 81.00 --action-str "买点中沿-建仓30%" --category soft --expiry-days 7
+ptrade2 conditions "股票名称" --action event-set --event-type add_position --price 82.00 --action-str "买点上沿-建仓40%" --category soft --expiry-days 7
 ```
 
 ### 查看事件条件
 
 ```bash
 # 列出所有事件条件
-ptrade conditions "股票名称" --action event-list
+ptrade2 conditions "股票名称" --action event-list
 ```
 
 输出示例：
@@ -127,14 +129,14 @@ ptrade conditions "股票名称" --action event-list
 
 ```bash
 # 通过ID移除
-ptrade conditions "股票名称" --action event-remove --event-id eca38fef
+ptrade2 conditions "股票名称" --action event-remove --event-id eca38fef
 ```
 
 ### 触发事件条件
 
 ```bash
 # 手动标记事件已触发
-ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --trigger-price 68.2
+ptrade2 conditions "股票名称" --action event-trigger --event-id eca38fef --trigger-price 68.2
 ```
 
 ---
@@ -147,18 +149,18 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 |------|------|---------|
 | `trailing_stop` | 移动止损/技术破位 | hard |
 | `cost_protection` | 成本保护（ATR 驱动：成本−2.0×ATR(14)，加成本×80%底线） | hard |
-| `take_profit_1` | 第一止盈位 | soft |
-| `take_profit_2` | 第二止盈位 | soft |
+| `take_profit_1` | 第一止盈位（**由 atr-sync 自动挂载，禁手工设**） | hard |
+| `take_profit_2` | 第二止盈位（**由 atr-sync 自动挂载，禁手工设**） | hard |
 | `add_position` | 加仓条件 | soft |
 
 ### 事件条件类型（6种）
 
 | 事件类型 | 用途 | 典型场景 |
 |---------|------|---------|
-| `profit_protect` | 利润保护梯度 | 浮盈>20%后设定四档回撤保护 |
+| `profit_protect` | [废弃] 旧"黄橙红黑灯"四档利润梯度（2026-08-30 废弃：公式缺陷 + 全库 0 执行），由止盈三件套替代 | 勿用 |
 | `loss_protect` | 亏损保护梯度 | 浮亏状态下设定亏损止损线 |
 | `tech_break` | 技术破位 | 跌破关键支撑位减仓 |
-| `target_profit` | 目标价到达 | 分析报告目标价减仓20% |
+| `target_profit` | [废弃 2026-08-30] 目标价止盈——从未挂载执行（0/12）且与止盈三件套双重触发，勿再设 | 仅历史留档 |
 | `add_position` | 加仓条件 / 分批建仓条件 | 成本区/支撑位/急跌/突破加仓；空仓状态下的首批/第二批/第三批建仓 |
 | `fundamental` | 基本面事件 | 业绩暴雷/重大利好 |
 | `market_risk` | 市场风险 | 大盘系统性风险 |
@@ -186,10 +188,10 @@ ptrade conditions "股票名称" --action event-trigger --event-id eca38fef --tr
 
 ```bash
 # 只看触发条件表
-ptrade conditions "股票名称" --format markdown --template trigger-table
+ptrade2 conditions "股票名称" --format markdown --template trigger-table
 
 # 只看执行检查
-ptrade conditions "股票名称" --format markdown --template execution-check
+ptrade2 conditions "股票名称" --format markdown --template execution-check
 ```
 
 ---
@@ -200,22 +202,22 @@ ptrade conditions "股票名称" --format markdown --template execution-check
 
 ```bash
 # 1. 初始化（建仓时自动创建）
-ptrade init "英维克" --capital 500000
+ptrade2 init "英维克" --capital 500000
 
 # 2. 设定标准条件
-ptrade conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "成本保护清仓" --category hard
-ptrade conditions "英维克" --action set --type trailing_stop --price 65.0 --action-str "技术破位-减仓50%" --category hard
+ptrade2 conditions "英维克" --action set --type cost_protection --price 72.21 --action-str "成本保护清仓" --category hard
+ptrade2 conditions "英维克" --action set --type trailing_stop --price 65.0 --action-str "技术破位-减仓50%" --category hard
 
 # 3. 设定事件条件（亏损梯度）
-ptrade conditions "英维克" --action event-set --event-type loss_protect --price 68.6 --action-str "减仓20%" --category hard
-ptrade conditions "英维克" --action event-set --event-type loss_protect --price 66.4 --action-str "减仓50%" --category hard
-ptrade conditions "英维克" --action event-set --event-type loss_protect --price 61.4 --action-str "清仓" --category hard
+ptrade2 conditions "英维克" --action event-set --event-type loss_protect --price 68.6 --action-str "减仓20%" --category hard
+ptrade2 conditions "英维克" --action event-set --event-type loss_protect --price 66.4 --action-str "减仓50%" --category hard
+ptrade2 conditions "英维克" --action event-set --event-type loss_protect --price 61.4 --action-str "清仓" --category hard
 
 # 4. 查看完整条件
-ptrade conditions "英维克" --format markdown --template all
+ptrade2 conditions "英维克" --format markdown --template all
 
 # 5. 查看事件条件列表
-ptrade conditions "英维克" --action event-list
+ptrade2 conditions "英维克" --action event-list
 ```
 
 ---
@@ -270,27 +272,27 @@ A: 分批建仓期间，CLI 会自动调整成本保护价，避免"计划内浮
 
 **示例**：买点区间 ¥80-82，加权成本 ¥82，ATR(14)=¥1.5。ATR 成本侧 = 82−2×1.5=¥79；最低买点 ¥80 的底线 = 80×0.98=¥78.40。取 `min(79, 78.40) = ¥78.40`。建仓完成后（所有买点事件触发或移除），下次 `sync_cost_protection` 切换回纯 ATR 成本保护（¥79）。
 
-> **agent 无需手动操作**：此调整由 CLI 自动完成。`ptrade atr-sync` 每日同步 ATR 止损位。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
+> **agent 无需手动操作**：此调整由 CLI 自动完成。`ptrade2 atr-sync` 每日同步 ATR 止损位。详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.0.6 节。
 
-### Q: `ptrade atr-sync` 命令是做什么的？
+### Q: `ptrade2 atr-sync` 命令是做什么的？
 
 A: ATR 动态止损同步——算 ATR(14) + 更新持仓最高价(peak) + 同步 `trailing_stop`（peak−2.5×ATR，只升不降）与 `cost_protection`（成本−2.0×ATR，加80%底线）。替代旧的固定 3%/1.5% 缓冲和手动按浮盈档位 update 移动止损。
 
 ```bash
 # 同步所有持仓账户（cron 每日调用）
-ptrade atr-sync
+ptrade2 atr-sync
 
 # 同步单只股票
-ptrade atr-sync 中科曙光
+ptrade2 atr-sync 中科曙光
 
 # 只计算不写入（查看预期值）
-ptrade atr-sync --dry-run
+ptrade2 atr-sync --dry-run
 
 # 重新建仓后重置 peak（不继承上一轮 peak）
-ptrade atr-sync 中科曙光 --reset-peak
+ptrade2 atr-sync 中科曙光 --reset-peak
 
 # 自定义 ATR 参数
-ptrade atr-sync --period 14 --k 2.5 --count 120
+ptrade2 atr-sync --period 14 --k 2.5 --count 120
 ```
 
 **参数**：`--period`(ATR周期,默认14)、`--k`(ATR倍数,默认trailing用2.5/cost用2.0)、`--count`(K线根数,默认120)、`--dry-run`、`--init-peak`(首次peak初始化:current默认/historical)、`--reset-peak`。
@@ -301,9 +303,9 @@ ptrade atr-sync --period 14 --k 2.5 --count 120
 
 ## 相关命令
 
-- `ptrade conditions` - 条件管理主命令
-- `ptrade info` - 查看持仓和盈亏
-- `ptrade operations` - 查看交易历史
+- `ptrade2 conditions` - 条件管理主命令
+- `ptrade2 info` - 查看持仓和盈亏
+- `ptrade2 operations` - 查看交易历史
 
 ## 进阶话题
 

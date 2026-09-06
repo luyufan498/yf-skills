@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """watch_scan.py — 心跳监控脚本（Hermes cron monitor-script 模式）
 
-每个 tick（30 分钟，零 LLM 成本）：
+三 scope 分流（v12，main() 按 --scope 参数路由，详见各 run_*_scope）：
+1. --scope news：消息组专用心跳（msg-watch 消费）——newsdb 新事件检出 → MSG_CANDIDATE，
+   静默一切价格/legacy 检测。
+2. --scope price：价格组专用心跳（C1 消费）——挂单槽四态扫描（E1）、保护链/裸奔/ATR
+   同步/动量异动/大盘异动（E6-E11），交易时段闸内拍首批量预取价。
+3. --scope legacy（默认，兼容现网旧 cron 无参调用）：旧全量逻辑原样保留（含 SLEEVE_FILL/
+   [SLEEVE]），可回滚但不再演进。
+
+legacy scope 每个 tick（30 分钟，零 LLM 成本）：
 1. taskbus pending 事件检查 + processing 超时 recover
 2. atr-sync：每日交易时段首次 tick，对持仓股自动更新止损位（减少 agent 工作）
 3. 价格条件触发检测（交易时段）：读 conditions active 条件 vs 实时价
@@ -301,7 +309,8 @@ def _ensure_task_table():
 
 # ---------- 1. 任务事件检查 ----------
 def check_tasks() -> list[dict]:
-    """待消费事件（排除 CALENDAR：定时回查由 check_calendar 到期才输出，未到期不唤醒）。
+    """待消费事件（排除 CALENDAR：定时回查由 analysis_watch_monitor.query_calendar_lines
+    到期才输出，未到期不唤醒；本脚本的 check_calendar 检测已于 2026-09-06 移除）。
 
     v12：MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE 也不列——消息挂单三类型唯一消费者
     =专用心跳 msg-watch（claim 硬门见 task_bus/db.py），legacy 心跳只发现不消费，
@@ -1533,51 +1542,6 @@ def run_price_scope() -> int:
         return 0
     print("\n".join(lines))
     return 0
-
-
-def check_calendar() -> list[str]:
-    """CALENDAR 事件到期检测：到期时刻 ≤ now 且 pending → 输出（monitor 变化 → 唤醒 agent 消费）。
-
-    分析 agent 对"暂时不买/等财报/等催化"的股票写 CALENDAR 事件（payload.due），
-    到期时心跳唤醒重新评估（进技术组 L2 待命复检 / 继续观察 / 移除）。未到期不输出（安静睡眠）。
-
-    到期时刻语义（2026-08-18 修复，防凌晨空触发）：
-    - 纯日期 "2026-08-20" → 视为当天 **15:30（收盘后）** 到期——等财报/等公告的事件
-      不会被当天凌晨唤醒（那时报告还没出），收盘后数据/公告才齐。
-    - 带时间 "2026-08-20T10:00"（或含空格）→ 精确到该时刻触发（紧急事项显式写时间）。
-    """
-    if not os.path.exists(TASKS_DB):
-        return []
-    _ensure_task_table()
-    conn = sqlite3.connect(TASKS_DB)
-    try:
-        rows = conn.execute(
-            "SELECT id, entity, payload FROM task_events "
-            "WHERE type='CALENDAR' AND status='pending'").fetchall()
-    finally:
-        conn.close()
-    now = datetime.now()
-    out = []
-    for rid, entity, payload in rows:
-        try:
-            p = json.loads(payload) if payload else {}
-        except (ValueError, TypeError):
-            continue
-        due_raw = str(p.get("due") or "")
-        due_str = due_raw[:10]
-        if not due_str:
-            continue
-        # 解析到期时刻：带时间 → 原样；纯日期 → 当天 15:30
-        try:
-            if "T" in due_raw or " " in due_raw:
-                due_dt = datetime.fromisoformat(due_raw[:19].replace(" ", "T"))
-            else:
-                due_dt = datetime.strptime(due_str, "%Y-%m-%d").replace(hour=15, minute=30)
-        except ValueError:
-            continue  # due 格式非法 → 跳过该事件（不触发也不崩溃）
-        if due_dt <= now:
-            out.append(f"📅 CALENDAR 到期 #{rid} {entity} due={due_dt:%Y-%m-%d %H:%M} [{p.get('event', '')}]")
-    return out
 
 
 def check_watch_points() -> list[str]:

@@ -173,8 +173,6 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
 
 7. 在表格下方追加近7日操作摘要（来自 `ptrade2 operations` 的输出）
 
-8. 如果初始化了资金池，在报告中标注"本次分析已创建模拟盘资金池"
-
 **数据整合要点**：
 - ✅ 持仓情况将影响投资建议的表述（如空仓可积极建仓，重仓则谨慎）
 - ✅ 收益情况用于评估历史操作的有效性
@@ -423,6 +421,7 @@ ptrade2 analysis "<股票名>" --action save --file "/tmp/{股票名}_analysis_$
 **保存位置**: `stocks_analysis/<股票名>/<股票名>-YYYY-MM-DD-HHMM.md`
 - 该命令会自动创建带时间戳的文件名
 - 自动创建 Soft链接 `最新分析.md` 指向最新分析
+- 同份内容经 `ptrade2 analysis save` 自动归档 reports 表（file_path 指向 stocks_analysis 文件，幂等：同股票同日同文件名覆盖），网页/审计用结构化查询直读 reports 表
 
 **报告格式要求**：
 ```markdown

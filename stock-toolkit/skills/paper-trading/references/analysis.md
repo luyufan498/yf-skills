@@ -1,5 +1,8 @@
 # 分析报告管理
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳，调用即提示改用 ptrade2）。
+
+
 ## 功能概述
 
 分析报告管理功能提供股票分析报告的保存、读取和查询功能。
@@ -36,33 +39,33 @@
 
 ```bash
 # 直接传入内容
-ptrade analysis 赛力斯 --action save --content "# 分析报告内容"
+ptrade2 analysis 赛力斯 --action save --content "# 分析报告内容"
 
 # 从文件读取
-ptrade analysis 赛力斯 --action save --file analysis.md
+ptrade2 analysis 赛力斯 --action save --file analysis.md
 
 # 从标准输入读取
-echo "# 分析" | ptrade analysis 赛力斯 --action save --content -
+echo "# 分析" | ptrade2 analysis 赛力斯 --action save --content -
 ```
 
 ### 读取分析报告
 
 ```bash
 # 读取最新的分析报告
-ptrade analysis 赛力斯 --action read
+ptrade2 analysis 赛力斯 --action read
 ```
 
 ### 列出分析记录
 
 ```bash
 # 列出某股票的分析记录（默认最近10条）
-ptrade analysis 赛力斯 --action list
+ptrade2 analysis 赛力斯 --action list
 
 # 列出更多记录
-ptrade analysis 赛力斯 --action list --limit 20
+ptrade2 analysis 赛力斯 --action list --limit 20
 
 # 列出所有已分析的股票
-ptrade analysis all --action list
+ptrade2 analysis all --action list
 ```
 
 ## Python API

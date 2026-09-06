@@ -14,7 +14,7 @@
 - **市场整体新闻**: 市场热点、资金流向、情绪指标
 - **政策信号**: 宏观政策、监管动向、资金面变化
 - **行业联动**: 相关行业动态、板块轮动、概念炒作
-- **获取方式**: 使用 ptrade CLI 工具获取实时市场新闻：`ptrade fetch-news --source all --limit 30`
+- **获取方式**: 使用 ptrade2 CLI 工具获取实时市场新闻：`ptrade2 fetch-news --source all --limit 30`
 
 ### 2️⃣ 公司基本面
 - **财务数据**: 营收、净利、毛利率、ROE、现金流
@@ -150,7 +150,7 @@ newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity
 - **市场热点**: [当前市场主要热点和资金流向]
 - **政策信号**: [宏观政策、监管动态、资金面变化]
 - **行业联动**: [相关行业动态、板块轮动趋势]
-- **获取方式**: [ptrade fetch-news --source all --limit 30]
+- **获取方式**: [ptrade2 fetch-news --source all --limit 30]
 
 ### 📅 实时动态（最近 1-2 周）
 - [按时间排序，最近在前]
@@ -237,7 +237,7 @@ newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity
 - 确保搜索服务可用后开始执行
 
 **步骤二：获取市场整体新闻 🆕**
-- 执行命令：`ptrade fetch-news --source all --limit 30`
+- 执行命令：`ptrade2 fetch-news --source all --limit 30`
 - 重点关注：市场热点、资金流向、政策信号、行业联动
 - 分析市场环境是否对目标股票有潜在影响
 - 提取与目标股票相关的市场线索（如板块轮动、概念炒作等）
@@ -274,7 +274,7 @@ newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity
 ## ✅ 质量检查要点
 
 - [ ] 五大维度均有信息覆盖（含市场环境）
-- [ ] 市场环境信息已获取分析（使用 ptrade fetch-news 命令）
+- [ ] 市场环境信息已获取分析（使用 ptrade2 fetch-news 命令）
 - [ ] 实时信息优先（最近 1-2 周）
 - [ ] 关键数据有具体数值（营业额、销量等）
 - [ ] 重大事件有时间、背景、影响
@@ -292,12 +292,12 @@ newsdb save --new-event --title "龙虎榜：机构净买入XXXX万元" --entity
 
 深度搜索完成后，请参考下列命令将分析报告保存。
 
-💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能，自动确定保存路径
+💾 保存方式：使用 ptrade2 CLI 工具的临时数据存储功能，自动确定保存路径
 📂 执行路径：请在SKILL路径下执行,请在执行命令前切换(cd)至此目录或者直接使用绝对路径来执行
 
 ### 保存命令
 
-**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据**
+**⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade2 temp-data 命令保存数据**
 
 ```bash
 # 1. 先将深度搜索报告保存到临时文件（使用 date +%s 生成唯一时间戳）
@@ -334,7 +334,7 @@ cat > "/tmp/{股票名称}_deep_search_$(date +%s).md" << 'EOF'
 EOF
 
 # 2. 使用 --file 参数归档
-ptrade temp-data "股票名称" \
+ptrade2 temp-data "股票名称" \
   --action save \
   --category deep-search \
   --file "/tmp/{股票名称}_deep_search_$(date +%s).md"
@@ -345,7 +345,7 @@ ptrade temp-data "股票名称" \
 - [ ] 使用 `save-data` 命令，指定 `--type deep-search`
 - [ ] 文件名遵循 `search_{YYYY-MM-DD}.md` 格式
 - [ ] 报告内容包含五大维度信息（含市场环境）
-- [ ] 已调用 `ptrade fetch-news --source all --limit 30` 获取市场新闻
+- [ ] 已调用 `ptrade2 fetch-news --source all --limit 30` 获取市场新闻
 - [ ] 搜索链条记录完整
 - [ ] 文件成功写入磁盘
 - [ ] 软链接 `最新搜索.md` 已创建

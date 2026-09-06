@@ -2,6 +2,8 @@
 
 本指南详细说明 paper-trading 的常见问题、错误信息和解决方案。
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳）。**修复路径已变**：v9+ "段即账户"，分析流程**禁 `init` 建账户**（建仓走 `ptrade2 master-pool-allocate` / watchpoint / sleeve-open 事件链）；"资金池未初始化/未找到账户"= 该股无持仓段，不是要 init；`init --capital` 旧资金模型已废弃（总池初始化走 `ptrade2 master-pool-init`，一次性）；数据损坏修复以 `master_pool.db` 为准（改前 cp 备份），本文部分 v1 JSON 修复路径仅作历史注记。
+
 ## 目录
 
 - [安装问题](#安装问题)
@@ -19,12 +21,12 @@
 
 ## 安装问题
 
-### 问题 1：命令未找到 - ptrade: command not found
+### 问题 1：命令未找到 - ptrade2: command not found
 
 **现象**：
 ```bash
-$ ptrade init "股票"
-ptrade: command not found
+$ ptrade2 init "股票"
+ptrade2: command not found
 ```
 
 **原因分析**：
@@ -49,7 +51,7 @@ uv tool install --editable .
 
 3. **检查 PATH**：
 ```bash
-which ptrade
+which ptrade2
 
 # 如果找不到，检查 Python 安装路径
 # uv tool 通常安装到 ~/.local/bin/
@@ -122,11 +124,13 @@ uv pip install -e .
 
 ## 资金池问题
 
+> ⚠️ **v2 修复路径警示（2026-09-06）**：本节及后文的 `ptrade2 init "股票" --capital ...` 系 v1 独立资金池旧模型命令——v9+ 已禁用该路径（账户层退役），生产修复一律 `ptrade2 master-pool-*`（allocate/topup/release）+ `ptrade2 master-pool-show` 对账。
+
 ### 问题 4：资金池未初始化
 
 **现象**：
 ```bash
-$ ptrade buy "股票" --qty 100
+$ ptrade2 buy "股票" --qty 100
 错误：未找到股票 "股票" 的资金池
 ```
 
@@ -138,18 +142,18 @@ $ ptrade buy "股票" --qty 100
 
 1. **先初始化资金池**：
 ```bash
-ptrade init "股票" --capital 100000
+ptrade2 init "股票" --capital 100000
 ```
 
 2. **查看已初始化的股票**：
 ```bash
-ptrade list
+ptrade2 list
 ```
 
 3. **检查股票名称**：
 ```bash
 # 确认股票名称正确
-ptrade info "股票名称"
+ptrade2 info "股票名称"
 ```
 
 ---
@@ -158,7 +162,7 @@ ptrade info "股票名称"
 
 **现象**：
 ```bash
-$ ptrade buy "股票" --amount 100000
+$ ptrade2 buy "股票" --amount 100000
 错误：可用资金不足（需要 100000，当前可用 50000）
 ```
 
@@ -168,22 +172,22 @@ $ ptrade buy "股票" --amount 100000
 
 1. **减少买入金额**：
 ```bash
-ptrade buy "股票" --amount 50000
+ptrade2 buy "股票" --amount 50000
 ```
 
 2. **查看资金池状态**：
 ```bash
-ptrade pool "股票"
+ptrade2 pool "股票"
 ```
 
 3. **卖出部分持仓释放资金**：
 ```bash
-ptrade sell "股票" --qty 50
+ptrade2 sell "股票" --qty 50
 ```
 
 4. **重新初始化更大资金池**（谨慎！）：
 ```bash
-ptrade init "股票" --capital 200000 --force
+ptrade2 init "股票" --capital 200000 --force
 ```
 
 ---
@@ -203,7 +207,7 @@ cat intermediate/股票/模拟买卖/account.json | jq .
 
 2. **重新初始化**（会清除数据）：
 ```bash
-ptrade init "股票" --capital 100000 --force
+ptrade2 init "股票" --capital 100000 --force
 ```
 
 3. **手动修复**（高级）：
@@ -226,7 +230,7 @@ ptrade init "股票" --capital 100000 --force
 
 **现象**：
 ```bash
-$ ptrade sell "股票" --qty 200
+$ ptrade2 sell "股票" --qty 200
 错误：持仓数量不足（当前持仓 100，请求卖出 200）
 ```
 
@@ -236,17 +240,17 @@ $ ptrade sell "股票" --qty 200
 
 1. **查看持仓数量**：
 ```bash
-ptrade holdings "股票"
+ptrade2 holdings "股票"
 ```
 
 2. **减少卖出数量**：
 ```bash
-ptrade sell "股票" --qty 100
+ptrade2 sell "股票" --qty 100
 ```
 
 3. **全仓卖出**：
 ```bash
-ptrade sell "股票" --all
+ptrade2 sell "股票" --all
 ```
 
 ---
@@ -255,7 +259,7 @@ ptrade sell "股票" --all
 
 **现象**：
 ```bash
-$ ptrade buy "股票" --qty 100
+$ ptrade2 buy "股票" --qty 100
 错误：无法获取股票的实时价格
 ```
 
@@ -274,8 +278,8 @@ ping finance.sina.com.cn
 
 2. **检查股票代码**：
 ```bash
-ptrade fetch-price sh600000  # 测试有效代码
-ptrade fetch-price 您的代码
+ptrade2 fetch-price sh600000  # 测试有效代码
+ptrade2 fetch-price 您的代码
 ```
 
 3. **手动指定价格**（当前版本不支持）：
@@ -294,7 +298,7 @@ curl "https://qt.gtimg.cn/q=sh600000"
 
 **现象**：
 ```bash
-$ ptrade buy "股票" --qty 100
+$ ptrade2 buy "股票" --qty 100
 错误：请求超时，已重试 2 次
 ```
 
@@ -310,7 +314,7 @@ ping finance.sina.com.cn
 2. **稍后重试**：
 ```bash
 # 等待几秒后重试
-ptrade buy "股票" --qty 100
+ptrade2 buy "股票" --qty 100
 ```
 
 3. **更换网络环境**：
@@ -335,7 +339,7 @@ export https_proxy=
 
 **现象**：
 ```bash
-$ ptrade fetch-price abcdef
+$ ptrade2 fetch-price abcdef
 错误：无法识别股票代码格式
 ```
 
@@ -361,7 +365,7 @@ AAPL      # 苹果
 
 2. **使用 search 查询代码**：
 ```bash
-ptrade search "股票名称"
+ptrade2 search "股票名称"
 ```
 
 ---
@@ -370,7 +374,7 @@ ptrade search "股票名称"
 
 **现象**：
 ```bash
-$ ptrade fetch-price sh999999
+$ ptrade2 fetch-price sh999999
 股票名称: null
 当前价格: null
 ```
@@ -381,7 +385,7 @@ $ ptrade fetch-price sh999999
 
 1. **搜索股票代码**：
 ```bash
-ptrade search "股票名称"
+ptrade2 search "股票名称"
 ```
 
 2. **查看官方信息**：
@@ -397,7 +401,7 @@ ptrade search "股票名称"
 
 **现象**：
 ```bash
-$ ptrade fetch-kline sh999999 --type day --count 30
+$ ptrade2 fetch-kline sh999999 --type day --count 30
 未找到 K线数据
 ```
 
@@ -407,18 +411,18 @@ $ ptrade fetch-kline sh999999 --type day --count 30
 
 1. **验证股票代码**：
 ```bash
-ptrade fetch-price sh600000  # 用有效代码测试
-ptrade fetch-kline sh600000 --type day --count 10
+ptrade2 fetch-price sh600000  # 用有效代码测试
+ptrade2 fetch-kline sh600000 --type day --count 10
 ```
 
 2. **减少请求数量**：
 ```bash
-ptrade fetch-kline sh600000 --type day --count 10
+ptrade2 fetch-kline sh600000 --type day --count 10
 ```
 
 3. **更换 K线类型**：
 ```bash
-ptrade fetch-kline sh600000 --type week --count 20
+ptrade2 fetch-kline sh600000 --type week --count 20
 ```
 
 ---
@@ -434,13 +438,13 @@ ptrade fetch-kline sh600000 --type week --count 20
 1. **分批获取**：
 ```bash
 # 获取最近 100 根
-ptrade fetch-kline sh600000 --type day --count 100
+ptrade2 fetch-kline sh600000 --type day --count 100
 ```
 
 2. **使用用户管理的数据存储**：
 ```bash
 # 导出数据后手动处理
-ptrade export --format json > data.json
+ptrade2 export --format json > data.json
 ```
 
 ---
@@ -451,7 +455,7 @@ ptrade export --format json > data.json
 
 **现象**：
 ```bash
-$ ptrade search "不存在的股票"
+$ ptrade2 search "不存在的股票"
 未找到相关股票
 ```
 
@@ -461,19 +465,19 @@ $ ptrade search "不存在的股票"
 
 1. **使用股票全称**：
 ```bash
-ptrade search "AI-生成"
-ptrade search "腾讯科技"
+ptrade2 search "AI-生成"
+ptrade2 search "腾讯科技"
 ```
 
 2. **使用代码搜索**：
 ```bash
-ptrade search "00700"
-ptrade search "600519"
+ptrade2 search "00700"
+ptrade2 search "600519"
 ```
 
 3. **减少搜索关键词**：
 ```bash
-ptrade search "茅台"  # 而不是 "贵州茅台集团股份有限公司"
+ptrade2 search "茅台"  # 而不是 "贵州茅台集团股份有限公司"
 ```
 
 ---
@@ -484,7 +488,7 @@ ptrade search "茅台"  # 而不是 "贵州茅台集团股份有限公司"
 
 **现象**：
 ```bash
-$ ptrade fetch-news
+$ ptrade2 fetch-news
 未获取到新闻
 ```
 
@@ -503,15 +507,15 @@ ping finance.sina.com.cn
 
 2. **更换新闻源**：
 ```bash
-ptrade fetch-news --source cls
-ptrade fetch-news --source sina
-ptrade fetch-news --source tv
+ptrade2 fetch-news --source cls
+ptrade2 fetch-news --source sina
+ptrade2 fetch-news --source tv
 ```
 
 3. **重试**：
 ```bash
 # 等待几秒后重试
-ptrade fetch-news --source all --limit 10
+ptrade2 fetch-news --source all --limit 10
 ```
 
 ---
@@ -520,7 +524,7 @@ ptrade fetch-news --source all --limit 10
 
 **现象**：
 ```bash
-$ ptrade fetch-news --source tv
+$ ptrade2 fetch-news --source tv
 错误：无法连接到 TradingView API
 ```
 
@@ -530,8 +534,8 @@ $ ptrade fetch-news --source tv
 
 1. **使用其他新闻源**：
 ```bash
-ptrade fetch-news --source cls
-ptrade fetch-news --source sina
+ptrade2 fetch-news --source cls
+ptrade2 fetch-news --source sina
 ```
 
 2. **检查代理设置**：
@@ -549,8 +553,8 @@ export https_proxy=your_proxy
 
 **现象**：
 ```bash
-$ ptrade
-ptrade: command not found
+$ ptrade2
+ptrade2: command not found
 
 $ python
 python: command not found
@@ -626,7 +630,7 @@ sudo apt-get install python3-pip
 
 **现象**：
 ```bash
-$ ptrade info "股票"
+$ ptrade2 info "股票"
 错误：无法解析 account.json 文件
 ```
 
@@ -652,7 +656,7 @@ nano intermediate/股票/模拟买卖/account.json
 
 3. **重新初始化**：
 ```bash
-ptrade init "股票" --capital 100000 --force
+ptrade2 init "股票" --capital 100000 --force
 ```
 
 ---
@@ -661,7 +665,7 @@ ptrade init "股票" --capital 100000 --force
 
 **现象**：
 ```bash
-$ ptrade info "股票"
+$ ptrade2 info "股票"
 错误：找不到 account.json 文件
 ```
 
@@ -682,7 +686,7 @@ cp backup.json intermediate/股票/模拟买卖/account.json
 
 3. **重新初始化**：
 ```bash
-ptrade init "股票" --capital 100000 --force
+ptrade2 init "股票" --capital 100000 --force
 ```
 
 ---
@@ -693,7 +697,7 @@ ptrade init "股票" --capital 100000 --force
 
 **现象**：
 ```bash
-$ ptrade fetch-price sh600000
+$ ptrade2 fetch-price sh600000
 错误：无法连接到价格获取接口
 ```
 
@@ -732,7 +736,7 @@ export https_proxy=http://your_proxy:port
 
 **现象**：
 ```bash
-$ ptrade fetch-price sh600000
+$ ptrade2 fetch-price sh600000
 错误：SSL certificate verify failed
 ```
 
@@ -770,18 +774,18 @@ date
 
 ```bash
 # 查看所有命令
-ptrade --help
+ptrade2 --help
 
 # 查看特定命令帮助
-ptrade init --help
-ptrade buy --help
-ptrade fetch-price --help
+ptrade2 init --help
+ptrade2 buy --help
+ptrade2 fetch-price --help
 ```
 
 ### 查看版本
 
 ```bash
-ptrade version
+ptrade2 version
 ```
 
 ### 报告问题
@@ -790,7 +794,7 @@ ptrade version
 
 1. **收集错误信息**：
 ```bash
-ptrade command 2>&1 > error.log
+ptrade2 command 2>&1 > error.log
 ```
 
 2. **检查环境**：
@@ -830,20 +834,20 @@ find $BACKUP_DIR -name "backup_*.tar.gz" -mtime +30 -delete
 
 ```bash
 # 导出所有数据
-ptrade export --format json --output data_$(date +%Y%m%d).json
+ptrade2 export --format json --output data_$(date +%Y%m%d).json
 ```
 
 ### 定期测试
 
 ```bash
 # 测试基本功能
-ptrade list
-ptrade info
-ptrade version
+ptrade2 list
+ptrade2 info
+ptrade2 version
 
 # 测试市场数据
-ptrade fetch-price sh600000
-ptrade fetch-news --limit 5
+ptrade2 fetch-price sh600000
+ptrade2 fetch-news --limit 5
 ```
 
 ---

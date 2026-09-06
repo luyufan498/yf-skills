@@ -35,14 +35,14 @@ export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/t
 |------|------|-----------|-------------|
 | `CANDIDATE` | [退役-2026-09-04] 新入池触发分析由 analysis_schedule TTL 队列取代（seed_pool 幂等 sync，入池股 last_analyzed_at=NULL 最优先） | — | — |
 | `REFRESH` | [退役-2026-09-04] 存量 0 从未流通；历史语义漂移（补搜→C2）已被 COLLECT 取代，外部强制分析刷新走 ANALYSIS_REFRESH | — | — |
-| `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | 深挖（news-deep-browser） |
+| `DEEP_DIVE` | 需论坛/社交/外网深挖 | x-scan、分析 agent | news-collect（news-deep-browser 为其下游执行器） |
 | `WATCH_ALERT` | 关注/池内标的异动或条件触发 | 心跳异动检测、watch_scan 价格触发 | 交易（paper-trading） |
 | `REVIEW` | [退役-2026-09-04] 组合审查触发——存量 0 从未流通；组合审查固定走 cron（decide-portfolio 06:05），不进事件总线。原语义即 PORTFOLIO_CHECK（组合状态裁决），由晨审 cron 承担 | — | — |
 | `ANALYSIS_REFRESH` | 批量分析外部强制刷新请求（analysis-ttl 方案 2026-09-04：替代旧 05:05 全量批跑）。池内股需完整重析时才用；TTL 自然到期由 analysis-watch monitor 直读 analysis_schedule 表，**不走事件总线** | 晨审/人工/上游 agent | **仅 analysis-watch**（claim `--consumer analysis-watch` 硬门，同 MSG_*/COLLECT 三链同构；legacy check_tasks 已排除）|
 | `CALENDAR` | 财报/解禁/除权日历 | 分析 agent（档位降级时挂回查）、日历检查 | 分析/交易 |
-| `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 心跳检测 | 深度研究（news-collector + news-deep-browser） |
+| `MARKET_SHOCK` | 大盘指数异动（单日跌幅超阈值） | watch_scan 直写（裸 INSERT 绕过 add 校验，手工 `taskbus add MARKET_SHOCK` 会 exit 2） | news-collect（news-deep-browser 为其下游执行器） |
 | `L3_SNAPSHOT` | [退役-M2] 午间次优候选快照（2026-08-31 加入）——M2 起 stock-l3-scan 重写为消息组收编扫描，本类型停用 | stock-l3-scan（13:35，旧行为） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费（watch_scan check_tasks 已排除，同 CALENDAR 语义） |
-| `NEWS_SNAPSHOT` | 消息组收编扫描快照（sleeve-m1 新增；生产者=收编扫描，消费者=仅次日晨审，**不碰钱**；G1-G4 清单闸 + news_kind 打标 + sleeve-open 建槽[M3 起]） | stock-l3-scan（13:35，M2 重写后） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费 **[M2 部署后生效]**——排除依赖 watch_scan `check_tasks` 的 NOT IN 清单加进 NEWS_SNAPSHOT，当前部署版只排除 `('CALENDAR','L3_SNAPSHOT')`（~/.hermes/scripts/watch_scan.py:177 实测），**M2 部署新版前 NEWS_SNAPSHOT 会被心跳当普通事件消费**，故晨审消费承诺以 M2 部署+md5 核对（灰度手册 M2 步骤 0/2）为前置；TTL 2 交易日，积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
+| `NEWS_SNAPSHOT` | 消息组收编扫描快照（sleeve-m1 新增；生产者=收编扫描，消费者=仅次日晨审，**不碰钱**；G1-G4 清单闸 + news_kind 打标 + sleeve-open 建槽[M3 起]） | stock-l3-scan（13:35，M2 重写后） | **仅次日 6:05 组合审查（晨审）消费**；心跳/主 agent 不消费——watch_scan `check_tasks` 的 NOT IN 排除清单现行版已含本类型（实测清单：CALENDAR/L3_SNAPSHOT/MSG_SNAPSHOT/MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE/ANALYSIS_REFRESH/WATCH_ALERT/DEEP_DIVE/MARKET_SHOCK，~/.hermes/scripts/watch_scan.py:334）；TTL 2 交易日，积压非前一交易日的 pending 由晨审 done 注明"过期作废" |
 
 ### CALENDAR 日历回查（2026-08 起，档位管理配套）
 
@@ -77,12 +77,12 @@ watch_scan `check_naked_conditions` 的 `[ALERT] 裸奔` = **有实际持仓（F
 - **mode=eval（技术组 L2 待命复检点触发）**：`taskbus watchpoint add` 设置的价格点穿越（现价 ≤ 价，配 `--min` 则区间 [min, price]）→ 唤醒**分析 agent 复检**（升 L1 挂 conditions / 重设价格点 / 移除；原"评估升级 L2"——L3 已并入 L2），**不直接交易**。触发后价格点自动移除（触发即失效）
 - **mode=buy（技术组 L2 建仓点触发）**：`taskbus watchpoint add --mode buy --amount <预算>` 设置的建仓点穿越 → 唤醒 agent **核验 → allocate → buy**（见下方消费约定）。到价即执行，但执行前必须过闸门；触发后价格点自动移除（触发即失效）
 - **mode=sell（卖出点触发，2026-09-04 加——ROTATION_EXIT 事件退役后轮换出池卖单走此路）**：`taskbus watchpoint add --mode sell --price <卖出触发价>` 设置的价格点穿越（**方向与 buy/eval 相反：现价 ≥ price 触发**，涨到/回到目标价才卖；配 `--min` 则带内 [price, min] 卖出，price=下沿触发价、min=上沿封顶价，须 price<min）→ WATCH_ALERT(mode=sell, direction=sell) 唤醒 C1 **执行卖仓/减仓（限价卖，禁梦价）**。触发后价格点自动移除。轮换出池由 `ptrade2 master-pool-allocate --rotation-out CODE` 自动挂点（price=现价×0.99 次日可成交限价，master_pool 自动写入，无需手工）
-- **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday（12:05 收闻）发现 **L1/L2 持仓 + sleeve 持仓（NEWS 段）**标的 imp≥4 利空（立案/退市/停牌/暴雷/减持，payload 带 news_event=newsdb事件ID）时写入——补心跳纯价格触发的非价格信号盲区。消费：交易 subagent 查 newsdb 核真实性 → 对照持仓 → 防御评估。**盘中卖出仅限硬利空实锤（停牌/立案类）**；价格类止损仍走收盘确认纪律，普通坏消息不恐慌割肉
+- **mode=risk（盘中新闻利空旁路，2026-08-31 加入）**：news-intraday（12:05 收闻）发现 **L1/L2 持仓 + sleeve 持仓（NEWS 段）**标的 imp≥4 利空（立案/退市/停牌/暴雷/减持，payload 带 news_event=newsdb事件ID）时写入——补心跳纯价格触发的非价格信号盲区。消费：交易 subagent 查 newsdb 核真实性 → 对照持仓 → 防御评估。**盘中卖出仅限硬利空实锤（停牌/立案类）**；价格类止损走 C1 price-watch 15min 扫线事件触发（移动止损两级模型，2026-09-05 定稿），普通坏消息不恐慌割肉
 - **sleeve 持仓（NEWS 段；v9 组由段 strategy 推导）禁 conditions 全家/禁 buy/禁 topup**（CLI 能力矩阵闸门强制执行，违例=报错+shadow_log gate_violation）
 - **⚠️ `--amount` 语义 = 段预算（建段金额），不是首笔买入金额**：初始建段统一 = 总池 5%（1000 万池 → **¥500,000**）；首笔比例是 buy 阶段按策略矩阵（3.0.0）计算（如消息仓 5-20% × 50 万 = 2.5-10 万），**绝不填进 --amount**——填错会把段建小（如沃森生物 8/24 只建了 10 万=1% 池，8/25 修正案例）
 - **去重**：同实体同方向已有 pending/processing 事件时跳过，不重复写入；同 `cond_id` 精确去重（同条件不重复入队）
 - **条件清理**：消费 agent 处理完须移除/标记已触发的 conditions，避免下一 tick 重新触发
-- **单轮消费上限（2026-08-22 加入，防响应截断）**：一次心跳唤醒**单轮最多 claim 3 个事件**（按优先级：MARKET_SHOCK/WATCH_ALERT > CANDIDATE > CALENDAR 到期 > 其他）。超过 3 个的事件留在队列，**下一轮（30 分钟后）继续消费**——不要一次性全处理（8/22 事故：7 个事件同轮处理导致响应截断失败）。watch_scan 输出也做了对应截断（只列前 3 个 + 汇总提示）。
+- **单轮消费上限（2026-08-22 加入，防响应截断）**：一次心跳唤醒**单轮最多 claim 3 个事件**（按优先级：MARKET_SHOCK/WATCH_ALERT > CALENDAR 到期 > 其他；CANDIDATE/REFRESH/REVIEW 已退役）。超过 3 个的事件留在队列，**下一轮（30 分钟后）继续消费**——不要一次性全处理（8/22 事故：7 个事件同轮处理导致响应截断失败）。watch_scan 输出也做了对应截断（只列前 3 个 + 汇总提示）。
 
 ### 📉 MARKET_SHOCK 大盘异动深度研究（2026-08-19 加入）
 
@@ -126,8 +126,8 @@ taskbus watchpoint add <股> --price 24.5 --mode buy --amount 200000 --code <代
 **触发后消费流程**（mode=buy 的 WATCH_ALERT，claim 后按序执行）：
 1. **预算核验**：payload 无 `budget`（设置时没传 --amount）→ **拒绝执行**，`taskbus done <id> --note "预算缺失，拒绝建仓"`，要求重设带预算的建仓点
 2. **防重核验**（复用 WATCH_ALERT 通用前置校验）：`ptrade2 operations <股> --days 7` 近 7 日无同向建仓；无 pending/processing 同向事件（watch_scan 已去重，双保险）
-3. **分析时效**：分析报告仍有效（无重大利空/财报变脸）→ 继续；失效 → done 注明，降 L3 重评
-4. **资金核验**：`ptrade2 master-pool-show` 确认 free ≥ budget；不足 → done 注明"资金不足"，降 L3 或留观
+3. **分析时效**：分析报告仍有效（无重大利空/财报变脸）→ 继续；失效 → done 注明，降 L2 待命复检
+4. **资金核验**：`ptrade2 master-pool-show` 确认 free ≥ budget；不足 → done 注明"资金不足"，降 L2 待命或留观
 5. **执行**：`ptrade2 master-pool-allocate <股> --amount <budget> --reason "建仓点触发-<note>"`（自动升 L1）→ `ptrade2 buy <股> --amount <budget> --note "<通道>-<依据>（<关键数据>）"` 建仓 → `taskbus done <id> --note "已建仓..."`
    ⚠️ **buy 的 --note 必填**（2026-08-28 审计规则）：operations.note 是交易质量唯一审计凭证，禁止留空。内容 = watchpoint 的 note + 判定关键数据（通道名/消息事件ID/imp/动量值/档位），如"通道判定-消息仓 newsdb#231（imp4 bullish，动量+8%，段内8%档）"。8/25-27 有五笔建仓 note 为空的教训（光通信链/存储/北斗等），复盘时无法还原判定依据。
 6. 完成后若原档位是 L2，allocate 已自动升 L1，无需手动调档
@@ -178,7 +178,7 @@ pending ──claim──▶ processing ──done──▶ done
 
 ```bash
 taskbus init                                # 初始化库
-taskbus add CANDIDATE 光智科技 --source news-collector --priority 2 --payload '{"evidence":"磷化铟供需趋紧"}'
+taskbus add MSG_CANDIDATE 光智科技 --source news-collector --priority 2 --payload '{"evidence":"磷化铟供需趋紧"}'
 taskbus list --status pending [--type X]    # 查待消费（按 priority 排序）
 taskbus claim 42                            # 原子认领 #42（pending→processing）
 taskbus done 42 --note "已入关注列表"          # 完成

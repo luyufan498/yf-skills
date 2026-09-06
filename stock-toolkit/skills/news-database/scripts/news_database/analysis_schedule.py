@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS analysis_schedule (
 TTL_TRADING_DAYS = 3
 
 # 待分析队列默认单轮条数（analysis-watch 心跳单轮消费上限，防响应截断）
-DEFAULT_DUE_LIMIT = 5
+# 2026-09-06：5→6——与 analysis_watch_monitor 显式传入的 limit=6 统一（此前两处不一致）
+DEFAULT_DUE_LIMIT = 6
 
 # 交易日历单一真源（同 watch_scan.py 接法：workspace 根插 sys.path 后 import）
 STOCK_WS_ROOT = "/home/catmouse/Github_Project/daily-stock-workspace"

@@ -82,5 +82,5 @@ python -m paper_trading_v2.pool_publicize [--execute] [--date D]   # v11 一次�
 
 - `master_pool.db`：`pool`（名单，v7+event_key/archived_at）/ `position`（段）/ `pool_ledger`（趋势池账本）+ `sleeve_ledger`（消息池账本）/ `audit`（流水）/ `watchlog`（变更审计，v7+event_key/news_kind）/ `operations_archive`（重入归档）。
 - v7 新表：`event_slots`（事件槽状态机）/ `event_slot_members`（事件↔成员关联权威）/ `shadow_log`（影子账 9 类 + gate_violation）。
-- 段/流水/条件（v9 账户层退役后）：`position` 段表（+cash/fifo_index/fifo_offset——**段即账户**，资金标签=budget、段现金=cash）/ `trades`（原 positions 更名，FIFO 流水，account_id 语义=段 id）/ `operations`/`conditions`/`condition_history`/`exright_applied` 规范化表 / `accounts_old`（退役账户只读历史，禁 DROP）/ `positions` 兼容视图（INSTEAD OF 触发器垫片，v10 删）。
+- 段/流水/条件（v9 账户层退役后）：`position` 段表（+cash/fifo_index/fifo_offset——**段即账户**，资金标签=budget、段现金=cash）/ `trades`（原 positions 更名，FIFO 流水，account_id 语义=段 id）/ `operations`/`conditions`/`condition_history`/`exright_applied` 规范化表 / `accounts_old`（退役账户只读历史，禁 DROP）/ ~~`positions` 兼容视图~~（**已 DROP 2026-09-04**，SQL 引用会报 no such table——查询直读 `trades` 表）。
 - v1 历史 JSON 迁移后移入 `tradings_archive/`（只读归档）。

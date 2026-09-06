@@ -72,4 +72,4 @@
 2. 提取：核心观点（多/空/中性）+ 论据（数据/逻辑）+ 发布时点
 3. 入库：imp≥3 的大V 观点 → newsdb（source_type=community，**标注作者**，conf 按论证质量）
 4. 新发现的大V：补充到本表（含行业分组 + 特点 + 倾向）
-5. 注意：大V 观点是**观点非事实**——入库标 analysis/community，不标 news/fact；情绪极端帖（如武士刀）只做情绪温度计，不单独入库
+5. 注意：大V 观点是**观点非事实**——入库标 message_type=community（观点不入 analysis 事件；info_type=analysis 仅存量历史，2026-09-06 起深度分析落 master_pool.db reports 表），不标 news/fact；情绪极端帖（如武士刀）只做情绪温度计，不单独入库

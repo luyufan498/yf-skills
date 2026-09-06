@@ -2,6 +2,9 @@
 
 本指南详细说明 paper-trading 的数据管理功能：数据导出、数据删除、备份与恢复。
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳，调用即提示改用 ptrade2）。
+
+
 ## 目录
 
 - [export 导出数据](#export-导出数据)
@@ -18,7 +21,7 @@
 ### 命令语法
 
 ```bash
-ptrade export [--stock 股票名称] [--format 格式] [--output 输出文件]
+ptrade2 export [--stock 股票名称] [--format 格式] [--output 输出文件]
 ```
 
 ### 参数说明
@@ -33,16 +36,16 @@ ptrade export [--stock 股票名称] [--format 格式] [--output 输出文件]
 
 ```bash
 # 导出所有数据为 JSON，输出到控制台
-ptrade export
+ptrade2 export
 
 # 导出指定股票为 JSON 文件
-ptrade export --stock "赛力斯" --format json --output sels_data.json
+ptrade2 export --stock "赛力斯" --format json --output sels_data.json
 
 # 导出指定股票为 CSV 文件
-ptrade export --stock "赛力斯" --format csv --output sels_operations.csv
+ptrade2 export --stock "赛力斯" --format csv --output sels_operations.csv
 
 # 导出所有股票为 JSON 文件
-ptrade export --format json --output all_stocks.json
+ptrade2 export --format json --output all_stocks.json
 ```
 
 ### 导出内容
@@ -99,13 +102,13 @@ CSV 格式导出操作记录，包括：
 
 ```bash
 # 定期备份所有数据
-ptrade export --format json --output backup_$(date +%Y%m%d).json
+ptrade2 export --format json --output backup_$(date +%Y%m%d).json
 
 # 每周导出操作记录
-ptrade export --stock "赛力斯" --format csv --output operations_weekly_$(date +%W).csv
+ptrade2 export --stock "赛力斯" --format csv --output operations_weekly_$(date +%W).csv
 
 # 快速导出到控制台用于查看
-ptrade export --stock "赛力斯" --format json | jq .
+ptrade2 export --stock "赛力斯" --format json | jq .
 ```
 
 ---
@@ -117,7 +120,7 @@ ptrade export --stock "赛力斯" --format json | jq .
 ### 命令语法
 
 ```bash
-ptrade delete "股票名称" [--force]
+ptrade2 delete "股票名称" [--force]
 ```
 
 ### 参数说明
@@ -131,10 +134,10 @@ ptrade delete "股票名称" [--force]
 
 ```bash
 # 删除空账户（无持仓）
-ptrade delete "已清仓股票"
+ptrade2 delete "已清仓股票"
 
 # 强制删除有持仓的账户
-ptrade delete "赛力斯" --force
+ptrade2 delete "赛力斯" --force
 ```
 
 ### 删除条件
@@ -168,13 +171,13 @@ delete 命令会执行以下安全检查：
 
 ```bash
 # 1. 先导出数据备份
-ptrade export --stock "股票名称" --output backup.json
+ptrade2 export --stock "股票名称" --output backup.json
 
 # 2. 确认真的不再需要该账户
-ptrade info "股票名称"
+ptrade2 info "股票名称"
 
 # 3. 确认无误后再删除
-ptrade delete "股票名称" --force
+ptrade2 delete "股票名称" --force
 ```
 
 ### 何时使用 delete 命令
@@ -200,7 +203,7 @@ BACKUP_DIR="/path/to/backups"
 mkdir -p $BACKUP_DIR
 
 # 导出所有数据
-ptrade export --format json --output "$BACKUP_DIR/paper_trading_$DATE.json"
+ptrade2 export --format json --output "$BACKUP_DIR/paper_trading_$DATE.json"
 
 # 保留最近 30 天的备份
 find $BACKUP_DIR -name "paper_trading_*.json" -mtime +30 -delete
@@ -210,10 +213,10 @@ find $BACKUP_DIR -name "paper_trading_*.json" -mtime +30 -delete
 
 ```bash
 # 备份单个股票
-ptrade export --stock "赛力斯" --output backup_sels_$(date +%Y%m%d).json
+ptrade2 export --stock "赛力斯" --output backup_sels_$(date +%Y%m%d).json
 
 # 备份所有股票
-ptrade export --output backup_all_$(date +%Y%m%d).json
+ptrade2 export --output backup_all_$(date +%Y%m%d).json
 
 # 直接备份 JSON 文件
 cd intermediate
@@ -228,8 +231,8 @@ paper-trading 本身不提供"恢复"命令，因为恢复数据需要谨慎操�
 
 ```bash
 # 如果备份了操作记录，可以手动重新执行
-ptrade init "股票名称" --capital 100000
-ptrade buy "股票名称" --qty 100 --note "从备份恢复"
+ptrade2 init "股票名称" --capital 100000
+ptrade2 buy "股票名称" --qty 100 --note "从备份恢复"
 # ... 重复之前的操作
 ```
 
@@ -251,7 +254,7 @@ cp -r intermediate/股票名称/ /path/to/current/intermediate/
 
 #### 方法 3：使用脚本解析备份导入
 
-可以编写脚本解析 JSON 备份文件，然后调用 ptrade 命令重建账户：
+可以编写脚本解析 JSON 备份文件，然后调用 ptrade2 命令重建账户：
 
 ```python
 import json
@@ -266,14 +269,14 @@ for account in data['accounts']:
     capital = account['capital_pool']['total_capital']
 
     # 重建账户
-    print(f'ptrade init "{stock_name}" --capital {capital}')
+    print(f'ptrade2 init "{stock_name}" --capital {capital}')
 
     # 重建操作
     for op in account['operations']:
         if op['type'] == 'BUY':
-            print(f'ptrade buy "{stock_name}" --qty {op["qty"]} --note "恢复"')
+            print(f'ptrade2 buy "{stock_name}" --qty {op["qty"]} --note "恢复"')
         elif op['type'] == 'SELL':
-            print(f'ptrade sell "{stock_name}" --qty {op["qty"]} --note "恢复"')
+            print(f'ptrade2 sell "{stock_name}" --qty {op["qty"]} --note "恢复"')
 ```
 
 ---
@@ -337,10 +340,10 @@ for account in data['accounts']:
 
 ## 相关命令
 
-- `ptrade list` - 列出所有账户
-- `ptrade info` - 查看账户信息
-- `ptrade export` - 导出数据
-- `ptrade delete` - 删除账户
+- `ptrade2 list` - 列出所有账户
+- `ptrade2 info` - 查看账户信息
+- `ptrade2 export` - 导出数据
+- `ptrade2 delete` - 删除账户
 
 ---
 

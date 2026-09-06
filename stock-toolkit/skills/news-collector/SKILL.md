@@ -7,6 +7,8 @@ description: 新闻采集 agent——按时效性×层级扫描市场/政策/行
 
 独立定时运行的新闻采集器，与股票分析任务解耦。它把搜索到的新闻整理成"事件 + 消息"，用 newsdb CLI 增量写入新闻库。分析 agent 从库里读，不再自己深搜。
 
+> **驱动方式（2026-09-06）**：本 SKILL 由 `news-collect` 心跳（唯一采集 cron，`5 0,6-18/2`）按 task_schedule 到期驱动——T1 xueqiu_sentiment(4h) / T2 daily_news(12h) / T3 deep_analysis(36h) / T4 industry_research(720h)；到期即跑下述核心循环。旧采集 cron（news-morning/intraday/close、xueqiu-scan/close、stock-news-close 等）已全部退役；scan_log 旧游标（scan-status get/set）仅兼容保留，到期判断以 task_schedule 为准。
+
 ## 核心循环
 
 ```
@@ -29,7 +31,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 
 1. `newsdb refresh-requests --status pending` 读异动请求——**优先处理这些**，用 signal 做搜索词。
 2. `newsdb scan-list` 列出**所有应扫描的 scope**（从库拉取：stocks 表 watchlist 优先 + industries 表 + market/global + policy/global）。**新加股票/行业自动出现在清单里。**
-   > L3 观察窗实体由组合审查负责 `newsdb track --watchlist 1` 标记，标记后自动进入本扫描清单——观察窗股票与正式池（L1/L2）一样每日采集新闻。
+   > L3 档位已死并入 L2（2026-09）——观察名单(L2)实体由组合审查负责 `newsdb track --watchlist 1` 标记，标记后自动进入本扫描清单——观察名单股票与正式池（L1/L2）一样每日采集新闻。
 3. 对每个 scope 判断是否到期（见 scan_rules.md）：
    - `newsdb scan-status get <scope_type> <scope_id>` 查上次扫描
    - high（market/stock 异动）→ 上次扫描距今 > 8 小时就扫
@@ -45,7 +47,7 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 0. **快讯层（每轮扫描先跑，零成本实时电报）**：`ptrade2 fetch-news`（本地命令，不耗搜索配额）：
    - `ptrade2 fetch-news -s tv -n 20`（TradingView 外媒快讯）
    - `ptrade2 fetch-news -s sina -n 20`（新浪财经公告/快讯，实时电报级）
-   - **财联社 cls（CDP 方式）**：`python3 ~/.agent-browser/cls_cdp.py --limit 20`（Chrome 9222 打开电报页提取，绕过 API sign 风控；依赖 Chrome 常驻 + websocket-client）。每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）
+   - **财联社 cls（CDP 方式）**：`python3 ~/.agent-browser/cls_cdp.py --limit 20`（Chrome 9222 打开电报页提取，绕过 API sign 风控；依赖 Chrome 常驻 + websocket-client）。每条：`newsdb lookup` 查重 → 重要消息（个股/行业相关，重要度≥3）→ `newsdb save` 入库（归属已有事件或新建）。⚠️ cls_cdp 是**双副本**（yf-skills 源 `news-collector/scripts/cls_cdp.py` + 运行副本 `~/.agent-browser/cls_cdp.py`）——改脚本后必须 cp 同步并用 diff 验证两边一致（cron scripts 目录拒绝软链）
    - 快讯层价值：搜索 API 收录有延迟，快讯立即可拿（A股公告/电报级消息）
 
 1. **searxng（优先，免费）**：`searx-bash "<查询>" --time-range day/week/month/year`。**先 `export SEARXNG_URL=http://192.168.100.2:38080`**——cron 环境不继承该变量，searx-bash 空变量直接 exit 1（2026-09-01 审计确认；服务迁移时改此处）
@@ -108,17 +110,17 @@ export STOCK_NEWS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/ne
 - `newsdb ack-refresh <id>` 确认处理完的请求。
 - 总结：新建 X 事件、追加 Y 消息、跳过 Z、处理请求 N 个。
 
-## 候选事件（task-bus 接线）
+## 候选/值得关注标的（analysis_schedule 队列，2026-09-04 起）
 
-扫描中发现**值得关注但不在跟踪范围**的新标的/行业（重要度≥4 且 bullish 信号，或出现新题材主线）时，写入任务总线让心跳 agent 安排完整分析：
+> ⚠️ **CANDIDATE 事件已退役（2026-09-04）**：`taskbus add CANDIDATE` 现在报未知事件类型。新入池触发分析统一走 **analysis_schedule TTL 队列**（analysis_pool_sync 幂等同步：池内每股一行，入池股 last_analyzed_at=NULL 最优先，analysis-watch 心跳每轮处理）。采集 agent 发现值得关注但不在跟踪范围的新标的/行业时，流程改为：`ptrade2 watchlist-add <标的>`（带 --code）入池 → `python3 <newsdb-scripts>/analysis_pool_sync.py` 同步进队——下轮 analysis-watch 自动触发完整分析，无需手动入队事件。
 
 ```bash
-export STOCK_TASKS_DB=/home/catmouse/Github_Project/daily-stock-workspace/data/tasks/tasks.db
-taskbus add CANDIDATE <代码或行业名> --source news-collector --priority 2 \
-  --payload '{"evidence":"<一句话依据>","importance":4}'
+export STOCK_ANALYSIS_WORKSPACE=/home/catmouse/Github_Project/daily-stock-workspace/.paper-trading
+ptrade2 watchlist-add <代码或行业名> --source news-collector --strategy L2   # 关注标的入池
+python3 /home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/news-database/scripts/analysis_pool_sync.py   # 同步 analysis_schedule（新入池股最优先）
 ```
 
-心跳 agent 消费 CANDIDATE → 完整分析 → 评估关注/买入。已在 stocks 跟踪或 watchlist 的标的无需重复入队。
+已在 stocks 跟踪或 watchlist 的标的无需重复操作（analysis_pool_sync 幂等，重复跑无副作用）。
 
 ### 🚀 行业事件的三层候选触发（2026-08-19 加入，产业链研究链）
 
@@ -140,7 +142,7 @@ newsdb request-deepdive industry <行业名> \
 **探索产出规范**（news-deep-browser 执行，见其 SKILL「新行业探索」）：
 - 行业全景（上游/中游/下游分段）+ 龙头识别（每段 2-3 只，rel=80）→ `industry-stocks add`
 - 上下游行业关系 → relations add
-- 核心成分 → CANDIDATE 入队
+- 核心成分 → analysis_schedule 队列安排分析（`watchlist-add` 入池 + `analysis_pool_sync.py` 同步）
 - **已初始化过的行业不再重复探索**（探索前先查 industry-stocks 是否非空）
 
 **验证案例**：商业航天 8/19 首现时成分股=0（事后手工灌 8 只）——若探索流程在场，当天即可自动完成初始化并产出候选。
@@ -150,22 +152,24 @@ newsdb request-deepdive industry <行业名> \
 ```bash
 # 第 1 层：事件直接关联个股（agent 现场判断——事件里点名的公司/直接受益方）
 #   如"朱雀三号回收成功"→ 航天电子(600879 测控)/钢研高纳(300034 高温合金)
-taskbus add CANDIDATE 600879 --source news-collector --priority 2 \
-  --payload '{"evidence":"朱雀三号回收成功-火箭测控","importance":4,"layer":"direct"}'
+ptrade2 watchlist-add 600879 --code sh600879 --source news-collector --strategy L2
+python3 /home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/news-database/scripts/analysis_pool_sync.py
+#   （evidence/importance 记入 newsdb 事件 --stock 关联即可；layer 语义迁 refresh_reason：
+#    direct/industry/chain 由 analysis_schedule.refresh_reason 标注，消费 agent 可区分优先级）
 
 # 第 2 层：行业成分股（查 industry_stocks 表，核心 rel>=70 优先）
 newsdb industry-stocks list --industry <行业名>   # 列出成分
-#   对核心成分（relevance>=70）各入队一条 CANDIDATE
+#   对核心成分（relevance>=70）逐只 watchlist-add + analysis_pool_sync 同步
 
 # 第 3 层：上下游产业链传导（查 relations 表 upstream/downstream）
-#   查该行业的上下游行业 → 再查这些行业的成分股 → 核心入队
+#   查该行业的上下游行业 → 再查这些行业的成分股 → 核心同上入池安排分析
 #   （rel_type=upstream 上游材料/设备，downstream 下游应用；strength>=60 才传导）
 ```
 
 **三层产出规范**：
 - **第 1 层必做**（事件直接受益方，信息价值最高）；第 2 层查表产出；第 3 层有 relations 才做（无则不强行）
-- 每层入队 1-3 只核心（relevance/strength 排序取前），**总量控制 ≤6 只/事件**，避免候选爆炸
-- payload 带 `"layer":"direct/industry/chain"` 标注来源层，消费 agent 可区分优先级
-- **行业成分股缺失时**（`industry-stocks list` 返回空）：agent 搜索该行业受益标的 → 先 `newsdb industry-stocks add` 补录（发现即补）→ 再入队 CANDIDATE。**查不到成分股 ≠ 不产候选**，agent 现场搜索兜底（searxng/brave/web_search）
+- 每层入池 1-3 只核心（relevance/strength 排序取前），**总量控制 ≤6 只/事件**，避免候选爆炸
+- 来源层（direct/industry/chain）写入 analysis_schedule.refresh_reason（原 CANDIDATE payload layer 语义迁移），消费 agent 可区分优先级
+- **行业成分股缺失时**（`industry-stocks list` 返回空）：agent 搜索该行业受益标的 → 先 `newsdb industry-stocks add` 补录（发现即补）→ 再 watchlist-add 入池走 analysis_schedule。**查不到成分股 ≠ 不产候选**，agent 现场搜索兜底（searxng/brave/web_search）
 - 已入池/已在 stocks 跟踪的标的跳过（`ptrade2 watchlist-list` / `newsdb scan-list` 查重）
 - **顺手补录**：搜索/快讯中发现行业龙头/潜力股（分析文章点名"XX行业核心受益"）→ `newsdb industry-stocks add` 登记，供后续行业事件触发候选（每轮 ≤5 条）

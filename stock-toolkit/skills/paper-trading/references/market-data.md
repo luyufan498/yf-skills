@@ -2,6 +2,9 @@
 
 本指南详细说明 paper-trading 的市场数据查询功能：实时价格、K线数据、股票搜索、市场新闻。
 
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀已统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳，调用即提示改用 ptrade2）。
+
+
 ## 目录
 
 - [市场数据功能概览](#市场数据功能概览)
@@ -47,7 +50,7 @@ paper-trading 提供完整的市场数据查询功能，支持 A股、港股、�
 ### 命令语法
 
 ```bash
-ptrade fetch-price <股票代码> [--format 格式]
+ptrade2 fetch-price <股票代码> [--format 格式]
 ```
 
 ### 参数说明
@@ -61,16 +64,16 @@ ptrade fetch-price <股票代码> [--format 格式]
 
 ```bash
 # 查询A股价格（人可读格式）
-ptrade fetch-price sh600000
+ptrade2 fetch-price sh600000
 
 # 查询港股价格
-ptrade fetch-price hk00700
+ptrade2 fetch-price hk00700
 
 # 查询美股价格
-ptrade fetch-price AAPL
+ptrade2 fetch-price AAPL
 
 # 输出 JSON 格式
-ptrade fetch-price sh600000 --format json
+ptrade2 fetch-price sh600000 --format json
 ```
 
 ### 输出内容
@@ -114,7 +117,7 @@ ptrade fetch-price sh600000 --format json
 ### 命令语法
 
 ```bash
-ptrade fetch-kline <股票代码> [--type 类型] [--count 数量] [--format 格式]
+ptrade2 fetch-kline <股票代码> [--type 类型] [--count 数量] [--format 格式]
 ```
 
 ### 参数说明
@@ -143,19 +146,19 @@ ptrade fetch-kline <股票代码> [--type 类型] [--count 数量] [--format 格
 
 ```bash
 # 查询日K线（默认）
-ptrade fetch-kline sh600000
+ptrade2 fetch-kline sh600000
 
 # 查询周K线
-ptrade fetch-kline sh600000 --type week
+ptrade2 fetch-kline sh600000 --type week
 
 # 查询5分钟K线
-ptrade fetch-kline sh600000 --type 5min
+ptrade2 fetch-kline sh600000 --type 5min
 
 # 查询指定数量（50根）
-ptrade fetch-kline sh600000 --type day --count 50
+ptrade2 fetch-kline sh600000 --type day --count 50
 
 # 输出 JSON 格式
-ptrade fetch-kline sh600000 --type day --format json
+ptrade2 fetch-kline sh600000 --type day --format json
 ```
 
 ### 输出内容
@@ -223,7 +226,7 @@ K线数据可以用于：
 ### 命令语法
 
 ```bash
-ptrade market-summary <股票代码> [--format 格式]
+ptrade2 market-summary <股票代码> [--format 格式]
 ```
 
 ### 参数说明
@@ -237,13 +240,13 @@ ptrade market-summary <股票代码> [--format 格式]
 
 ```bash
 # 人可读格式（默认）
-ptrade market-summary sh600000
+ptrade2 market-summary sh600000
 
 # JSON 格式（适合程序解析）
-ptrade market-summary sh600000 --format json
+ptrade2 market-summary sh600000 --format json
 
 # Markdown 格式（适合嵌入报告）
-ptrade market-summary sh600000 --format markdown
+ptrade2 market-summary sh600000 --format markdown
 ```
 
 ### 输出内容
@@ -306,7 +309,7 @@ pretty 格式示例：
 ### 命令语法
 
 ```bash
-ptrade search <关键词> [--limit 数量] [--format 格式]
+ptrade2 search <关键词> [--limit 数量] [--format 格式]
 ```
 
 ### 参数说明
@@ -321,13 +324,13 @@ ptrade search <关键词> [--limit 数量] [--format 格式]
 
 ```bash
 # 搜索股票
-ptrade search 茅台
+ptrade2 search 茅台
 
 # 搜索并返回更多结果
-ptrade search 茅台 --limit 10
+ptrade2 search 茅台 --limit 10
 
 # 输出 JSON 格式
-ptrade search 茅台 --format json
+ptrade2 search 茅台 --format json
 ```
 
 ### 输出内容
@@ -402,7 +405,7 @@ ptrade search 茅台 --format json
 ### 命令语法
 
 ```bash
-ptrade fetch-news [--source 来源] [--limit 数量] [--format 格式]
+ptrade2 fetch-news [--source 来源] [--limit 数量] [--format 格式]
 ```
 
 ### 参数说明
@@ -426,22 +429,22 @@ ptrade fetch-news [--source 来源] [--limit 数量] [--format 格式]
 
 ```bash
 # 获取所有来源的新闻（默认）
-ptrade fetch-news
+ptrade2 fetch-news
 
 # 只获取财联社新闻
-ptrade fetch-news --source cls
+ptrade2 fetch-news --source cls
 
 # 只获取新浪财经新闻
-ptrade fetch-news --source sina
+ptrade2 fetch-news --source sina
 
 # 只获取 TradingView 新闻
-ptrade fetch-news --source tv
+ptrade2 fetch-news --source tv
 
 # 获取更多新闻
-ptrade fetch-news --source all --limit 20
+ptrade2 fetch-news --source all --limit 20
 
 # 输出 JSON 格式
-ptrade fetch-news --source all --format json
+ptrade2 fetch-news --source all --format json
 ```
 
 ### 输出内容
@@ -552,11 +555,11 @@ ptrade fetch-news --source all --format json
 
 ## 相关命令
 
-- `ptrade market-summary` - 多周期趋势汇总
-- `ptrade init` - 初始化资金池
-- `ptrade buy` - 买入股票（自动获取价格）
-- `ptrade sell` - 卖出股票（自动获取价格）
-- `ptrade pool` - 查看资金池
+- `ptrade2 market-summary` - 多周期趋势汇总
+- `ptrade2 init` - 初始化资金池
+- `ptrade2 buy` - 买入股票（自动获取价格）
+- `ptrade2 sell` - 卖出股票（自动获取价格）
+- `ptrade2 pool` - 查看资金池
 
 ---
 

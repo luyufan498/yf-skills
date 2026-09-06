@@ -3,6 +3,12 @@
 与 scan.py/scan_log 的关系：scan_log 是旧 per-scope 扫描游标（PK=(scope_type,scope_id)，
 7 个旧 cron 依赖，UPSERT 依赖该 PK），**保持原样不动**；本模块新增独立的 task_schedule
 表存任务级节奏（T1-T4 仅几行），两套并存，过渡期旧 cron 照写 scan_log。
+
+【2026-09-06 更新】旧采集 cron 已全部退役（xueqiu-scan/close、news-morning/intraday/close、
+news-intake、stock-news-close 等）——采集唯一心跳 = news-collect（cron `5 0,6-18/2`），
+按 task_schedule 的 T1 xueqiu_sentiment / T2 daily_news / T3 deep_analysis /
+T4 industry_research TTL 到期驱动。scan_log 仅作历史游标保留（scan-status get/set
+命令仍兼容读取），不再有活跃写入方。
 """
 
 import sqlite3

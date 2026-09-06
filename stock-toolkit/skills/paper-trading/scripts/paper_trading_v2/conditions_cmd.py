@@ -479,7 +479,7 @@ def register(app):
         """ATR 动态止损同步：算 ATR + 更新 peak + 同步 trailing_stop 与 cost_protection。
 
         替代固定 3%/1.5% 缓冲。回测验证（两个独立样本）：ATR 止损样本外夏普 +0.53~0.55。
-        cron 每日调用，或手动 `ptrade atr-sync 中科曙光`。
+        cron 每日调用，或手动 `ptrade2 atr-sync 中科曙光`。
         """
         from paper_trading_v2.atr import compute_atr, ATR_K_TRAIL, ATR_K_COST
         from paper_trading_v2.conditions import ConditionType

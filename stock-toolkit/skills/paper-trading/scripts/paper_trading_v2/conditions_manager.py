@@ -773,7 +773,7 @@ class ConditionsManager:
                            reset_peak: bool = False,
                            current_price: float = None) -> Optional[ConditionsRecord]:
         """
-        同步移动止损（ATR 驱动，只升不降）。由 `ptrade atr-sync` 命令调用。
+        同步移动止损（ATR 驱动，只升不降）。由 `ptrade2 atr-sync` 命令调用。
 
         新止损 = max(旧止损, peak − k×ATR)，其中 peak = merge_peak(旧peak, klines, realtime_high)。
         - trailing_stop 硬只升不降（套 max）：ATR 变大时止损不降，只有 peak 上移才推高止损。

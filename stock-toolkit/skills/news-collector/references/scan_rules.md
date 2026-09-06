@@ -74,15 +74,17 @@ curl -s "https://api.search.brave.com/res/v1/news/search" \
 
 ## 每轮扫描职责（按时效性重点）
 
-**晨间（08:00）**：
+> **⚠️ 2026-09-06 更新：旧三段定时节奏已退役**（晨间 08:00 / 盘中 12:00 / 收盘 18:30 cron 已全部退役）。当前唯一采集心跳 = `news-collect`（`5 0,6-18/2`），到期由 task_schedule TTL 决定：**T1 xueqiu_sentiment 4h / T2 daily_news 12h / T3 deep_analysis 36h / T4 industry_research 720h**。下列旧三段职责描述仅作各轮内容范围参考，不再对应固定挂时点。
+
+**晨间**（T2 到期轮，参考职责）：
 - high：隔夜外盘、政策盘前、A股盘前要点、watchlist 个股 + 行业隔夜消息
 - medium：检查是否 5 天没扫的行业/政策主题（scan-status get 判断）
 - 额外：行业+政策关键词快检（searxng `--time-range day`），发现新动态就入库
 
-**盘中（12:00）**：
+**盘中**（T1 到期轮，参考职责）：
 - high：市场热点、板块轮动、watchlist 个股盘中异动
 
-**收盘（18:30）**：
+**收盘**（T2 到期轮，参考职责）：
 - 当日重要消息汇总、更新事件 latest_summary、标记结束事件 resolved
 
 ## 一次性/临时性事件触发

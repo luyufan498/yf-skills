@@ -1,6 +1,6 @@
 """ATR（平均真实波幅）计算与持仓最高价(peak)合并工具。
 
-独立模块，无状态、无存储依赖，可被 `ptrade atr-sync` 命令、回测脚本、
+独立模块，无状态、无存储依赖，可被 `ptrade2 atr-sync` 命令、回测脚本、
 未来仓位模块复用。算法与回测验证的 volatility_strategy.py 一致：简单平均 TR（非 Wilder 平滑）。
 
 回测参数（两个独立样本验证）：ATR 周期 14、cost_protection 用 k=2.0、trailing_stop 用 k=2.5。

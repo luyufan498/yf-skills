@@ -1,6 +1,8 @@
 # 交易原则与策略详解
 
-> ⚠️ **ptrade2（V2）资金模型已变**：本文的仓位分配/资金池示例基于 v1"独立资金池"（`ptrade init --capital`）。V2 用弹性组合总池：`ptrade2 master-pool-allocate`（单股 ≤30%×total）、topup 累计 ≤30%、总持仓段 ≤20、free ≥20% 现金底线、7 日冷却。纪律详见 [elastic-master-pool.md](elastic-master-pool.md) 第五节与交易纪律"总池资金纪律"。本文的交易原则（止盈止损/趋势门/动量等）与 V2 完全通用，仅"分配资金"示例需替换为 allocate。
+> ⚠️ **ptrade2（V2）命令口径（2026-09-06 校订）**：全文命令前缀统一为 `ptrade2`（旧 `ptrade2 ` v1 前缀已退役为警告壳）。技术破位止损已升级为**移动止损两级模型（2026-09-05 定稿）**：首次破位减 50% → 重建现价×0.95 恢复期线 → 再破清剩余；破位=事件触发（C1 price-watch 15min 扫线），不等收盘（见下方止损表）。
+
+> ⚠️ **ptrade2（V2）资金模型已变**：本文的仓位分配/资金池示例基于 v1"独立资金池"（`ptrade2 init --capital`）。V2 用弹性组合总池：`ptrade2 master-pool-allocate`（单股 ≤30%×total）、topup 累计 ≤30%、总持仓段 ≤20、free ≥20% 现金底线、7 日冷却。纪律详见 [elastic-master-pool.md](elastic-master-pool.md) 第五节与交易纪律"总池资金纪律"。本文的交易原则（止盈止损/趋势门/动量等）与 V2 完全通用，仅"分配资金"示例需替换为 allocate。
 
 本指南详细说明 paper-trading 的交易原则、纪律和策略，帮助科学决策、控制风险。
 
@@ -31,10 +33,10 @@
 **示例**：
 ```bash
 # 正确：基于分析报告的交易
-ptrade buy "股票名称" --qty 100 --note "2026-04-07日分析报告：技术突破"
+ptrade2 buy "股票名称" --qty 100 --note "2026-04-07日分析报告：技术突破"
 
 # 错误：无依据的交易
-ptrade buy "股票名称" --qty 100
+ptrade2 buy "股票名称" --qty 100
 ```
 
 ### 2. 严格执行止损止盈
@@ -50,10 +52,10 @@ ptrade buy "股票名称" --qty 100
 **示例**：
 ```bash
 # 记录止损止盈计划
-ptrade buy "股票名称" --qty 100 --note "止损价: 9元, 止盈价: 15元"
+ptrade2 buy "股票名称" --qty 100 --note "止损价: 9元, 止盈价: 15元"
 
 # 止盈时明确理由
-ptrade sell "股票名称" --qty 50 --note "价格到达15元止盈目标，部分锁定利润"
+ptrade2 sell "股票名称" --qty 50 --note "价格到达15元止盈目标，部分锁定利润"
 ```
 
 ### 3. 仓位控制原则
@@ -77,13 +79,13 @@ ptrade sell "股票名称" --qty 50 --note "价格到达15元止盈目标，部�
 **示例**：
 ```bash
 # 初始化时设定合理资金
-ptrade init "股票名称" --capital 10000  # 如果总资金 10 万，占10%
+ptrade2 init "股票名称" --capital 10000  # 如果总资金 10 万，占10%
 
 # 查看资金利用率评估仓位
-ptrade info "股票名称"
+ptrade2 info "股票名称"
 
 # 如果资金利用率超过 70%，考虑减仓
-ptrade sell "股票名称" --qty 50 --note "风险控制：降低仓位"
+ptrade2 sell "股票名称" --qty 50 --note "风险控制：降低仓位"
 ```
 
 ### 4. 分批买卖原则
@@ -102,14 +104,14 @@ ptrade sell "股票名称" --qty 50 --note "风险控制：降低仓位"
 **示例**：
 ```bash
 # 首次建仓分批（3 批）
-ptrade buy "股票名称" --qty 50 --note "建仓第1批"
-ptrade buy "股票名称" --qty 50 --note "建仓第2批"
-ptrade buy "股票名称" --qty 50 --note "建仓第3批，完成建仓"
+ptrade2 buy "股票名称" --qty 50 --note "建仓第1批"
+ptrade2 buy "股票名称" --qty 50 --note "建仓第2批"
+ptrade2 buy "股票名称" --qty 50 --note "建仓第3批，完成建仓"
 
 # 分批止盈
-ptrade sell "股票名称" --qty 33 --note "止盈第1批"
-ptrade sell "股票名称" --qty 33 --note "止盈第2批"
-ptrade sell "股票名称" --qty 34 --note "止盈第3批，清仓"
+ptrade2 sell "股票名称" --qty 33 --note "止盈第1批"
+ptrade2 sell "股票名称" --qty 33 --note "止盈第2批"
+ptrade2 sell "股票名称" --qty 34 --note "止盈第3批，清仓"
 ```
 
 ### 5. 避免频繁交易
@@ -132,14 +134,14 @@ ptrade sell "股票名称" --qty 34 --note "止盈第3批，清仓"
 **示例**：
 ```bash
 # 合理：耐心等待
-ptrade buy "股票名称" --qty 100 --note "建仓，等待趋势确认"
+ptrade2 buy "股票名称" --qty 100 --note "建仓，等待趋势确认"
 # （1-2 天后）
-ptrade sell "股票名称" --qty 30 --note "部分止盈，降低风险"
+ptrade2 sell "股票名称" --qty 30 --note "部分止盈，降低风险"
 
 # 错误：频繁交易
-ptrade buy "股票名称" --qty 100 --note "建仓"
-ptrade sell "股票名称" --qty 100 --note "已涨"
-ptrade buy "股票名称" --qty 100 --note "又跌了"
+ptrade2 buy "股票名称" --qty 100 --note "建仓"
+ptrade2 sell "股票名称" --qty 100 --note "已涨"
+ptrade2 buy "股票名称" --qty 100 --note "又跌了"
 ```
 
 ---
@@ -157,10 +159,10 @@ ptrade buy "股票名称" --qty 100 --note "又跌了"
 **正确做法**：
 ```bash
 # 错误：盲目追涨
-ptrade buy "股票名称" --qty 100 --note "涨了这么快"
+ptrade2 buy "股票名称" --qty 100 --note "涨了这么快"
 
 # 正确：基于分析
-ptrade buy "股票名称" --qty 100 --note "分析报告：技术突破，趋势向上"
+ptrade2 buy "股票名称" --qty 100 --note "分析报告：技术突破，趋势向上"
 ```
 
 ### 2. 禁止频繁操作
@@ -193,12 +195,12 @@ ptrade buy "股票名称" --qty 100 --note "分析报告：技术突破，趋势
 **正确做法**：
 ```bash
 # 错误：满仓梭哈
-ptrade init "股票" --capital 100000
-ptrade buy "股票" --amount 100000  # 全部买入
+ptrade2 init "股票" --capital 100000
+ptrade2 buy "股票" --amount 100000  # 全部买入
 
 # 正确：保留现金
-ptrade init "股票" --capital 50000  # 只用50%
-ptrade buy "股票" --amount 25000   # 再用一半建仓
+ptrade2 init "股票" --capital 50000  # 只用50%
+ptrade2 buy "股票" --amount 25000   # 再用一半建仓
 # 剩余现金用于：追加机会、对冲风险
 ```
 
@@ -213,16 +215,16 @@ ptrade buy "股票" --amount 25000   # 再用一半建仓
 **正确做法**：
 ```bash
 # 错误：摊平死扛
-ptrade buy "股票" --qty 100 --note "建仓"
+ptrade2 buy "股票" --qty 100 --note "建仓"
 # ... 股价下跌 10% ...
-ptrade buy "股票" --qty 50 --note "摊平成本"
+ptrade2 buy "股票" --qty 50 --note "摊平成本"
 # ... 继续下跌 10% ...
-ptrade buy "股票" --qty 50 --note "再摊平"
+ptrade2 buy "股票" --qty 50 --note "再摊平"
 
 # 正确：及时止损
-ptrade buy "股票" --qty 100 --note "建仓"
+ptrade2 buy "股票" --qty 100 --note "建仓"
 # ... 股价下跌 5% ...
-ptrade sell "股票" --qty 100 --note "止损，亏损控制在5%"
+ptrade2 sell "股票" --qty 100 --note "止损，亏损控制在5%"
 ```
 
 ---
@@ -243,12 +245,12 @@ ptrade sell "股票" --qty 100 --note "止损，亏损控制在5%"
    └─ 理解建议理由
         ↓
 3. 检查当前持仓状态
-   ├─ ptrade holdings 查看持仓
+   ├─ ptrade2 holdings 查看持仓
    ├─ 评估浮动盈亏
    └─ 判断持仓比例
         ↓
 4. 评估资金使用率
-   ├─ ptrade pool 查看资金池
+   ├─ ptrade2 pool 查看资金池
    ├─ 确认可用资金
    └─ 评估仓位控制
         ↓
@@ -259,69 +261,69 @@ ptrade sell "股票" --qty 100 --note "止损，亏损控制在5%"
    └─ 添加详细交易备注
         ↓
 6. 执行交易
-   ├─ ptrade buy / sell 执行
+   ├─ ptrade2 buy / sell 执行
    ├─ 观察执行结果
    └─ 确认交易记录正确
         ↓
 7. 事后记录和总结
-   ├─ ptrade operations 回顾交易
-   ├─ ptrade profit 评估盈亏
+   ├─ ptrade2 operations 回顾交易
+   ├─ ptrade2 profit 评估盈亏
    └─ 总结经验教训
 ```
 
-### 使用 ptrade 命令辅助决策
+### 使用 ptrade2 命令辅助决策
 
 #### 步骤 1：查看当前状态
 
 ```bash
 # 查看持仓和盈亏
-ptrade info "股票名称"
+ptrade2 info "股票名称"
 
 # 查看资金池
-ptrade pool "股票名称"
+ptrade2 pool "股票名称"
 
 # 查看操作历史
-ptrade operations "股票名称"
+ptrade2 operations "股票名称"
 
 # 查看收益报告
-ptrade profit "股票名称"
+ptrade2 profit "股票名称"
 ```
 
 #### 步骤 2：获取市场数据
 
 ```bash
 # 查看实时价格
-ptrade fetch-price sh600000
+ptrade2 fetch-price sh600000
 
 # 查看K线分析
-ptrade fetch-kline sh600000 --type day --count 30
+ptrade2 fetch-kline sh600000 --type day --count 30
 
 # 获取相关新闻
-ptrade fetch-news --source all --limit 10
+ptrade2 fetch-news --source all --limit 10
 ```
 
 #### 步骤 3：执行交易
 
 ```bash
 # 分批建仓
-ptrade buy "股票名称" --qty 50 --note "报告：技术突破，建仓第1批"
-ptrade buy "股票名称" --qty 50 --note "趋势确认，建仓第2批"
+ptrade2 buy "股票名称" --qty 50 --note "报告：技术突破，建仓第1批"
+ptrade2 buy "股票名称" --qty 50 --note "趋势确认，建仓第2批"
 
 # 设置止损止盈
-ptrade sell "股票名称" --qty 33 --note "部分止盈，价格接近目标"
-ptrade sell "股票名称" --qty 67 --note "清仓，趋势改变"
+ptrade2 sell "股票名称" --qty 33 --note "部分止盈，价格接近目标"
+ptrade2 sell "股票名称" --qty 67 --note "清仓，趋势改变"
 ```
 
 #### 步骤 4：后续跟踪
 
 ```bash
 # 定期检查
-ptrade holdings "股票名称"  # 检查持仓
-ptrade fetch-price sh600000  # 最新价格
-ptrade fetch-news -s cls    # 财联社快讯
+ptrade2 holdings "股票名称"  # 检查持仓
+ptrade2 fetch-price sh600000  # 最新价格
+ptrade2 fetch-news -s cls    # 财联社快讯
 
 # 整体评估
-ptrade analyze  # 性能分析
+ptrade2 analyze  # 性能分析
 ```
 
 ---
@@ -347,11 +349,11 @@ ptrade analyze  # 性能分析
 
 ```bash
 # 川字金字塔加仓示例
-ptrade buy "股票" --qty 40 --note "底仓40股"
+ptrade2 buy "股票" --qty 40 --note "底仓40股"
 # ... 价格上涨 5% ...
-ptrade buy "股票" --qty 30 --note "加仓30股，创新高"
+ptrade2 buy "股票" --qty 30 --note "加仓30股，创新高"
 # ... 价格再涨 5% ...
-ptrade buy "股票" --qty 30 --note "继续加仓30股"
+ptrade2 buy "股票" --qty 30 --note "继续加仓30股"
 ```
 
 > **加仓纪律依据**：加仓前提（已有持仓、基本面未恶化、价格锚点、不追涨）、四类加仓触发（成本区/支撑位/急跌/突破）、加仓红线（单股上限 60%、浮亏 -10% 暂停、禁止 15% 亏损摊薄等），详见 [stock-daily-analysis/references/trading-discipline.md](../../stock-daily-analysis/references/trading-discipline.md) 第 3.1-3.3 节"加仓纪律"。本节"川字金字塔"是趋势确认场景下的加仓节奏建议，触发类型仍需对应 3.2 的四类之一。
@@ -365,9 +367,9 @@ ptrade buy "股票" --qty 30 --note "继续加仓30股"
 
 ```bash
 # 分批减仓示例
-ptrade sell "股票" --qty 30 --note "价格到达目标，部分止盈"
-ptrade sell "股票" --qty 30 --note "趋势转弱，继续减仓"
-ptrade sell "股票" --qty 40 --note "趋势破坏，清仓离场"
+ptrade2 sell "股票" --qty 30 --note "价格到达目标，部分止盈"
+ptrade2 sell "股票" --qty 30 --note "趋势转弱，继续减仓"
+ptrade2 sell "股票" --qty 40 --note "趋势破坏，清仓离场"
 ```
 
 ---
@@ -379,8 +381,8 @@ ptrade sell "股票" --qty 40 --note "趋势破坏，清仓离场"
 **标准条件**（5种，单实例）：
 | 情况 | 止损标准 | 说明 |
 |------|---------|------|
-| 技术破位 | 跌破关键支撑位 | 技术止损，建议减仓50%而非清仓 |
-| 成本保护 | 跌破成本保护价 | ATR 驱动：保护价 = 成本 − 2.0×ATR(14)，加成本×80%底线。`ptrade atr-sync` 每日同步（无 ATR 时退回固定缓冲） |
+| 技术破位 | 跌破移动止损位 | **两级模型（2026-09-05 定稿）**：首次破位减仓50% → 重建恢复期线=现价×0.95 → 再破清仓剩余；破位=事件触发（C1 price-watch 15min 扫线），不等收盘 |
+| 成本保护 | 跌破成本保护价 | ATR 驱动：保护价 = 成本 − 2.0×ATR(14)，加成本×80%底线。`ptrade2 atr-sync` 每日同步（无 ATR 时退回固定缓冲） |
 | 金额止损 | 亏损 5-10% | 金钱止损 |
 
 **事件条件**（多实例，支持同类型多档）：
@@ -393,28 +395,28 @@ ptrade sell "股票" --qty 40 --note "趋势破坏，清仓离场"
 | 亏损止损 | 亏损达 8% | 减仓 50% | hard |
 | 亏损清仓 | 亏损达 15% | 清仓 | hard |
 
-> **2026-08-30 改版**：旧"黄橙红黑灯"利润回撤梯度与"目标价止盈"已废弃（公式缺陷 + 从未挂载执行），止盈统一由**三件套**执行：保本锁 +15% / 分批 +30%/+50% 各 1/3 / 余仓 2.5×ATR 跟随（详见 stock-daily-analysis 纪律文档 2.1）。阶梯条件由 `ptrade atr-sync` 自动挂载，**勿手工设 take_profit**。
+> **2026-08-30 改版**：旧"黄橙红黑灯"利润回撤梯度与"目标价止盈"已废弃（公式缺陷 + 从未挂载执行），止盈统一由**三件套**执行：保本锁 +15% / 分批 +30%/+50% 各 1/3 / 余仓 2.5×ATR 跟随（详见 stock-daily-analysis 纪律文档 2.1）。阶梯条件由 `ptrade2 atr-sync` 自动挂载，**勿手工设 take_profit**。
 
 **CLI 命令**：
 ```bash
 # 标准条件（5种，会覆盖）
-ptrade conditions "股票" --action update --type trailing_stop --price XX.XX --action-str "减仓50%"
+ptrade2 conditions "股票" --action update --type trailing_stop --price XX.XX --action-str "减仓50%"
 
 # 事件条件（无限多实例）
-ptrade conditions "股票" --action event-set --event-type loss_protect --price XX.XX --action-str "减仓20%" --category hard
-ptrade conditions "股票" --action event-list
-ptrade conditions "股票" --action event-remove --event-id XXX
+ptrade2 conditions "股票" --action event-set --event-type loss_protect --price XX.XX --action-str "减仓20%" --category hard
+ptrade2 conditions "股票" --action event-list
+ptrade2 conditions "股票" --action event-remove --event-id XXX
 ```
 
 ```bash
 # 技术止损：跌破支撑，减仓50%留一半观察
-ptrade sell "股票" --qty 50 --note "技术止损：跌破支撑位，减仓50%观察"
+ptrade2 sell "股票" --qty 50 --note "技术止损：跌破支撑位，减仓50%观察"
 
 # 亏损止损：亏损8%，减仓50%
-ptrade sell "股票" --qty 50 --note "亏损止损：亏损达8%，先砍一半"
+ptrade2 sell "股票" --qty 50 --note "亏损止损：亏损达8%，先砍一半"
 
 # 亏损清仓：亏损15%，认赔
-ptrade sell "股票" --qty 100 --note "亏损清仓：亏损达15%，无条件离场"
+ptrade2 sell "股票" --qty 100 --note "亏损清仓：亏损达15%，无条件离场"
 ```
 
 ### 止盈策略（2026-08-30 改版：止盈三件套，旧梯度/目标价止盈废弃）
@@ -436,7 +438,7 @@ ptrade2 sell "股票" --qty <持仓1/3> --note "止盈阶梯①（成本¥X→�
 # ⚠️ 只标记该 TP 条件，不动保护线/移动止损（余仓继续跟随）
 
 # 技术止盈：顶背离
-ptrade sell "股票" --qty 50 --note "技术止盈：MACD顶背离信号，减仓一半"
+ptrade2 sell "股票" --qty 50 --note "技术止盈：MACD顶背离信号，减仓一半"
 ```
 
 ---
@@ -465,7 +467,7 @@ ptrade sell "股票" --qty 50 --note "技术止盈：MACD顶背离信号，减�
 
 ```bash
 # 查看操作历史
-ptrade operations "股票名称"
+ptrade2 operations "股票名称"
 
 # 统计交易次数（一周内）
 # 如果超过10次交易 → 就太频繁了
@@ -497,8 +499,8 @@ ptrade operations "股票名称"
 
 ```bash
 # 在交易备注中记录心态
-ptrade buy "股票" --qty 100 --note "心态冷静，分析充分"
-ptrade sell "股票" --qty 50 --note "获利了结，心态稳定"
+ptrade2 buy "股票" --qty 100 --note "心态冷静，分析充分"
+ptrade2 sell "股票" --qty 50 --note "获利了结，心态稳定"
 ```
 
 ---
@@ -519,7 +521,7 @@ ptrade sell "股票" --qty 50 --note "获利了结，心态稳定"
 
 ### 关键指标监控
 
-通过 `ptrade analyze` 定期监控：
+通过 `ptrade2 analyze` 定期监控：
 
 | 指标 | 健康值 | 需注意 | 危险 |
 |------|--------|--------|------|
@@ -532,10 +534,10 @@ ptrade sell "股票" --qty 50 --note "获利了结，心态稳定"
 
 ## 相关命令
 
-- `ptrade info` - 查看股票状态
-- `ptrade operations` - 回顾交易历史
-- `ptrade profit` - 查看收益报告
-- `ptrade analyze` - 整体性能分析
+- `ptrade2 info` - 查看股票状态
+- `ptrade2 operations` - 回顾交易历史
+- `ptrade2 profit` - 查看收益报告
+- `ptrade2 analyze` - 整体性能分析
 
 ---
 

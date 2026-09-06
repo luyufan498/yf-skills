@@ -106,8 +106,8 @@ def register(app):
           - tv: TradingView外媒
 
         示例:
-          ptrade fetch-news --source all --limit 20
-          ptrade fetch-news -s cls -n 10 -f json
+          ptrade2 fetch-news --source all --limit 20
+          ptrade2 fetch-news -s cls -n 10 -f json
         """
         from paper_trading_v2.news_fetcher import MarketNewsFetcher
 
@@ -180,20 +180,20 @@ def register(app):
           - gf-summary: 广发证券摘要
 
         保存示例:
-          ptrade temp-data 赛力斯 --action save --category deep-search --content "分析内容"
-          ptrade temp-data 赛力斯 --action save --category deep-search --file search_result.md
-          ptrade temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
+          ptrade2 temp-data 赛力斯 --action save --category deep-search --content "分析内容"
+          ptrade2 temp-data 赛力斯 --action save --category deep-search --file search_result.md
+          ptrade2 temp-data 赛力斯 --action save --category gf-summary --stdin << 'EOF'
           # 广发证券数据分析
           ...
           EOF
 
         读取示例:
-          ptrade temp-data 赛力斯 --action read --category deep-search
+          ptrade2 temp-data 赛力斯 --action read --category deep-search
 
         列出示例:
-          ptrade temp-data 赛力斯 --action list
-          ptrade temp-data 赛力斯 --action list --category deep-search
-          ptrade temp-data all --action list
+          ptrade2 temp-data 赛力斯 --action list
+          ptrade2 temp-data 赛力斯 --action list --category deep-search
+          ptrade2 temp-data all --action list
         """
         manager = TempDataManager(validate_stock=False)
 
@@ -322,12 +322,12 @@ def register(app):
 
         """
         示例:
-          ptrade analysis 赛力斯 --action save --content "# 分析内容"
-          ptrade analysis 赛力斯 --action save --file analysis.md
-          ptrade analysis 赛力斯 --action read
-          ptrade analysis 赛力斯 --action read --count 3
-          ptrade analysis 赛力斯 --action read --id 赛力斯-2026-06-17-1007.md
-          ptrade analysis --action list
+          ptrade2 analysis 赛力斯 --action save --content "# 分析内容"
+          ptrade2 analysis 赛力斯 --action save --file analysis.md
+          ptrade2 analysis 赛力斯 --action read
+          ptrade2 analysis 赛力斯 --action read --count 3
+          ptrade2 analysis 赛力斯 --action read --id 赛力斯-2026-06-17-1007.md
+          ptrade2 analysis --action list
         """
         manager = AnalysisManager()
 

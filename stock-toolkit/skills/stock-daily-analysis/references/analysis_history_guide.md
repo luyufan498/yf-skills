@@ -29,7 +29,7 @@
 首先列出该股票的历史分析报告，了解分析频次和时间分布。
 
 ```bash
-ptrade analysis 股票名称 --action list --limit 30
+ptrade2 analysis 股票名称 --action list --limit 30
 ```
 
 参数说明：
@@ -94,20 +94,20 @@ ptrade analysis 股票名称 --action list --limit 30
 
 ```bash
 # 方式一：使用 --count 参数读取最近的报告（短期分析）
-ptrade analysis 股票名称 --action read --count 3
+ptrade2 analysis 股票名称 --action read --count 3
 
 # 方式二：使用 --file 参数读取指定的历史报告文件
-ptrade analysis 股票名称 --action read --file /path/to/report.md
+ptrade2 analysis 股票名称 --action read --file /path/to/report.md
 ```
 
 **推荐组合读取方式**：
 ```bash
 # 读取最近的 3 份报告（短期）
-ptrade analysis 股票名称 --action read --count 3
+ptrade2 analysis 股票名称 --action read --count 3
 
 # 然后读取 5-7 天前的报告（中期）
 # 使用 --file 参数指定具体文件路径（从列表中选择）
-ptrade analysis 股票名称 --action read --file <中期报告路径>
+ptrade2 analysis 股票名称 --action read --file <中期报告路径>
 ```
 
 ### 步骤 4: 分析预测准确性
@@ -174,7 +174,7 @@ ptrade analysis 股票名称 --action read --file <中期报告路径>
     - 若未挂 → ⚠️ 止盈三件套缺失（先跑 ptrade2 atr-sync 自动补挂）
   - 所有持仓：是否区分了"技术破位减仓50%"和"亏损清仓"？
     - 若只有单一清仓条件 → ⚠️ 破位处理过于绝对
-- 检查事件条件是否通过 `ptrade conditions --action event-list` 管理
+- 检查事件条件是否通过 `ptrade2 conditions --action event-list` 管理
 
 ### 步骤 5: 识别观点演进
 
@@ -239,8 +239,8 @@ ptrade analysis 股票名称 --action read --file <中期报告路径>
 
 请参考下列命令将分析报告保存。
 
-💾 保存方式：使用 ptrade CLI 工具的临时数据存储功能
-📂 保存位置：ptrade 工作的 workspace/temp-data 目录（通过 STOCK_ANALYSIS_WORKSPACE 环境变量配置）
+💾 保存方式：使用 ptrade2 CLI 工具的临时数据存储功能
+📂 保存位置：ptrade2 工作的 workspace/temp-data 目录（通过 STOCK_ANALYSIS_WORKSPACE 环境变量配置）
 
 ```bash
 # 1. 先将连续性分析报告保存到临时文件（使用 date +%s 生成唯一时间戳）
@@ -249,13 +249,13 @@ cat > "/tmp/{股票名称}_history_continuity_$(date +%s).md" << 'EOF'
 EOF
 
 # 2. 使用 --file 参数归档
-ptrade temp-data "股票名称" \
+ptrade2 temp-data "股票名称" \
   --action save \
   --category history-continuity \
   --file "/tmp/{股票名称}_history_continuity_$(date +%s).md"
 ```
 
-⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade temp-data 命令保存数据
+⚠️ 严格禁止使用 write 或 Edit 工具直接操作文件，必须通过 ptrade2 temp-data 命令保存数据
 **重要**: 保存成功后，其他 agent 会自动读取和合并这份报告。
 
 ---
@@ -265,7 +265,7 @@ ptrade temp-data "股票名称" \
 ### 数据目录说明
 
 - **历史分析记录**: 保存在 `stocks_analysis/` 目录（股票名称作为目录）
-- **中间数据**: 保存在 `temp-data/` 目录（股票名称作为目录，通过 ptrade 的工作空间配置）
+- **中间数据**: 保存在 `temp-data/` 目录（股票名称作为目录，通过 ptrade2 的工作空间配置）
 - **分析文件命名**: `<股票名>-YYYY-MM-DD-HHMM.md`
 - **首次分析**: 如从未分析过该股票，返回"暂无历史分析记录"
 

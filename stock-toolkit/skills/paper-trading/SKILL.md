@@ -67,7 +67,7 @@ ptrade2 master-pool-allocate 股票 --amount 500000 --reason "建仓点触发"
 #    写命令 sleeve-open/fill/cancel/migrate/close-slot + 挂单四件套 sleeve-order-place/fill/expire/rejudge；
 #    sleeve-show / sleeve-pool-init 只读与初始化。
 ptrade2 watchlist-add 股票 --strategy NEWS --event-key ND#293 --news-kind policy --reason "收编"
-ptrade2 sleeve-open 股票A 股票B --budget 300000 --event-key ND#293 --news-kind policy  # 开槽（等权）[M3 启用]
+ptrade2 sleeve-open 股票A 股票B --budget 300000 --event-key ND#293 --news-kind policy  # 开槽（等权；预算=成员数×10 万，2026-09-07 裁决统一口径，勿开高档）[M3 启用]
 ptrade2 sleeve-fill                       # 心跳开盘后首扫：pending 按开盘价成交+挂三件套 [M3 启用]
 ptrade2 sleeve-cancel ND#293 --reason "TTL 过期停牌"   # 弃单（影子账#1）[M3 启用]
 ptrade2 sleeve-migrate 股票 --reason "V11 资格+否决项未触发"   # 移交桥=段转策略（单向，一次；承接注资走 master-pool-topup --source migrate）[M3 启用]

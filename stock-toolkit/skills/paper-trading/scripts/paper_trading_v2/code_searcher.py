@@ -4,6 +4,9 @@
 """
 
 from typing import List, Dict, Optional
+import os
+import re
+
 import requests
 
 
@@ -90,6 +93,7 @@ _LOCAL_CODE_FALLBACK = {
     '中微公司': 'sh688012',
     '拓荆科技': 'sh688072',
     '罗博特科': 'sz300757',
+    '亚康股份': 'sz301085',
 }
 
 
@@ -276,3 +280,186 @@ class StockCodeSearcher:
         }
 
         return results
+
+
+# ============ code ↔ 中文名 归一（2026-09-07 亚康股份/301085 实体分裂事故修复） ============
+# pool.stock 是 PRIMARY KEY、一只票存中文名：watchlist-add 纯代码入参先反查中文名，反查不到
+# fail-closed 拒绝；ptrade2 canon-code 命令同源复用。newsdb 侧后续可直接复用 canonical_stock_code。
+
+_DEFAULT_NEWS_DB = '/home/catmouse/Github_Project/daily-stock-workspace/data/news/news.db'
+
+# 代码形态判定：可选 sh/sz/hk/bj/gb_ 前缀 + 数字/字母/点/连字符，不含中文字符与空格
+# （中文名一律 False；'600176.SH' 后缀形态、'AAPL' 裸 ticker 均算代码形态）
+_STOCK_CODE_RE = re.compile(r'(?:(?:sh|sz|bj|hk|gb)_?)?[a-z0-9._\-]+', re.IGNORECASE)
+
+# 裸 6 位 A 股前缀推断（不保证正确，配合 resolve_name_for_code 校验；8/4/9=北交所）
+_A_SHARE_PREFIX_INFER = {'6': 'sh', '0': 'sz', '3': 'sz', '8': 'bj', '4': 'bj', '9': 'bj'}
+
+_GB_TICKER_CACHE = None
+
+
+def _gb_ticker_set():
+    """内置美股 gb 库的 ticker 集（懒加载；构造 StockCodeSearcher 不触网）"""
+    global _GB_TICKER_CACHE
+    if _GB_TICKER_CACHE is None:
+        _GB_TICKER_CACHE = frozenset(
+            code[len('gb_'):] for code in StockCodeSearcher().hot_stocks['gb'].values())
+    return _GB_TICKER_CACHE
+
+
+def looks_like_stock_code(raw) -> bool:
+    """代码形态判定（watchlist-add 反查闸 + canon-code 路由）：可选 sh/sz/hk/bj/gb_ 前缀
+    + 数字/字母/点/连字符。中文名（含中文字符或空格）一律 False。"""
+    if raw is None:
+        return False
+    s = str(raw).strip()
+    return bool(s) and _STOCK_CODE_RE.fullmatch(s) is not None
+
+
+def canonical_stock_code(raw) -> str:
+    """任意形态代码 → ptrade canonical 形态（sh600176/sz002493/hk00700/gb_aapl）。
+
+    纯格式归一，不做网络请求；newsdb 侧后续直接复用。
+    - 已带 sh/sz/bj/hk/gb_ 前缀（大小写随意）→ 小写化原样
+    - '600176.SH'/'600176.sz' 后缀形态 → 前缀形态
+    - 裸 6 位 A 股按首位推断前缀：6→sh；0/3→sz；8/4/9→bj（推断不保证正确，
+      配合 resolve_name_for_code 以名字反推权威 code）
+    - 裸 5 位 → hk（hk 前缀 4-5 位补齐 5 位）
+    - 裸英文 ticker → 限内置 gb 库已有标的 → gb_<ticker>
+    - 无法识别/中文输入 → ValueError（中文名不是 code，应传代码或用 watchlist-add 传中文名）
+    """
+    if raw is None:
+        raise ValueError("股票代码不能为空")
+    s = str(raw).strip().lower()
+    if not s:
+        raise ValueError("股票代码不能为空")
+    if any('一' <= ch <= '鿿' for ch in s):
+        raise ValueError(f"'{raw}' 是中文名称不是代码——请传代码（如 sz301085）或用 watchlist-add 传中文名")
+    m = re.fullmatch(r'([0-9a-z]+)\.(sh|sz|bj|hk)', s)      # 后缀形态 600176.SH
+    if m:
+        s = m.group(2) + m.group(1)
+    m = re.fullmatch(r'(sh|sz|bj)([0-9]{6})', s)            # A 股前缀形态
+    if m:
+        return m.group(1) + m.group(2)
+    m = re.fullmatch(r'hk([0-9]{4,5})', s)                  # 港股（补齐 5 位）
+    if m:
+        return 'hk' + m.group(1).zfill(5)
+    m = re.fullmatch(r'gb_?([a-z][a-z0-9_\-]*)', s)         # 美股
+    if m:
+        return 'gb_' + m.group(1)
+    if re.fullmatch(r'[0-9]{6}', s):                        # 裸 6 位 A 股
+        prefix = _A_SHARE_PREFIX_INFER.get(s[0])
+        if prefix:
+            return prefix + s
+        raise ValueError(f"无法识别的 A 股代码 '{raw}'（首位 {s[0]} 不在 6/0/3/8/4/9 推断表内）")
+    if re.fullmatch(r'[0-9]{5}', s):                        # 裸 5 位 → 港股
+        return 'hk' + s
+    if re.fullmatch(r'[a-z][a-z0-9_\-]*', s):               # 裸英文 ticker（限内置库）
+        if s in _gb_ticker_set():
+            return 'gb_' + s
+        raise ValueError(f"无法识别的代码 '{raw}'——美股 ticker 仅支持内置库已有标的（如 aapl/tsla）")
+    raise ValueError(f"无法解析 '{raw}' 为股票代码"
+                     f"（支持 sh/sz/hk/gb_ 前缀、600176.SH 后缀、裸 6 位 A 股 / 5 位港股）")
+
+
+def _news_db_path():
+    """newsdb 路径：NEWS_DB_PATH 覆盖 > STOCK_NEWS_DB（newsdb CLI 现行约定）> 默认绝对路径"""
+    return (os.environ.get('NEWS_DB_PATH')
+            or os.environ.get('STOCK_NEWS_DB')
+            or _DEFAULT_NEWS_DB)
+
+
+def _code_key(code):
+    """newsdb code 容错归一：'603019.SH'/'300731'/'sh600176' → '603019'/'300731'/'600176'"""
+    s = str(code or '').strip().lower()
+    for prefix in ('sh', 'sz', 'bj', 'hk'):
+        if s.startswith(prefix) and len(s) > len(prefix):
+            s = s[len(prefix):]
+            break
+    for suffix in ('.sh', '.sz', '.bj', '.hk'):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+            break
+    return s
+
+
+def _newsdb_name_for_code(canonical):
+    """newsdb stocks 表（只读连接）code → name；连接失败/缺表/未命中 → None 不抛"""
+    try:
+        import sqlite3
+        path = _news_db_path()
+        if not path or not os.path.exists(path):
+            return None
+        key = _code_key(canonical)
+        if not key:
+            return None
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        try:
+            rows = conn.execute('SELECT name, code FROM stocks').fetchall()
+        finally:
+            conn.close()
+        for name, code in rows:
+            if _code_key(code) == key:
+                return name
+    except Exception:
+        return None
+    return None
+
+
+def _newsdb_code_for_name(name):
+    """newsdb stocks 表（只读连接）name → code（原样返回，canonical 交给调用方）"""
+    try:
+        import sqlite3
+        path = _news_db_path()
+        if not path or not os.path.exists(path):
+            return None
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        try:
+            row = conn.execute('SELECT code FROM stocks WHERE name=? LIMIT 1', (name,)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def resolve_name_for_code(raw_code) -> Optional[str]:
+    """代码（任意形态）→ 中文名；纯本地三级查找，不触网。
+
+    a. _LOCAL_CODE_FALLBACK 值→键反查 → b. hot_stocks code→name 反查 → c. newsdb stocks
+    表（mode=ro、sh 前缀/裸 6 位/.SH 后缀容错匹配）→ 找不到返回 None。
+    非代码形态（含中文/乱码）canonical 抛 ValueError → 一律 None（fail-closed 由调用方拒绝）。
+    """
+    try:
+        canonical = canonical_stock_code(raw_code)
+    except ValueError:
+        return None
+    for name, code in _LOCAL_CODE_FALLBACK.items():
+        if code == canonical:
+            return name
+    hot_reverse = {code: name for mkt in StockCodeSearcher().hot_stocks.values()
+                   for name, code in mkt.items()}
+    if canonical in hot_reverse:
+        return hot_reverse[canonical]
+    return _newsdb_name_for_code(canonical)
+
+
+def lookup_code_for_name(name) -> Optional[str]:
+    """中文名 → code（fallback / hot_stocks / newsdb 本地表，不触网）。
+
+    canon-code 中文名路径与 watchlist-add 反查命中后的 code hint 复用；newsdb code 原样
+    返回（'601127.SH' 等非 canonical 形态由调用方 canonical_stock_code 归一）。
+    """
+    if not name:
+        return None
+    key = str(name).strip()
+    if not key:
+        return None
+    code = _LOCAL_CODE_FALLBACK.get(key)
+    if code:
+        return code
+    hot = StockCodeSearcher().hot_stocks
+    for mkt in hot.values():
+        if key in mkt:
+            return mkt[key]
+    return _newsdb_code_for_name(key)

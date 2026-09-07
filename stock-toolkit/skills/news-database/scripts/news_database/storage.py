@@ -1,6 +1,14 @@
 """写入层：实体、事件、消息、关系、刷新请求。"""
 
+import re
+
 from news_database.signal import VALID_SIGNAL_DIRECTIONS
+
+# event_stock.stock_code 唯一合法形态（2026-09-07 起，亚康股份/301085 实体分裂事故后）：
+# ptrade2 canon-code 的 canonical 输出（A股 sh600176/sz002493、港股 hk00700、美股 gb_aapl）。
+# 规则本体在 ptrade2（唯一逻辑源），此处只是入库硬门；归一走 cli._canon_code 子进程。
+# 精确锚定：A股 (sh|sz)+6位、港股 hk+5位、美股 gb_+小写字母/数字/下划线（gb_aapl/gb_brk_a 合法）。
+CANONICAL_STOCK_CODE_RE = re.compile(r'(?:(?:sh|sz)\d{6}|hk\d{5}|gb_[a-z0-9_]+)')
 
 # ---------- 实体 ----------
 
@@ -194,9 +202,12 @@ def get_event_with_messages(conn, event_id):
 # ---------- 事件↔实体 关联 ----------
 
 def link_event_stock(conn, event_id, stock_code, relevance=50):
-    """关联事件↔股票（多对多，UPSERT）。"""
+    """关联事件↔股票（多对多，UPSERT）。stock_code 必须是 canonical 形态（硬门）。"""
     if not conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone():
         raise ValueError(f"事件 {event_id} 不存在")
+    if not CANONICAL_STOCK_CODE_RE.fullmatch(stock_code):
+        raise ValueError(f"股票代码格式非法: {stock_code!r}——请用 ptrade2 canon-code 归一后入库"
+                         f"（如 sh600176 / hk00700 / gb_aapl）")
     conn.execute("""
         INSERT INTO event_stock (event_id, stock_code, relevance) VALUES (?, ?, ?)
         ON CONFLICT(event_id, stock_code) DO UPDATE SET relevance=excluded.relevance

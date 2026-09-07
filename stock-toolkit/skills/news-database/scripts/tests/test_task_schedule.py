@@ -300,9 +300,9 @@ def test_monitor_stale_check_enabled(db_path, tmp_path, monkeypatch):
     from news_database import storage
 
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯", is_watchlist=1)
+    storage.upsert_stock(conn, "sh601127", "赛力斯", is_watchlist=1)
     eid = storage.create_event(conn, "赛力斯新款发布")
-    storage.link_event_stock(conn, eid, "601127.SH")  # 新关联 → 非空置
+    storage.link_event_stock(conn, eid, "sh601127")  # 新关联 → 非空置
     storage.add_message(conn, eid, "新款发布快讯")  # 口径=messages 最近关联
     conn.close()
     out = _run_monitor(monkeypatch, db_path, tmp_path / "no_such_tasks.db",
@@ -330,10 +330,10 @@ def test_monitor_stale_check_enabled_mixed(db_path, tmp_path, monkeypatch):
     from news_database import storage
 
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯", is_watchlist=1)
-    storage.upsert_stock(conn, "600519.SH", "贵州茅台", is_watchlist=1)
+    storage.upsert_stock(conn, "sh601127", "赛力斯", is_watchlist=1)
+    storage.upsert_stock(conn, "sh600519", "贵州茅台", is_watchlist=1)
     eid = storage.create_event(conn, "赛力斯新款发布")
-    storage.link_event_stock(conn, eid, "601127.SH")
+    storage.link_event_stock(conn, eid, "sh601127")
     storage.add_message(conn, eid, "新款发布快讯")  # fetched_at=今天 → 赛力斯非空置
     # 贵州茅台：无任何关联内容 → 空置（最长天数取空置侧已知关联，无则省略）
     conn.commit()

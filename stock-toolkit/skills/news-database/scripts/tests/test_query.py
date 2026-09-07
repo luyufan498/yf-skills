@@ -13,8 +13,8 @@ def _conn(db_path):
 def _seed(conn):
     # 个股事件
     e1 = storage.create_event(conn, "赛力斯业绩预亏", entity_type="stock", importance=5)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯")
-    storage.link_event_stock(conn, e1, "601127.SH", relevance=100)
+    storage.upsert_stock(conn, "sh601127", "赛力斯")
+    storage.link_event_stock(conn, e1, "sh601127", relevance=100)
     storage.add_message(conn, e1, title="发布预亏公告", importance=5)
     # 行业事件
     e2 = storage.create_event(conn, "光模块景气上行", entity_type="industry", importance=4)
@@ -29,7 +29,7 @@ def _seed(conn):
 def test_query_stock(db_path):
     conn = _conn(db_path)
     e1, _, _ = _seed(conn)
-    evs = query.query_stock(conn, "601127.SH")
+    evs = query.query_stock(conn, "sh601127")
     assert len(evs) == 1 and evs[0]["id"] == e1
     conn.close()
 
@@ -38,7 +38,7 @@ def test_query_stock_with_days(db_path):
     conn = _conn(db_path)
     _seed(conn)
     # 过去 7 天应能取到（刚插入）
-    evs = query.query_stock(conn, "601127.SH", days=7)
+    evs = query.query_stock(conn, "sh601127", days=7)
     assert len(evs) == 1
     conn.close()
 
@@ -49,7 +49,7 @@ def test_query_stock_with_days_excludes_old(db_path):
     # 把事件回拨 30 天，days=7 时应被排除
     conn.execute("UPDATE events SET updated_at = datetime('now','localtime','-30 days') WHERE id=?", (e1,))
     conn.commit()
-    evs = query.query_stock(conn, "601127.SH", days=7)
+    evs = query.query_stock(conn, "sh601127", days=7)
     assert len(evs) == 0
     conn.close()
 
@@ -140,13 +140,13 @@ def _mk_stock_event(conn, code, title):
 
 def test_query_stock_filters_low_confidence(db_path):
     conn = _conn(db_path)
-    eid = _mk_stock_event(conn, "601127.SH", "赛力斯事件")
+    eid = _mk_stock_event(conn, "sh601127", "赛力斯事件")
     storage.add_message(conn, eid, "官方公告", source_type="official")   # conf 5
     storage.add_message(conn, eid, "论坛流言", source_type="rumor")     # conf 1
-    evs = query.query_stock(conn, "601127.SH")
+    evs = query.query_stock(conn, "sh601127")
     assert len(evs) == 1
     # include_low_confidence=True 仍返回该事件
-    evs2 = query.query_stock(conn, "601127.SH", include_low_confidence=True)
+    evs2 = query.query_stock(conn, "sh601127", include_low_confidence=True)
     assert len(evs2) == 1
     conn.close()
 
@@ -154,9 +154,9 @@ def test_query_stock_filters_low_confidence(db_path):
 def test_query_stock_messages_confidence_visible(db_path):
     """query 返回的事件下，消息带置信度字段。"""
     conn = _conn(db_path)
-    eid = _mk_stock_event(conn, "601127.SH", "赛力斯事件")
+    eid = _mk_stock_event(conn, "sh601127", "赛力斯事件")
     storage.add_message(conn, eid, "官方公告", source_type="official")
-    evs = query.query_stock(conn, "601127.SH")
+    evs = query.query_stock(conn, "sh601127")
     assert len(evs) == 1
     _, msgs = storage.get_event_with_messages(conn, evs[0]["id"])
     assert msgs and msgs[0]["source_type"] == "official"
@@ -167,12 +167,12 @@ def test_query_stock_messages_confidence_visible(db_path):
 def test_query_stock_filters_event_with_only_rumor(db_path):
     """事件下只有流言(conf<3)时，默认查询应过滤掉该事件。"""
     conn = _conn(db_path)
-    eid = _mk_stock_event(conn, "601127.SH", "流言事件")
+    eid = _mk_stock_event(conn, "sh601127", "流言事件")
     storage.add_message(conn, eid, "论坛流言", source_type="rumor", confidence=1)
     # 默认：只含低置信度消息的事件被过滤
-    evs = query.query_stock(conn, "601127.SH")
+    evs = query.query_stock(conn, "sh601127")
     assert len(evs) == 0
     # include_low_confidence=True：能查到
-    evs2 = query.query_stock(conn, "601127.SH", include_low_confidence=True)
+    evs2 = query.query_stock(conn, "sh601127", include_low_confidence=True)
     assert len(evs2) == 1
     conn.close()

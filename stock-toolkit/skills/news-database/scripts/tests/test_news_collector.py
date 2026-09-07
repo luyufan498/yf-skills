@@ -150,7 +150,7 @@ def _seed_watch_stock(conn, code, name, msg_age_days=None, watchlist=1, now_base
 def test_stale_candidates_recent_message_not_candidate(db_path):
     """7 天内有消息关联 → 非候选。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2, now_base=_NOW)
+    _seed_watch_stock(conn, "sh601127", "赛力斯", msg_age_days=2, now_base=_NOW)
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert [c["code"] for c in cands] == []
     conn.close()
@@ -159,11 +159,11 @@ def test_stale_candidates_recent_message_not_candidate(db_path):
 def test_stale_candidates_old_message_is_candidate(db_path):
     """仅 8 天前消息 → 候选，days=8，last_related_at=旧时间。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8, now_base=_NOW)
+    _seed_watch_stock(conn, "sh600519", "贵州茅台", msg_age_days=8, now_base=_NOW)
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert len(cands) == 1
     c = cands[0]
-    assert c["code"] == "600519.SH"
+    assert c["code"] == "sh600519"
     assert c["name"] == "贵州茅台"
     assert c["days"] == 8
     assert c["last_related_at"].startswith("2026-08-26")
@@ -173,12 +173,12 @@ def test_stale_candidates_old_message_is_candidate(db_path):
 def test_stale_candidates_event_without_message_counts_as_never(db_path):
     """空壳事件（仅 event_stock 关联、无 messages 行）→ 视为从未关联（口径=messages）。"""
     conn = _conn(db_path)
-    storage.upsert_stock(conn, "601127.SH", "赛力斯", is_watchlist=1)
+    storage.upsert_stock(conn, "sh601127", "赛力斯", is_watchlist=1)
     eid = storage.create_event(conn, "赛力斯事件")
-    storage.link_event_stock(conn, eid, "601127.SH")  # 只有事件，无消息
+    storage.link_event_stock(conn, eid, "sh601127")  # 只有事件，无消息
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
     assert len(cands) == 1
-    assert cands[0]["code"] == "601127.SH"
+    assert cands[0]["code"] == "sh601127"
     assert cands[0]["last_related_at"] is None
     assert cands[0]["days"] is None
     conn.close()
@@ -195,11 +195,11 @@ def test_stale_candidates_non_watchlist_ignored(db_path):
 def test_stale_candidates_mixed_sorted_worst_first(db_path):
     """混合：从未关联 > 8 天 > 6 天内；排序最久在前。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "601127.SH", "赛力斯", msg_age_days=2, now_base=_NOW)    # 非候选
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8, now_base=_NOW)  # 8 天
-    _seed_watch_stock(conn, "300034.SZ", "钢研高纳")                  # 从未关联
+    _seed_watch_stock(conn, "sh601127", "赛力斯", msg_age_days=2, now_base=_NOW)    # 非候选
+    _seed_watch_stock(conn, "sh600519", "贵州茅台", msg_age_days=8, now_base=_NOW)  # 8 天
+    _seed_watch_stock(conn, "sz300034", "钢研高纳")                  # 从未关联
     cands = nc.stale_candidates(conn, days=7, now=_NOW)
-    assert [c["code"] for c in cands] == ["300034.SZ", "600519.SH"]
+    assert [c["code"] for c in cands] == ["sz300034", "sh600519"]
     assert cands[0]["days"] is None and cands[1]["days"] == 8
     conn.close()
 
@@ -426,7 +426,7 @@ def _run_monitor(news_db, tasks_db=None, env=None, cwd=None):
 def test_monitor_stale_byte_stable_when_set_unchanged(db_path, tmp_path, monkeypatch):
     """候选集不变：首拍发现行，第二/三拍固定行同字节（无变化不唤醒）。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8)
+    _seed_watch_stock(conn, "sh600519", "贵州茅台", msg_age_days=8)
     conn.close()
     out1 = _run_monitor(db_path, tmp_path / "no.db",
                         env={"NEWS_COLLECT_STALE_CHECK": "1"})
@@ -442,7 +442,7 @@ def test_monitor_stale_byte_stable_when_set_unchanged(db_path, tmp_path, monkeyp
 def test_monitor_stale_byte_changes_when_set_changes(db_path, tmp_path, monkeypatch):
     """候选集变化（候选恢复关联）→ 输出变化字节（唤醒语义）。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8)
+    _seed_watch_stock(conn, "sh600519", "贵州茅台", msg_age_days=8)
     conn.close()
     out1 = _run_monitor(db_path, tmp_path / "no.db",
                         env={"NEWS_COLLECT_STALE_CHECK": "1"})
@@ -450,7 +450,7 @@ def test_monitor_stale_byte_changes_when_set_changes(db_path, tmp_path, monkeypa
     # 候选恢复关联（新消息今天入）→ N=0 → 无 STALE 行
     conn = _conn(db_path)
     eid = storage.create_event(conn, "茅台新公告")
-    storage.link_event_stock(conn, eid, "600519.SH")
+    storage.link_event_stock(conn, eid, "sh600519")
     storage.add_message(conn, eid, "公告快讯")
     conn.close()
     out2 = _run_monitor(db_path, tmp_path / "no.db",
@@ -458,7 +458,7 @@ def test_monitor_stale_byte_changes_when_set_changes(db_path, tmp_path, monkeypa
     assert "[STALE]" not in out2
     # 再次空置（另一只）→ 字节变化（N=1 新名单）
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "300034.SZ", "钢研高纳")
+    _seed_watch_stock(conn, "sz300034", "钢研高纳")
     conn.close()
     out3 = _run_monitor(db_path, tmp_path / "no.db",
                         env={"NEWS_COLLECT_STALE_CHECK": "1"})
@@ -469,7 +469,7 @@ def test_monitor_stale_byte_changes_when_set_changes(db_path, tmp_path, monkeypa
 def test_monitor_stale_disabled_by_default_no_bytes(db_path, tmp_path, monkeypatch):
     """开关关（默认）→ 无 STALE 行，IDLE 稳定。"""
     conn = _conn(db_path)
-    _seed_watch_stock(conn, "600519.SH", "贵州茅台", msg_age_days=8)
+    _seed_watch_stock(conn, "sh600519", "贵州茅台", msg_age_days=8)
     conn.close()
     out = _run_monitor(db_path, tmp_path / "no.db")
     assert "[STALE]" not in out

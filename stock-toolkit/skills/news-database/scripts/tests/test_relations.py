@@ -13,14 +13,14 @@ def _conn(db_path):
 def test_link_event_stock(db_path):
     conn = _conn(db_path)
     eid = storage.create_event(conn, "华为合作", entity_type="stock")
-    storage.upsert_stock(conn, "601127.SH", "赛力斯")
-    storage.upsert_stock(conn, "000977.SZ", "浪潮信息")
-    storage.link_event_stock(conn, eid, "601127.SH", relevance=90)
-    storage.link_event_stock(conn, eid, "000977.SZ", relevance=30)
+    storage.upsert_stock(conn, "sh601127", "赛力斯")
+    storage.upsert_stock(conn, "sz000977", "浪潮信息")
+    storage.link_event_stock(conn, eid, "sh601127", relevance=90)
+    storage.link_event_stock(conn, eid, "sz000977", relevance=30)
     stocks = storage.event_stocks(conn, eid)
-    assert {s["stock_code"] for s in stocks} == {"601127.SH", "000977.SZ"}
+    assert {s["stock_code"] for s in stocks} == {"sh601127", "sz000977"}
     # relevance 排序
-    assert stocks[0]["stock_code"] == "601127.SH"
+    assert stocks[0]["stock_code"] == "sh601127"
     conn.close()
 
 
@@ -88,5 +88,5 @@ def test_link_event_stock_missing_event_raises(db_path):
     conn = _conn(db_path)
     import pytest
     with pytest.raises(ValueError):
-        storage.link_event_stock(conn, 99999, "601127.SH")
+        storage.link_event_stock(conn, 99999, "sh601127")
     conn.close()

@@ -1,5 +1,9 @@
 """newsdb 命令行入口：采集端（建/归/刷/收）、查询端（查/搜/取重要）、协作端（请求/确认）。"""
 
+import json
+import os
+import subprocess
+
 import typer
 
 from news_database import storage, query
@@ -20,6 +24,36 @@ def _open():
     conn = connect(get_db_path())
     init_db(conn)  # 幂等，确保库存在
     return conn
+
+
+def _canon_code(raw):
+    """raw 代码/中文名 → canonical 代码（子进程调 ptrade2 canon-code，唯一逻辑源在 ptrade2）。
+
+    canonical 形态：A股 sh600176/sz002493、港股 hk00700、美股 gb_aapl（2026-09-07 起，
+    亚康股份/301085 实体分裂事故后）。newsdb 不复制规则，归一规则只此一处（ptrade2）。
+
+    fail-closed：ptrade2 不可用/超时/输出不可解析/拒绝解析 → 抛错，调用方整单中止。
+    canon_migrate 存量清洗复用同一 ptrade2 规则源。
+    """
+    env = dict(os.environ)
+    env["PATH"] = f"{os.path.expanduser('~/.local/bin')}:{env.get('PATH', '')}"
+    try:
+        proc = subprocess.run(["ptrade2", "canon-code", raw, "--json"],
+                              capture_output=True, text=True, timeout=15, env=env, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"ptrade2 不可用，无法校验代码格式: {raw!r}（{exc}）") from exc
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ptrade2 canon-code 输出不可解析: {raw!r}（{proc.stdout!r}）") from exc
+    if not isinstance(payload, dict) or not payload.get("code"):
+        raise ValueError(f"无法解析股票代码 {raw!r}——请用正确代码或中文全称重填"
+                         f"（如 亚康股份 或 sz301085）")
+    canon = str(payload["code"]).strip()
+    if not storage.CANONICAL_STOCK_CODE_RE.fullmatch(canon):
+        raise ValueError(f"无法解析股票代码 {raw!r}——请用正确代码或中文全称重填"
+                         f"（如 亚康股份 或 sz301085）")
+    return canon
 
 
 # ---------- 采集端 ----------
@@ -87,7 +121,8 @@ def save(
     occurred_at: str = typer.Option(None, "--occurred-at"),
     event_id: int = typer.Option(None, "--event", help="归属已有事件"),
     new_event: bool = typer.Option(False, "--new-event", help="新建事件"),
-    stock: str = typer.Option(None, "--stock", help="逗号分隔的股票代码"),
+    stock: str = typer.Option(None, "--stock",
+                              help="逗号分隔的股票代码（任意形态/中文名均可，ptrade2 canon-code 自动归一；任一失败整单中止）"),
     industry: str = typer.Option(None, "--industry", help="逗号分隔的行业名"),
     relevance: int = typer.Option(50, "--relevance"),
     source_type: str = typer.Option("media", "--source-type", help="official/media/community/rumor"),
@@ -141,6 +176,15 @@ def save(
     if signal_direction not in {"bullish", "bearish", "event", "none"}:
         typer.echo(f"错误：--signal-direction 必须是 bullish/bearish/event/none 之一")
         raise typer.Exit(code=2)
+    # canon 归一（入库代码保护 2026-09-07）：先全部解析成功才落库；任一失败整单中止，零写入
+    canon_codes = []
+    if stock:
+        for raw in [s.strip() for s in stock.split(",") if s.strip()]:
+            try:
+                canon_codes.append(_canon_code(raw))
+            except (ValueError, RuntimeError) as exc:
+                typer.echo(f"❌ {exc}，本次未保存任何关联")
+                raise typer.Exit(code=1)
     conn = _open()
     if new_event:
         eid = storage.create_event(conn, title, entity_type=entity_type,
@@ -157,8 +201,8 @@ def save(
                               source_type=source_type, confidence=confidence,
                               message_type=message_type,
                               signal_direction=signal_direction, signal_type=signal_type)
-    if stock:
-        for code in [s.strip() for s in stock.split(",") if s.strip()]:
+    if canon_codes:
+        for code in canon_codes:
             storage.link_event_stock(conn, eid, code, relevance=relevance)
     if industry:
         for ind in [x.strip() for x in industry.split(",") if x.strip()]:

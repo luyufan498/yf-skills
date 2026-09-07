@@ -406,6 +406,21 @@ def watchlist_add(
     并过 G2 次新否决：上市 <40 交易日硬拒绝；NEWS 另过入池硬门：技术组 open 段/已在活跃槽
     默认拒绝，--force 豁免留痕）"""
     stock = normalize_stock_name(stock)
+    # 实体分裂防线（2026-09-07 亚康股份/301085 事故）：pool.stock 是 PRIMARY KEY、一只票存中文名，
+    # 纯代码入参先反查中文名；反查不到 fail-closed 拒绝（杜绝 '301085'(L2) 与 '亚康股份'(NEWS)
+    # 同 code 双 active 行）。拒绝发生在 Watchlist() 构造之前 = 零 DB 触碰。
+    from paper_trading_v2.code_searcher import looks_like_stock_code, resolve_name_for_code
+    if looks_like_stock_code(stock):
+        raw_code = stock
+        resolved = resolve_name_for_code(raw_code)
+        if not resolved:
+            typer.echo(
+                f"❌ 代码 '{raw_code}' 无法解析为股票名称——请用中文名入池"
+                f"（如 ptrade2 watchlist-add 亚康股份 --code sz301085）", err=True)
+            raise typer.Exit(1)
+        stock = resolved
+        if not (code and code.strip()):
+            code = _code_hint_for(stock, raw_code)   # 原始 code 作 hint，免中文名再触网查码
     from paper_trading_v2.watchlist import Watchlist
     w = Watchlist()
     try:
@@ -465,6 +480,96 @@ def watchlist_remove(
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
+
+
+def _code_hint_for(name: str, raw_code: str) -> str:
+    """反查命中后的 code hint：名字的表源权威 code 优先（resolve 找到名字则用该名字的
+    code 为准），canonical 归一；非标 code 原样兜底传 _ensure_code。"""
+    from paper_trading_v2.code_searcher import lookup_code_for_name, canonical_stock_code
+    looked = lookup_code_for_name(name) or raw_code
+    try:
+        return canonical_stock_code(looked)
+    except ValueError:
+        return looked
+
+
+def _canon_market(code: str) -> str:
+    """canonical 前缀 → 市场标签"""
+    if code.startswith(('sh', 'sz', 'bj')):
+        return 'A股'
+    if code.startswith('hk'):
+        return '港股'
+    if code.startswith('gb_'):
+        return '美股'
+    return '其他'
+
+
+@app.command("canon-code")
+def canon_code(
+    raw: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json/--text", help="json 输出（newsdb 子进程调用）"),
+):
+    """代码/中文名 → canonical 代码 + 中文名（纯本地归一，不触网）。
+
+    代码任意形态（sz301085/301085/600176.SH/hk00700/gb_aapl）→ canonical + 反查中文名；
+    中文名 → 查 code。解析不出中文名时 code 仍输出（name=null 部分成功）；
+    彻底无法解析 exit 1。"""
+    from paper_trading_v2.code_searcher import (
+        canonical_stock_code, resolve_name_for_code, lookup_code_for_name, looks_like_stock_code,
+    )
+    raw_s = str(raw).strip()
+
+    def _fail(message: str):
+        if json_out:
+            import json
+            typer.echo(json.dumps({"error": message}, ensure_ascii=False))
+        else:
+            typer.echo(f"❌ {message}", err=True)
+        raise typer.Exit(1)
+
+    def _emit(code: str, name, market: str):
+        if json_out:
+            import json
+            typer.echo(json.dumps({"code": code, "name": name, "market": market},
+                                  ensure_ascii=False))
+        elif name:
+            typer.echo(f"✅ {code}  {name}  {market}")
+        else:
+            typer.echo(f"⚠️ {code}  {market}  (中文名未解析)")
+
+    if looks_like_stock_code(raw_s):
+        # 代码路径：canonical + 尝试反查中文名
+        name = resolve_name_for_code(raw_s)
+        if name:
+            code = _code_hint_for(name, raw_s)
+        else:
+            try:
+                code = canonical_stock_code(raw_s)
+            except ValueError:
+                _fail(f"无法解析 '{raw_s}'——请用正确代码或中文全称重新输入（如 亚康股份 或 sz301085）")
+                return
+        _emit(code, name, _canon_market(code))
+        return
+
+    # 中文名路径：本地表查码，miss 再走搜索兜底（validate_stock_name）
+    name = normalize_stock_name(raw_s)
+    code = lookup_code_for_name(name)
+    if not code:
+        try:
+            from paper_trading_v2.code_searcher import validate_stock_name
+            ok, found = validate_stock_name(name)
+            if ok and found:
+                code = found
+        except Exception:
+            code = None
+    if not code:
+        _fail(f"无法解析 '{raw_s}'——请用正确代码或中文全称重新输入（如 亚康股份 或 sz301085）")
+        return
+    try:
+        code = canonical_stock_code(code)
+    except ValueError:
+        pass
+    _emit(code, name, _canon_market(code))
 
 
 # ============ sleeve 命令组（消息组事件槽，sleeve-m1） ============

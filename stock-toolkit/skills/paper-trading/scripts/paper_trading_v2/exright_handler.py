@@ -128,6 +128,18 @@ class ExRightHandler:
                 # 10. 保存账户
                 self.trader.storage.save_account(account)
 
+                # 10.1 分红现金入账（2026-09-07 drift 根因修复）：摊薄成本后同步收现
+                # ——分红=持仓现金流入，流动性归公进对应池（credit_dividend 内部按段
+                # strategy 选主池/消息池）。仅新应用事件到此（applied_cqrs 已过滤），
+                # 天然防重。入账失败不阻断除权主链（异常吞掉，drift 由对账发现）。
+                if dividend > 0:
+                    try:
+                        self.trader.storage.credit_dividend(
+                            stock_name, round(dividend, 2),
+                            f"{cqr} {fhcontent}")
+                    except Exception:
+                        pass
+
                 # 11. 同步条件系统
                 total_qty_new, total_cost_new = self.trader.get_remaining_position(account)
                 if total_qty_new > 0:

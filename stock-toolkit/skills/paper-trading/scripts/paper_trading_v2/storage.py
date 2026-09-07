@@ -208,6 +208,47 @@ class SqlStorage(StorageBackend):
         finally:
             conn.close()
 
+    def credit_dividend(self, stock_name: str, amount: float, reason: str = "") -> bool:
+        """v11 分红现金入账（2026-09-07，drift 根因修复）：持仓现金分红=现金流入，
+        流动性归公进对应池 free（audit 'dividend' 留痕）。
+
+        段 strategy='NEWS'（sleeve 成员）→ 消息池 sleeve_ledger；否则主池 pool_ledger。
+        仅 open 段入账（closed 段已随 release 结算，历史分红不追）。由
+        ExRightHandler 应用 exright_dividend（摊薄成本 tc=-dividend）后调用——
+        摊本 + 收现同步，reconcile 恒等式不再因分红留缺口。
+
+        ⚠️ 与 pool_return 同构：改 ledger free + audit，不动段 cash（信封制）与
+        realized_pnl。amount<=0 / 无 open 段 → False 静默跳过。
+        """
+        if amount is None or amount <= 0:
+            return False
+        conn = self._conn()
+        now = datetime.now().isoformat()
+        try:
+            seg = resolve_account(conn, stock_name)
+            if not seg or seg['status'] != 'open':
+                return False
+            ledger = ('sleeve_ledger' if (seg['strategy'] or '') == 'NEWS'
+                      else 'pool_ledger')
+            with conn:
+                cur = conn.execute(
+                    f"UPDATE {ledger} SET free=free+?, updated_at=? WHERE id=1",
+                    (amount, now))
+                if cur.rowcount == 0:
+                    return False
+                free = conn.execute(
+                    f"SELECT free FROM {ledger} WHERE id=1").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO audit (timestamp, action, stock, amount, "
+                    "free_before, free_after, reason, source) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (now, 'dividend', stock_name, amount, free - amount, free,
+                     f"分红现金入账（流动性归公）{('：' + reason) if reason else ''}",
+                     'pool'))
+            return True
+        finally:
+            conn.close()
+
     # ---- Operations ----
     def load_operations(self, stock_name: str) -> Optional[AccountHistory]:
         conn = self._conn()

@@ -325,6 +325,23 @@ class SleeveOrder:
                 "ORDER BY m.joined_at, m.stock", (event_key,)).fetchall()
             if not members:
                 raise ValueError(f"槽 {event_key} 无成员——成交无从建段")
+            # 7. 槽预算 vs 成员段预算一致性（2026-09-07 裁决后补：防止槽 budget
+            #    调整未级联段时闷头按段 budget 成交——C1 09:32 案例：槽改 10 万但段
+            #    30 万 → 超买 40 万虚增持仓 + 消息池 drift。正常 sleeve-open 建槽时
+            #    段 budget 合计==槽 budget（等权均分），此处仅拦异常不一致）
+            seg_budgets = conn.execute(
+                "SELECT p.id, p.budget FROM position p "
+                "JOIN event_slot_members m ON m.stock=p.stock "
+                "AND p.status='open' AND p.strategy='NEWS' "
+                "WHERE m.event_key=?", (event_key,)).fetchall()
+            if seg_budgets:
+                seg_sum = sum((r['budget'] or 0.0) for r in seg_budgets)
+                slot_budget = slot['budget'] or 0.0
+                if abs(seg_sum - slot_budget) > 1e-6:
+                    raise ValueError(
+                        f"槽 {event_key} 预算 ¥{slot_budget:,.0f} 与成员段预算合计 "
+                        f"¥{seg_sum:,.0f} 不一致（槽 budget 调整未级联段？）——fail-closed 拒，"
+                        f"先对齐槽/段预算（等权均分）再成交")
             # E3/E11：逐成员行情防线 + 各自检测价（单成员=检测价，多成员=各自现价）
             multi = len(members) > 1
             prices, quote_skips = {}, []

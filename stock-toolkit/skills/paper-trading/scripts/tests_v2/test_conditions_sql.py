@@ -123,3 +123,43 @@ def test_v1_to_v2_migration(ws):
     for t in ['pool', 'position', 'pool_ledger', 'audit', 'watchlog', 'operations_archive']:
         assert t in tables
     conn.close()
+
+def test_atr_sync_skips_triggered_trailing(cm):
+    """2026-09-07（中芯 #1962 教训）：triggered 态 trailing 线不被 ATR 棘轮抬升。
+
+    已触发线若继续"只升不降"会被抬出虚高触发价（125.56→126.60 案例）
+    → 同轮破位重复计账 + 虚触发。重建（恢复 active）后棘轮才恢复。
+    """
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    rec = ConditionsRecord(stock_name='赛力斯', updated_at='x')
+    rec.conditions['trailing_stop'] = Condition(
+        id='trailing_stop', type='trailing_stop', name='移动止损',
+        price=100.0, action='清仓', category='hard',
+        status='triggered', peak_price=110.0)
+    cm.save_conditions(rec)
+    # 调用 sync_trailing_stop：旧 peak 110 且本轮 high 更高 → 若被抬会升价
+    klines = [{'high': 115.0, 'low': 108.0, 'close': 114.0, 'date': '2026-09-07'}]
+    cm.sync_trailing_stop('赛力斯', avg_cost=120.0, klines=klines,
+                          atr=4.0, realtime_high=115.0)
+    loaded = cm.load_conditions('赛力斯')
+    ts = loaded.conditions['trailing_stop']
+    assert ts.price == 100.0, f'triggered 线不应被抬升，实得 {ts.price}'
+    assert ts.peak_price == 110.0, 'triggered 线 peak 也不应更新'
+    assert ts.status == 'triggered'
+
+def test_atr_sync_active_still_ratchets(cm):
+    """active 线棘轮抬升照常（回归护栏：修 triggered 跳过后 active 行为不变）。"""
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    rec = ConditionsRecord(stock_name='赛力斯', updated_at='x')
+    rec.conditions['trailing_stop'] = Condition(
+        id='trailing_stop', type='trailing_stop', name='移动止损',
+        price=100.0, action='清仓', category='hard',
+        status='active', peak_price=110.0)
+    cm.save_conditions(rec)
+    klines = [{'high': 115.0, 'low': 108.0, 'close': 114.0, 'date': '2026-09-07'}]
+    cm.sync_trailing_stop('赛力斯', avg_cost=120.0, klines=klines,
+                          atr=4.0, realtime_high=115.0)
+    loaded = cm.load_conditions('赛力斯')
+    ts = loaded.conditions['trailing_stop']
+    assert ts.price >= 100.0, 'active 线仍走棘轮（peak115−2.5×4=105 → max(100,105)=105）'
+    assert ts.price == 105.0, f'预期 105.0，实得 {ts.price}'

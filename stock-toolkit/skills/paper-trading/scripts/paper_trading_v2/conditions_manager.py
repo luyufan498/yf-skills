@@ -791,6 +791,13 @@ class ConditionsManager:
         condition = record.get(ConditionType.TRAILING_STOP)
         if not condition:
             return None
+        if condition.status and condition.status != 'active':
+            # 2026-09-07（中芯 #1962 教训）：非 active 线不做 ATR 棘轮抬升——
+            # triggered（已触发待处置）/archived 线若继续"只升不降"会被抬出虚高
+            # 触发价：中芯 #1962 于 9/2 触发后 9/3-9/4 仍被抬 125.56→125.82→126.60
+            # → 9/4 再"破位"虚触发 → 迁移期误判为待执行二次减半。已触发线只等
+            # 处置/重建；重建（恢复 active）后棘轮才恢复。
+            return record
 
         from paper_trading_v2.atr import compute_atr, merge_peak, ATR_K_TRAIL
 

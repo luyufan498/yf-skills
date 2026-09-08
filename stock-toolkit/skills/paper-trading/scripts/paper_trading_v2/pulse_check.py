@@ -165,3 +165,138 @@ def register(app):
     ):
         """发酵段脉冲检查：近 N 日拉升段涨幅(F%)+现价相对段峰位置——买入触发前参考（只报不拦）"""
         run(stock_name, window=window, fmt=fmt)
+
+
+# ============================================================
+# T+5 论点失效扫描（msg-expiry-scan，2026-09-08 晚审 0c 步）
+# ============================================================
+# 消息组试探仓：买入满 5 交易日后若 ①无发酵(5日最高<买价×1.03)
+# ②回踩(现价≤买价) ③无新 imp≥4 利好 → 论点失效候选（晚审核 C 腿后
+# 自动清退关槽）。水位因子：池紧 5 日即清，池松放宽 T+8/T+10。
+# 历史校准（18 笔）：×1.03 抓用户点名 5 只全中，真发酵票(新易盛110%/
+# 源杰118%/东方盛虹107%)无一误伤；恒瑞(101.8%平盘)靠 B 腿放行。
+NO_FERMENT = 1.03   # A：5 日内最高 < 买价×1.03 = 无发酵
+TIGHT_FREE = 400000.0      # 池紧：消息池 free < 40 万
+TIGHT_SLOT = 0.75          # 池紧：槽占用 ≥75%
+
+
+def _newsdb_events_since(stock_code: str, since_date: str, imp_min: int = 4):
+    """newsdb 该股买入后 imp≥4 事件数 hint（晚审 C 腿核验用，库挂返回 None）。"""
+    try:
+        from paper_trading_v2.market_cache import market_db_path as _mkp
+        p = _mkp()
+        db = os.path.join(os.path.dirname(os.path.dirname(p)), 'data', 'news', 'news.db')
+        if not os.path.exists(db):
+            return None
+        conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+        conn.row_factory = sqlite3.Row
+        n = conn.execute(
+            "SELECT COUNT(*) n FROM events e JOIN event_stock es ON es.event_id=e.id "
+            "WHERE es.stock_code=? AND e.importance>=? AND e.started_at>?",
+            (stock_code, imp_min, since_date)).fetchone()[0]
+        conn.close()
+        return n
+    except Exception:
+        return None
+
+
+def expiry_scan():
+    """扫描消息组 open 槽——论点失效候选 + 水位。"""
+    from paper_trading_v2.config import get_workspace_config
+    from paper_trading_v2.market_cache import market_db_path
+    db_path = get_workspace_config()['db_path']
+    conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+    conn.row_factory = sqlite3.Row
+    mkt = sqlite3.connect(f'file:{market_db_path()}?mode=ro', uri=True)
+    mkt.row_factory = sqlite3.Row
+    try:
+        segs = conn.execute(
+            "SELECT id, stock, code, opened_at FROM position "
+            "WHERE strategy='NEWS' AND status='open'").fetchall()
+        rows = []
+        for seg in segs:
+            buy = conn.execute(
+                "SELECT MIN(timestamp) bt, price FROM trades WHERE account_id=? "
+                "AND operation='buy' GROUP BY price ORDER BY bt LIMIT 1",
+                (seg['id'],)).fetchone()
+            if not buy:
+                continue
+            # 首 buy（最早时间那笔的价）
+            b = conn.execute("SELECT timestamp, price FROM trades WHERE account_id=? "
+                             "AND operation='buy' ORDER BY timestamp, id LIMIT 1",
+                             (seg['id'],)).fetchone()
+            buy_date = str(b['timestamp'])[:10]
+            buy_px = float(b['price'])
+            if not seg['code']:
+                rows.append({'stock': seg['stock'], 'status': 'no_code', 'note': '段无代码'})
+                continue
+            ks = [dict(k) for k in mkt.execute(
+                "SELECT date,high,low,close FROM kline_daily WHERE code=? AND date>? "
+                "ORDER BY date", (seg['code'], buy_date))]
+            n_after = len(ks)          # 买入后交易日数（K 根数）
+            if n_after == 0:
+                rows.append({'stock': seg['stock'], 'code': seg['code'],
+                             'buy': buy_date, 'buy_px': buy_px, 'n': 0,
+                             'status': '观察中', 'note': '买后无K'})
+                continue
+            win5 = ks[:5]
+            max5 = max(k['high'] for k in win5)
+            last_c = ks[-1]['close']
+            A = max5 < buy_px * NO_FERMENT
+            B = last_c <= buy_px
+            news_n = _newsdb_events_since(seg['code'], buy_date)
+            rows.append({'stock': seg['stock'], 'code': seg['code'],
+                         'buy': buy_date, 'buy_px': round(buy_px, 2),
+                         'n': n_after, 'max5': round(max5, 2),
+                         'max5_r': round(max5 / buy_px * 100, 1),
+                         'last': round(last_c, 2), 'last_r': round(last_c / buy_px * 100, 1),
+                         'A': A, 'B': B, 'news_imp4': news_n,
+                         'status': ('🔴论点失效候选' if (A and B and n_after >= 5)
+                                    else '🟢观察中')})
+        # 水位
+        sleeve = conn.execute("SELECT free,total FROM sleeve_ledger WHERE id=1").fetchone()
+        slot_n = conn.execute("SELECT COUNT(*) n FROM event_slots WHERE status IN ('open','partial')").fetchone()['n']
+        free, total = sleeve['free'], sleeve['total']
+        tight = free < TIGHT_FREE or slot_n / 20.0 >= TIGHT_SLOT
+        return rows, {'free': free, 'total': total, 'slots': slot_n,
+                      'tight': tight}, db_path
+    finally:
+        conn.close(); mkt.close()
+
+
+def run_expiry_scan(fmt: str = "pretty"):
+    rows, wl, _ = expiry_scan()
+    if fmt == "json":
+        import json
+        typer.echo(json.dumps({'rows': rows, 'water': wl}, ensure_ascii=False, indent=2, default=str))
+        return
+    typer.echo(f"📡 消息槽论点失效扫描（T+5，A=5日最高<买价×{NO_FERMENT} B=现价≤买价 C=无imp4利好）")
+    typer.echo(f"   水位: 消息池 free ¥{wl['free']:,.0f}/{wl['total']:,.0f} ｜ 槽占用 {wl['slots']}/20 "
+               f"｜ {'🔴 池紧——5 日即清（腾坑）' if wl['tight'] else '🟢 池松——可放宽 T+8/10'}")
+    typer.echo("")
+    for r in rows:
+        if r['status'] == 'no_code':
+            print(f"  ⚠️ {r['stock']}: {r['note']}")
+            continue
+        if r['n'] == 0:
+            print(f"  {r['stock']:<7} {r['buy']} 买¥{r['buy_px']:<8} {r['status']}（{r['note']}）")
+            continue
+        tag = f"{r['max5_r']:>5.1f}%/{r['last_r']:>5.1f}%" if r['n'] >= 1 else "  n/a"
+        print(f"  {r['stock']:<7} {r['buy']} 买¥{r['buy_px']:<8.2f} T+{r['n']}日 "
+              f"至今最高¥{r['max5']:<8.2f} 现¥{r['last']:<8.2f} {r['status']}")
+        if r['A'] or r['B'] or r['n'] >= 5:
+            detail = []
+            if r['A']: detail.append(f"A无发酵(峰{r['max5_r']}%<{NO_FERMENT*100:.0f}%)")
+            if r['B']: detail.append(f"B回踩(现{r['last_r']}%≤100%)")
+            imp = r['news_imp4']
+            if imp is None: detail.append("C新闻库未连")
+            elif imp > 0: detail.append(f"C有imp4利好×{imp}(可重置/agent核)")
+            else: detail.append("C无新利好")
+            print(f"            {' '.join(detail)}")
+
+
+def _register_expiry(app):
+    @app.command("msg-expiry-scan")
+    def msg_expiry_scan(fmt: str = typer.Option("pretty", "--format", "-f", help="pretty/json")):
+        """消息槽 T+5 论点失效扫描：买入满 5 交易日无发酵+回踩+无新利好 → 清退候选（晚审 0c 步）"""
+        run_expiry_scan(fmt=fmt)

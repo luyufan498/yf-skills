@@ -1750,6 +1750,8 @@ from paper_trading_v2.conditions_cmd import register as _register_conditions
 _register_conditions(app)
 from paper_trading_v2.pulse_check import register as _register_pulse
 _register_pulse(app)
+from paper_trading_v2.pulse_check import _register_expiry as _register_expiry
+_register_expiry(app)
 
 # 注册 export/fix/fetch-news/temp-data/analysis（T5 数据/分析命令组，显式注册）
 from paper_trading_v2.data_cmd import register as _register_data

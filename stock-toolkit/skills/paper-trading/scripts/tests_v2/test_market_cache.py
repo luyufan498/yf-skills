@@ -176,6 +176,42 @@ class TestFetchKlineCached:
         assert 'FHcontent=10派0.85元' in ev[0]['note']
         assert abs(ev[0]['factor'] - 0.9992) < 1e-6
 
+    def test_full_refresh_clips_unclosed_today_bar(self, cache_env):
+        """只落已收盘 bar（2026-09-09）：全量刷新把 date > 最近已收盘交易日的 bar 剪掉"""
+        db = cache_env['db']
+        orig = mc._fetch_raw_bars
+        extra = dict(RAW[-1], date='2026-09-05', close=99.9, high=99.9)  # 未收盘/超前 bar
+        mc._fetch_raw_bars = lambda code, start='', end='', count=15: [dict(b) for b in RAW] + [extra]
+        try:
+            bars = mc.fetch_kline_cached('sh688041', db_path=db)
+        finally:
+            mc._fetch_raw_bars = orig
+        assert bars[-1]['date'] == '2026-09-04', '未收盘 bar 不得落库'
+        dirty = _rows(db, "SELECT COUNT(*) FROM kline_daily WHERE code='sh688041' AND date='2026-09-05'")
+        assert dirty[0][0] == 0
+
+    def test_read_self_heals_future_bar(self, cache_env):
+        """读侧自愈（2026-09-09）：库里已有超前 bar（历史污染）→ 读时删掉再补缺"""
+        db, counter = cache_env['db'], cache_env['counter']
+        mc.fetch_kline_cached('sh688041', db_path=db)
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO kline_daily (code,date,open,high,low,close,volume) "
+                     "VALUES ('sh688041','2026-09-05',99,99,99,99,99)")  # 模拟盘中快照污染
+        conn.commit()
+        conn.close()
+        counter['raw'] = 0
+        bars = mc.fetch_kline_cached('sh688041', db_path=db)
+        assert bars[-1]['date'] == '2026-09-04'
+        assert _rows(db, "SELECT COUNT(*) FROM kline_daily WHERE code='sh688041' AND date='2026-09-05'")[0][0] == 0
+
+    def test_ttl_counts_trading_days(self, cache_env):
+        """TTL 按交易日（2026-09-09）：7 个交易日为界，不是 7 个日历日"""
+        # 钉定 need=2026-09-04；交易日 (08-26, 09-04] = 8/27,28,31,9/1,2,3,4 = 7 天
+        assert mc.ttl_expired('2026-08-26T09:00:00') is False
+        # (08-25, 09-04] = 8 个交易日 → 到期
+        assert mc.ttl_expired('2026-08-25T09:00:00') is True
+        assert mc.ttl_expired(None) is True
+
     def test_fetch_fail_returns_stale_cache(self, cache_env, monkeypatch):
         """抓取失败：返回现有缓存（陈旧但可用）+ 记失败时间，不崩"""
         db, counter = cache_env['db'], cache_env['counter']

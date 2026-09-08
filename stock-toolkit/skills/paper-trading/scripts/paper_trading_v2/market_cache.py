@@ -6,9 +6,15 @@
 双层刷新策略（fetch_kline_cached）：
 1. 读时检查：库内最新 date >= 最近已收盘交易日 → 纯读库返回（网络 0 调用）
 2. 有缺口 → 腾讯补缺口（date-range 参数，只拉缺的 bar）落库
-3. TTL 全量重建：last_full_refresh_at 超 7 天 → DELETE 该 code 重拉 count 250
+3. TTL 全量重建：last_full_refresh_at 超 7 个交易日 → DELETE 该 code 重拉 count 250
 4. 并发防风暴：BEGIN IMMEDIATE 写锁 + 锁内二次检查（别人已刷过就跳过重拉）
 5. 抓取失败 → 返回现有缓存（陈旧但可用），记 last_fetch_fail_at，不抛异常
+
+只落已收盘 bar（2026-09-09）：腾讯裸K端点会把当日进行中的 bar 一并返回，
+全量刷新必须剪除 date > 最近已收盘交易日的 bar——否则盘中快照被当收盘价，
+且 newest>=need 之后读时检查直接命中，脏 bar 永不自愈（实测 21 只票中招）。
+读侧同样自愈：发现 newest > need 时删掉超前行再补缺。当日的实时价不走本缓存，
+由调用方用 fetch-prices（批量实时）拼接。
 
 除权检测：同一次刷新并行拿 raw + qfq 两份序列，逐 bar ratio=qfq_close/raw_close，
 ratio 序列跳变点 = 除权日（factor=跳变后的 ratio，即 raw→qfq 折算系数）。
@@ -28,7 +34,8 @@ from zoneinfo import ZoneInfo
 # 真除权跳变 ~4.6e-2（sh600000 10派4.2）。5e-3 居中分离噪声与真事件；
 # 小额分红（跳变 < 5e-3）靠 qfq bar 自带的 FHcontent 权威标记兜住。
 EXRIGHT_JUMP_THRESHOLD = 5e-3
-# TTL：全量重建间隔（天）
+# TTL：全量重建间隔（**交易日**，2026-09-09 由日历日改为交易日——与"新鲜度按
+# 交易日"口径统一；7 交易日 ≈ 9.8 日历日）
 TTL_FULL_REFRESH_DAYS = 7
 # 全量重建拉取条数
 FULL_REFRESH_COUNT = 250
@@ -122,6 +129,31 @@ def last_closed_trading_day(now: Optional[datetime] = None,
         if d == today_s and closed_cutoff:
             return d
     return days[-1] if days else today_s
+
+
+def trading_days_between(start_date: str, end_date: str) -> int:
+    """(start_date, end_date] 区间内的交易日数（含 end、不含 start）。"""
+    try:
+        days = load_trading_days()
+    except Exception:
+        return 0
+    return sum(1 for d in days if start_date < d <= end_date)
+
+
+def ttl_expired(last_iso: Optional[str], now: Optional[datetime] = None) -> bool:
+    """全量重建是否到期：**按交易日计数**（2026-09-09 由日历日改）。
+
+    last_iso = meta.last_full_refresh_at；判定 = 该时刻所在日之后、到最近已收盘
+    交易日的交易日数 > TTL_FULL_REFRESH_DAYS。无记录 → 到期（首抓建基线）。
+    日历不可用 → False（保守不重建，避免误删全库）。
+    """
+    if not last_iso:
+        return True
+    try:
+        return (trading_days_between(str(last_iso)[:10], last_closed_trading_day(now))
+                > TTL_FULL_REFRESH_DAYS)
+    except Exception:
+        return False
 
 
 # ---------- meta kv ----------
@@ -292,18 +324,12 @@ def fetch_kline_cached(code: str, kline_type: str = 'day', count: int = 15,
     db_path = db_path or market_db_path()
     init_db(db_path)
 
-    # TTL 判定：超期则全量重建（DELETE 该 code 重拉）
+    # TTL 判定：超期则全量重建（DELETE 该 code 重拉）——按交易日计数
     full_rebuild = False
     try:
         conn = _connect(db_path)
         try:
-            last = _meta_get(conn, code, 'last_full_refresh_at')
-            if last:
-                age_days = (time.time() - datetime.fromisoformat(last).timestamp()) / 86400.0
-                if age_days > TTL_FULL_REFRESH_DAYS:
-                    full_rebuild = True
-            else:
-                full_rebuild = True  # 从未全量刷新过 → 首抓按全量建基线
+            full_rebuild = ttl_expired(_meta_get(conn, code, 'last_full_refresh_at'))
         finally:
             conn.close()
     except Exception:
@@ -319,6 +345,12 @@ def fetch_kline_cached(code: str, kline_type: str = 'day', count: int = 15,
     except Exception:
         need = None  # 日历不可用 → 无法判定，直接返回缓存
     newest = cached[-1]['date'] if cached else ''
+    if cached and need and newest > need:
+        # 库里有"超前"bar（未收盘快照）→ 删掉自愈（2026-09-09 加：历史上全量
+        # 刷新无 end 界，盘中会把当日进行中 bar 写库，newest>=need 后永不自愈）
+        if _drop_bars_after(code, need, db_path) > 0:
+            cached = read_cached_kline(code, count, db_path)
+            newest = cached[-1]['date'] if cached else ''
     if cached and need and newest >= need:
         return cached  # 纯读库命中
 
@@ -334,12 +366,9 @@ def _full_refresh(code: str, count: int, db_path: str) -> List[dict]:
     try:
         conn.execute("BEGIN IMMEDIATE")
         # 锁内二次检查（并发防风暴：别人已刷过就跳过重拉）
-        last = _meta_get(conn, code, 'last_full_refresh_at')
-        if last:
-            age_days = (time.time() - datetime.fromisoformat(last).timestamp()) / 86400.0
-            if age_days <= TTL_FULL_REFRESH_DAYS:
-                conn.rollback()
-                return read_cached_kline(code, count, db_path)
+        if not ttl_expired(_meta_get(conn, code, 'last_full_refresh_at')):
+            conn.rollback()
+            return read_cached_kline(code, count, db_path)
         try:
             raw = _fetch_raw_bars(code, count=FULL_REFRESH_COUNT)
             qfq = _fetch_qfq_bars(code, count=FULL_REFRESH_COUNT)
@@ -349,6 +378,9 @@ def _full_refresh(code: str, count: int, db_path: str) -> List[dict]:
             _mark_fetch_fail(code, db_path)
             return read_cached_kline(code, count, db_path)
 
+        # 只落已收盘 bar（2026-09-09）：腾讯会把当日进行中 bar 一并返回
+        raw, qfq = _clip_unclosed(raw, qfq)
+
         if not raw:
             # 空响应：可能是非法 code，也可能是临时故障——记失败时间，不删旧数据
             conn.rollback()
@@ -357,7 +389,7 @@ def _full_refresh(code: str, count: int, db_path: str) -> List[dict]:
 
         conn.execute("DELETE FROM kline_daily WHERE code=?", (code,))
         _upsert_bars(conn, code, raw)
-        events = detect_exright_jumps(raw, qfq)
+        events = detect_exright_jumps(raw, qfq or [])
         if events:
             conn.execute("DELETE FROM exright_events WHERE code=?", (code,))
             _upsert_exright_events(conn, code, events)
@@ -404,6 +436,9 @@ def _gap_fill(code: str, count: int, need: str, db_path: str) -> List[dict]:
             return cached
 
         if raw:
+            # 防御性剪除（end=need 已界，正常不会超；防数据源忽略区间参数）
+            raw, _ = _clip_unclosed(raw, None)
+        if raw:
             _upsert_bars(conn, code, raw)
             _upsert_exright_events(conn, code, detect_exright_jumps(raw, qfq))
             _meta_set(conn, code, 'last_gap_fill_at', datetime.now().isoformat(timespec='seconds'))
@@ -422,6 +457,42 @@ def _gap_fill(code: str, count: int, need: str, db_path: str) -> List[dict]:
     finally:
         conn.close()
     return read_cached_kline(code, count, db_path)
+
+
+def _drop_bars_after(code: str, date_upto: str, db_path: str) -> int:
+    """删除 date > date_upto 的 bar（自愈"未收盘快照"历史污染），返回删除行数。"""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute("DELETE FROM kline_daily WHERE code=? AND date>?",
+                               (code, date_upto))
+            n = cur.rowcount or 0
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
+def _clip_unclosed(raw: Optional[List[dict]],
+                   qfq: Optional[List[dict]] = None):
+    """剪除"未收盘"bar（date > 最近已收盘交易日）。
+
+    2026-09-09 加：腾讯裸K端点会把当日进行中的 bar 一并返回，原先全量刷新无 end 界
+    直接落库 → 盘中快照被当收盘价，且 newest>=need 后永不自愈（实测 21 只票中招）。
+    日历不可用 → 原样返回（宁可少剪，不可误删）。
+    """
+    try:
+        need = last_closed_trading_day()
+    except Exception:
+        return raw, qfq
+    raw2 = [b for b in (raw or []) if b.get('date') and b['date'] <= need]
+    if qfq is None:
+        return raw2, qfq
+    qfq2 = [b for b in (qfq or []) if b.get('date') and b['date'] <= need]
+    return raw2, qfq2
 
 
 def _mark_fetch_fail(code: str, db_path: str):

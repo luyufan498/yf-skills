@@ -764,11 +764,10 @@ def _closes_need_refresh(code: str, closes: list[float]) -> bool:
                 (code,)).fetchone()
         finally:
             conn.close()
-        # TTL 判定与 market_cache.fetch_kline_cached 同款
+        # TTL 判定与 market_cache.fetch_kline_cached 同款（2026-09-09 起按交易日）
         if not row:
             return True
-        age_days = (time.time() - datetime.fromisoformat(row[0]).timestamp()) / 86400.0
-        if age_days > 7.0:
+        if _mc.ttl_expired(row[0]):
             return True
         # 缺口判定：bar 数足够 且 最新已收盘交易日已被覆盖
         if len(closes) < 10:

@@ -5,6 +5,13 @@ description: 执行系统化的股票深度分析，通过多维度信息收集�
 
 # 股票深度分析
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/fetch-kline-legacy-and-trend-gate.md`（fetch-kline 旧坑 + 趋势门大盘腿判例）
+> - `references/quote-api-and-kline-cache.md`（行情取数契约（closes-cached/klines-cached/缓存机制/fold_qfq））
+> - `references/kline-fetch-ordering.md`（K 线顺序/截断坑）
+> - `references/market-data-batch-cache.md`（批量行情与缓存实测）
+
+
 > **命令说明**：本流程中的 `ptrade` 命令（operations/search/market-summary/analysis/temp-data 等）在 **ptrade2 下同名可用**（前缀换成 `ptrade2` 即可，存储为 SQLite）。模拟盘持仓读取时，若用 ptrade2 还应 `ptrade2 master-pool-show` 看总池状态 + 该股是否在池（watchlist）。交易纪律含"总池资金纪律"章节，见 [references/trading-discipline.md](references/trading-discipline.md) 第八节。
 >
 > **行情取数入口（2026-09-09 定稿，优先用这三条，别再逐票 `fetch-kline`）**：

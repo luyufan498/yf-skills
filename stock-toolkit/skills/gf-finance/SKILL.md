@@ -5,6 +5,12 @@ description: 广发证券易淘金金融服务，提供沪深股市实时数据�
 
 # 广发证券 MCP 金融服务
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/gf-finance-script-params.md`（gf-finance 脚本参数实测）
+> - `references/gf-mcp-401-token-recovery.md`（MCP 全线 401 定案法与 web 兜底）
+> - `references/lhb-etf-fund-confirm.md`（龙虎榜/ETF/资金确认口径）
+
+
 ## 概览
 
 此技能提供对广发证券易淘金 MCP (Model Context Protocol) 服务器的访问，为投资研究和市场分析提供沪深股市实时数据查询功能。

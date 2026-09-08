@@ -5,6 +5,11 @@ description: 独立新闻库（newsdb CLI + SQLite）。新闻采集 agent 负�
 
 # 📰 独立新闻库
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/news-and-browser.md`（个股事件漏查、行业产业链三层候选、entity_type 分类体系约束、MARKET_SHOCK 检测）
+> - `references/newsdb-db-recipes.md`（FTS 查重 / 重复事件合并三步配方 / `database is locked` 排查 / 库路径表名速查）
+
+
 Agent 整理后的消息源数据库。核心单元是**事件**（一个持续进展的主题），每条消息强制归属一个事件。入库前由 agent 通过 `newsdb lookup` 做语义去重判断：新进展→归属 / 全新→新建 / 无新信息→跳过。
 
 ## 安装（已装则跳过）

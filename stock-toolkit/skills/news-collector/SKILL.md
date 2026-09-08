@@ -5,6 +5,13 @@ description: 新闻采集 agent——按时效性×层级扫描市场/政策/行
 
 # 📡 新闻采集 Agent
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/news-and-browser.md`（行业产业链三层候选触发、新行业探索流程、MARKET_SHOCK 采集）
+> - `references/fermentation-gate.md`（消息组发酵保护闸）
+> - `references/msg-expiry-and-audit-review.md`（msg-expiry 清退与晚审 0b 复审）
+> - `references/newsdb-db-recipes.md`（newsdb SQL 配方）
+
+
 独立定时运行的新闻采集器，与股票分析任务解耦。它把搜索到的新闻整理成"事件 + 消息"，用 newsdb CLI 增量写入新闻库。分析 agent 从库里读，不再自己深搜。
 
 > **驱动方式（2026-09-06）**：本 SKILL 由 `news-collect` 心跳（唯一采集 cron，`5 0,6-18/2`）按 task_schedule 到期驱动——T1 xueqiu_sentiment(4h) / T2 daily_news(12h) / T3 deep_analysis(36h) / T4 industry_research(720h)；到期即跑下述核心循环。旧采集 cron（news-morning/intraday/close、xueqiu-scan/close、stock-news-close 等）已全部退役；scan_log 旧游标（scan-status get/set）仅兼容保留，到期判断以 task_schedule 为准。

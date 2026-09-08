@@ -12,6 +12,13 @@ metadata:
 
 # 🚌 股票任务总线（task-bus）
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/taskbus-events.md`（watchpoint 整组清空语义、CANDIDATE 同批对照、WATCH_ALERT 消费语义/交叉验证、CALENDAR 实操）
+> - `references/taskbus-cli.md`（taskbus 命令面与新类型准入）
+> - `references/taskbus-newsdb-arg-shapes.md`（taskbus↔newsdb 参数形状坑）
+> - `references/watch-scan-pitfalls.md`（watch_scan 心跳/价格扫描实测坑）
+
+
 事件驱动的 agent 任务队列。**信息域**（发生了什么）归 newsdb `events` 表；**任务域**（要做什么）归本总线 `task_events` 表。生产者发现需要处理的事项 → 写任务事件 → 心跳路由 agent 消费 → 标 done。两者分离，职责清晰。
 
 ## When to Use

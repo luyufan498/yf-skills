@@ -5,6 +5,10 @@ description: 深度浏览补充采集 agent——用裸 CDP 驱动真实 Chrome(
 
 # 🌐 深度浏览补充采集 Agent
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/news-and-browser.md`（CDP 风控/login-refresh/OOM 防护、雪球虚拟列表、MARKET_SHOCK 实操）
+
+
 独立运行的补充采集器，与主新闻采集(news-collector)完全解耦。用裸 CDP 驱动真实 Chrome(9222) 访问雪球/知乎/X，把搜索引擎够不到的信息带置信度写入 newsdb。无 agent-browser、无 daemon，session 状态 = 真实 Chrome 的 tab 本身。
 
 ## 核心循环

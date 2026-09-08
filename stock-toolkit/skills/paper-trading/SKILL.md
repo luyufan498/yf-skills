@@ -5,6 +5,17 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 
 # 模拟盘交易系统
 
+> **📎 相关判例/实测坑 → `stock-toolkit-cli-pitfalls` skill**（本 skill 定义契约与流程；命令行为不符预期时先查那里的 references）：
+> - `references/paper-trading-rules.md`（入场通道、L2 待命上限、交易时段违规判例、成本保护覆盖、反转证伪）
+> - `references/paper-trading-protection-lines.md`（三段保护线/裸奔/CLI set --force/回滚模板）
+> - `references/take-profit-trio-watch-scan.md`（止盈三件套 is_tp 分支/tp_only/棘轮）
+> - `references/account-state-pollution.md`（get_account 流水重建 vs release 清零污染）
+> - `references/wide-protection-conditions.md`（宽保护豁免与 atr-sync 覆盖）
+> - `references/atr-sync-rebuild-line-rules.md`（atr-sync 重建线规则）
+> - `references/dual-conflict-catalyst-ledger.md`（双组冲突消息催化 catalyst_ledger）
+> - `references/v12-sleeve-order-chain.md`（v12 消息挂单链）
+
+
 ## ⏰ 交易时段约束（2026-08-25 加入，执行 agent 必读）
 
 **交易时段**：周一至五 **9:30-11:30、13:00-15:00**（A 股连续竞价）。

@@ -1715,7 +1715,7 @@ def closes_cached_cmd(
                            f"最新收盘 {closes[-1]:.2f}")
             else:
                 typer.echo(f"  {code}\t无缓存 bar")
-            typer.echo(f"    尾部{len(show)}根收盘(旧→新): {tail_txt}")
+            typer.echo(f"    尾部{len(show)}根收盘（按时间排序）: {tail_txt}")
             typer.echo(f"    最新价 {price}\t昨收 {pre}\t报价时间 "
                        f"{r.get('quote_date') or '—'} {r.get('quote_time') or ''}{flag}")
 

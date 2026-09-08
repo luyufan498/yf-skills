@@ -38,17 +38,18 @@ EMO_TOP_DAYS = 3     # 峰后 ≤3 交易日 → 🟡 情绪顶高发区
 
 
 def _load_klines(code: str, limit: int = 40) -> List[dict]:
-    from paper_trading_v2.market_cache import market_db_path
+    """读 market.db 日K（走读时刷新路径，2026-09-09 修正）。
+
+    原实现直连 SQL 只读缓存 → check-pulse/msg-expiry-scan 会看到陈旧 K
+    （sh688041 停在 9/4 仍被当"最新"）。改为 fetch_kline_cached：
+    库内最新 >= 最近已收盘交易日 → 纯读库 0 网络；有缺口 → 补抓落库；
+    TTL 超期 → 全量重建；抓取失败 → 回退旧缓存（不抛错）。
+    """
+    from paper_trading_v2.market_cache import fetch_kline_cached, market_db_path
     path = market_db_path()
     if not os.path.exists(path):
         raise typer.Exit(f"market.db 不存在：{path}——先跑 fetch-kline-cached")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    ks = [dict(x) for x in conn.execute(
-        "SELECT date, open, high, low, close, volume FROM kline_daily "
-        "WHERE code=? ORDER BY date DESC LIMIT ?", (code, limit))]
-    conn.close()
-    return list(reversed(ks))
+    return [dict(x) for x in fetch_kline_cached(code, count=limit)]
 
 
 def compute_pulse(ks: List[dict], window: int = WINDOW) -> Optional[dict]:
@@ -203,12 +204,10 @@ def _newsdb_events_since(stock_code: str, since_date: str, imp_min: int = 4):
 def expiry_scan():
     """扫描消息组 open 槽——论点失效候选 + 水位。"""
     from paper_trading_v2.config import get_workspace_config
-    from paper_trading_v2.market_cache import market_db_path
+    from paper_trading_v2.market_cache import fetch_kline_cached
     db_path = get_workspace_config()['db_path']
     conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
     conn.row_factory = sqlite3.Row
-    mkt = sqlite3.connect(f'file:{market_db_path()}?mode=ro', uri=True)
-    mkt.row_factory = sqlite3.Row
     try:
         segs = conn.execute(
             "SELECT id, stock, code, opened_at FROM position "
@@ -231,9 +230,9 @@ def expiry_scan():
             if not seg['code']:
                 rows.append({'stock': seg['stock'], 'status': 'no_code', 'note': '段无代码'})
                 continue
-            ks = [dict(k) for k in mkt.execute(
-                "SELECT date,high,low,close FROM kline_daily WHERE code=? AND date>? "
-                "ORDER BY date", (seg['code'], buy_date))]
+            # 读时刷新（2026-09-09）：走 fetch_kline_cached，避免陈旧缓存被当"最新"
+            ks = [dict(k) for k in fetch_kline_cached(seg['code'], count=60)
+                  if k['date'] > buy_date]
             n_after = len(ks)          # 买入后交易日数（K 根数）
             if n_after == 0:
                 rows.append({'stock': seg['stock'], 'code': seg['code'],
@@ -262,7 +261,7 @@ def expiry_scan():
         return rows, {'free': free, 'total': total, 'slots': slot_n,
                       'tight': tight}, db_path
     finally:
-        conn.close(); mkt.close()
+        conn.close()
 
 
 def run_expiry_scan(fmt: str = "pretty"):

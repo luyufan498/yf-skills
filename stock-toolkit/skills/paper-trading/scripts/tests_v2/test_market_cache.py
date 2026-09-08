@@ -31,6 +31,10 @@ def cache_env(tmp_path, monkeypatch):
     ws = tmp_path / 'ws'
     ws.mkdir()
     monkeypatch.setenv('STOCK_ANALYSIS_WORKSPACE', str(ws))
+    # 日历钉到 2026-09-04（docstring 声称的意图，2026-09-09 补实现）：
+    # 否则真实日期一过 9/4，RAW 就永远落后于"最近已收盘交易日"，
+    # 二次调用测试会因补缺触发网络而误报失败。
+    monkeypatch.setattr(mc, 'last_closed_trading_day', lambda *a, **k: '2026-09-04')
     db = str(ws / 'market.db')
     counter = {'raw': 0, 'qfq': 0, 'range': 0}
 

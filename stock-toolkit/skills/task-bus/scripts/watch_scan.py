@@ -906,16 +906,26 @@ def _fetch_cached_closes(code: str) -> list[float] | None:
         if _PAPER_SCRIPTS not in sys.path:
             sys.path.insert(0, _PAPER_SCRIPTS)
         from paper_trading_v2 import market_cache as _mc
-        bars = _mc.read_cached_kline(code, 15)
-        pairs = [(b.get("date"), float(b["close"])) for b in bars if b.get("close")]
-        if pairs and not _closes_need_refresh(code, [c for _, c in pairs]):
-            # 暖缓存纯读命中（0 网络 0 子进程）
-            return _qfq_equivalent_closes(code, pairs, today_str)
     except Exception:
-        pairs = []
-    # 冷票/缺口/TTL 过期 → 子进程 CLI 自愈（内部锁内二次检查，并发安全）
-    out = ptrade2("fetch-kline-cached", code, "--count", "15", timeout=60)
-    pairs = _parse_kline_pairs(out)
+        _mc = None
+    if _mc is not None:
+        try:
+            bars = _mc.read_cached_kline(code, 15)
+            pairs = [(b.get("date"), float(b["close"])) for b in bars if b.get("close")]
+            if pairs and not _closes_need_refresh(code, [c for _, c in pairs]):
+                # 暖缓存纯读命中（0 网络 0 子进程）
+                return _qfq_equivalent_closes(code, pairs, today_str)
+            # 冷票/缺口/TTL 过期 → 自愈（2026-09-09 由 CLI 子进程改为进程内
+            # read_closes_cached，省一次解释器启动；内部锁内二次检查，并发安全）
+            r = _mc.read_closes_cached(code, count=15)
+            pairs = list(zip(r.get("dates") or [],
+                             [float(c) for c in (r.get("closes") or [])]))
+        except Exception:
+            pairs = []
+    if not pairs:
+        # 模块不可用/自愈异常 → 回退 CLI 子进程路径
+        out = ptrade2("fetch-kline-cached", code, "--count", "15", timeout=60)
+        pairs = _parse_kline_pairs(out)
     try:
         return _qfq_equivalent_closes(code, pairs, today_str)
     except Exception:

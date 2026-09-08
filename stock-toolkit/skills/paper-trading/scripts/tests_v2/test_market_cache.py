@@ -212,6 +212,50 @@ class TestFetchKlineCached:
         assert mc.ttl_expired('2026-08-25T09:00:00') is True
         assert mc.ttl_expired(None) is True
 
+    def test_normalize_code_variants(self):
+        """代码归一（批量实时价接口只认前缀码，裸码会被静默丢弃）"""
+        assert mc.normalize_code('600703') == 'sh600703'
+        assert mc.normalize_code('000063') == 'sz000063'
+        assert mc.normalize_code('300964') == 'sz300964'
+        assert mc.normalize_code('688041') == 'sh688041'
+        assert mc.normalize_code('600703.SH') == 'sh600703'
+        assert mc.normalize_code('000063.SZ') == 'sz000063'
+        assert mc.normalize_code('SZ002648') == 'sz002648'
+        assert mc.normalize_code('hk00700') == 'hk00700'
+
+    def test_read_closes_cached_warm_no_network(self, cache_env):
+        """公共读函数：暖缓存 → refreshed False、序列升序（0 网络）"""
+        db, counter = cache_env['db'], cache_env['counter']
+        mc.fetch_kline_cached('sh688041', db_path=db)
+        n = dict(counter)
+        r = mc.read_closes_cached('688041', count=15, db_path=db)
+        assert r['code'] == 'sh688041'
+        assert r['closes'] == [b['close'] for b in RAW]
+        assert r['dates'] == sorted(r['dates'])
+        assert r['refreshed'] is False
+        assert dict(counter) == n, '暖缓存不应触网'
+
+    def test_fetch_closes_cached_batch_single_quote_call(self, cache_env, monkeypatch):
+        """批量：N 票历史走缓存，当日价只打一次批量实时接口"""
+        db = cache_env['db']
+        calls = {'n': 0}
+
+        class FakeFetcher:
+            def fetch_batch(self, codes):
+                calls['n'] += 1
+                return {c: type('I', (), {'current_price': 9.9, 'pre_close': 9.0,
+                                          'date': '2026-09-04', 'time': '15:00:00',
+                                          'name': 'X'})() for c in codes}
+
+        import paper_trading_v2.price_fetcher as pf
+        monkeypatch.setattr(pf, 'StockPriceFetcher', FakeFetcher)
+        res = mc.fetch_closes_cached(['sh688041', 'sh688041', '688041'],
+                                     count=15, db_path=db)
+        assert calls['n'] == 1, '批量实时价应只调一次'
+        assert set(res) == {'sh688041'}
+        assert res['sh688041']['today'] == 9.9 and res['sh688041']['pre_close'] == 9.0
+        assert len(res['sh688041']['closes']) == 4
+
     def test_fetch_fail_returns_stale_cache(self, cache_env, monkeypatch):
         """抓取失败：返回现有缓存（陈旧但可用）+ 记失败时间，不崩"""
         db, counter = cache_env['db'], cache_env['counter']

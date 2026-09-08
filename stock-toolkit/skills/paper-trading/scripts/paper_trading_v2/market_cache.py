@@ -495,6 +495,111 @@ def _clip_unclosed(raw: Optional[List[dict]],
     return raw2, qfq2
 
 
+def normalize_code(raw: Optional[str]) -> str:
+    """代码归一为腾讯/库内口径 'sh600703'/'sz002648'/'hk00700'。
+
+    裸 6 位（600703 / 002536）按 5/6/8/9 开头 → sh，其余 → sz；
+    点后缀（600703.SH / 000063.SZ）取交易所字母；已带前缀的原样小写。
+    批量实时价接口只认前缀码，裸码会被静默丢弃（2026-09-04 实测）。
+    """
+    c = (raw or '').strip()
+    if not c:
+        return ''
+    if '.' in c:
+        num, _, suf = c.partition('.')
+        suf = suf.upper()
+        return ('sh' if suf == 'SH' else 'sz' if suf == 'SZ' else suf.lower()) + num.zfill(6)
+    low = c.lower()
+    if low[:2] in ('sh', 'sz', 'hk', 'us', 'gb'):
+        # 港股是 5 位（hk00700），不能 zfill(6)
+        return low[:2] + low[2:].zfill(6) if low[:2] in ('sh', 'sz') else low
+    if c.isdigit():
+        return ('sh' if c[0] in '5689' else 'sz') + c.zfill(6)
+    return low
+
+
+def read_closes_cached(code: str, count: int = 15,
+                       db_path: Optional[str] = None) -> Dict:
+    """某票「已收盘」收盘价序列（走读时自愈：缺口补抓 / TTL 重建 / 超前 bar 清理）。
+
+    2026-09-09 抽出（原 watch_scan._fetch_cached_closes 前半段），CLI: ptrade2 closes-cached。
+
+    Returns:
+        {'code', 'dates': [升序], 'closes': [升序], 'newest': 最新已收盘日,
+         'refreshed': 本次是否触发了网络刷新（meta 时间戳变化判定）}
+    """
+    code = normalize_code(code)
+    before = _meta_snapshot(code, db_path)
+    bars = fetch_kline_cached(code, count=count, db_path=db_path)
+    after = _meta_snapshot(code, db_path)
+    return {
+        'code': code,
+        'dates': [b['date'] for b in bars],
+        'closes': [b['close'] for b in bars],
+        'newest': bars[-1]['date'] if bars else None,
+        'refreshed': before != after,
+    }
+
+
+def _meta_snapshot(code: str, db_path: Optional[str] = None) -> tuple:
+    """(last_full_refresh_at, last_gap_fill_at) 快照，用于判定本次读是否触发刷新。"""
+    db_path = db_path or market_db_path()
+    if not os.path.exists(db_path):
+        return ('', '')
+    try:
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        try:
+            rows = dict(conn.execute(
+                "SELECT key, value FROM meta WHERE code=? AND key IN "
+                "('last_full_refresh_at','last_gap_fill_at')", (code,)).fetchall())
+        finally:
+            conn.close()
+        return (rows.get('last_full_refresh_at', ''), rows.get('last_gap_fill_at', ''))
+    except Exception:
+        return ('', '')
+
+
+def fetch_closes_cached(codes: List[str], count: int = 15, *,
+                        include_today: bool = True,
+                        db_path: Optional[str] = None) -> Dict[str, dict]:
+    """批量：N 票已收盘收盘价序列（0 网络暖缓存）+ **一次**批量实时价拼当日。
+
+    2026-09-09 定稿的取数契约：历史 bar 只从 market.db 已收盘缓存来，当日价只从
+    腾讯批量实时接口来（缓存永不存当日 bar）。网络成本 = 暖缓存 0 次 + 冷票/缺口
+    各 1 次自愈；include_today=True 时 +1 次批量实时价（无论多少票）。
+
+    Returns:
+        {归一码: {'code','dates','closes','newest','refreshed',
+                  'today','pre_close','quote_date','quote_time','name'}}
+        实时价缺失（接口失败/非法码）→ today 为 None，不抛错。
+    """
+    norm = [normalize_code(c) for c in codes if (c or '').strip()]
+    out = {}
+    for code in norm:
+        out[code] = read_closes_cached(code, count=count, db_path=db_path)
+        out[code].update({'today': None, 'pre_close': None,
+                          'quote_date': None, 'quote_time': None, 'name': None})
+    if include_today and norm:
+        try:
+            from paper_trading_v2.price_fetcher import StockPriceFetcher
+            infos = StockPriceFetcher().fetch_batch(norm) or {}
+        except Exception as e:
+            print(f"[market_cache] 批量实时价失败：{e}")
+            infos = {}
+        for code, info in infos.items():
+            key = normalize_code(code)
+            if key not in out:
+                continue
+            out[key].update({
+                'today': info.current_price,
+                'pre_close': info.pre_close,
+                'quote_date': info.date,
+                'quote_time': info.time,
+                'name': info.name,
+            })
+    return out
+
+
 def _mark_fetch_fail(code: str, db_path: str):
     """记失败时间（独立短连接，绝不抛）"""
     try:

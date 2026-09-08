@@ -1648,6 +1648,56 @@ def fetch_kline_cached_cmd(
         raise typer.Exit(1)
 
 
+@app.command("closes-cached")
+def closes_cached_cmd(
+    codes: str = typer.Argument(..., help="逗号分隔多股票代码，如 'sh600703,sz002648,600703'"),
+    count: int = typer.Option(15, "--count", "-n", help="每票返回的已收盘 bar 数"),
+    no_today: bool = typer.Option(False, "--no-today", help="不拼当日实时价（纯缓存读，0 网络）"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """批量「已收盘收盘价序列 + 当日实时价」（N 票 = N 次缓存读 + 1 次批量实时价）
+
+    2026-09-09 定稿的取数契约：历史 bar 只从 market.db 已收盘缓存来（读时自愈缺口/
+    TTL/超前 bar），当日价只从腾讯批量实时接口来——缓存永不存当日 bar。
+    单票也支持（等价 fetch-kline-cached + fetch-price）。空/非法码跳过不中断。
+    """
+    from paper_trading_v2.market_cache import fetch_closes_cached
+    try:
+        code_list = [c.strip() for c in codes.split(',') if c.strip()]
+        if not code_list:
+            typer.echo("❌ 未提供有效股票代码", err=True)
+            raise typer.Exit(1)
+
+        res = fetch_closes_cached(code_list, count=count, include_today=not no_today)
+
+        if format == "json":
+            import json
+            typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
+            return
+
+        if not res:
+            typer.echo("❌ 所有代码均未取到数据", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"📊 收盘价序列 + 当日价（{len(res)} 只，历史 {count} 根上限，raw 不复权）")
+        for code, r in res.items():
+            closes = r.get('closes') or []
+            tail = ' '.join(f"{c:.2f}" for c in closes[-5:]) or '—'
+            today = f"{r['today']:.2f}" if r.get('today') is not None else 'N/A'
+            pre = f"{r['pre_close']:.2f}" if r.get('pre_close') is not None else 'N/A'
+            flag = ' 🔄本次自愈' if r.get('refreshed') else ''
+            typer.echo(f"  {code}\t最新已收盘 {r.get('newest') or '—'}\t收 {closes[-1]:.2f}" if closes
+                       else f"  {code}\t无缓存 bar")
+            typer.echo(f"    近{len(closes[-5:])}根收盘: {tail}")
+            typer.echo(f"    当日价 {today}\t昨收 {pre}\t报价 {r.get('quote_date') or '—'} "
+                       f"{r.get('quote_time') or ''}{flag}")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"❌ 批量取收盘价失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def market_summary(
     code: str = typer.Argument(..., help="股票代码"),

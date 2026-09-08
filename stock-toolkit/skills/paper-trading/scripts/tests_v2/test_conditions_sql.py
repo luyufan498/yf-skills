@@ -205,3 +205,69 @@ def test_update_up_no_peak_clamp(cm):
         has_position=True, user_reason='测试上调')
     ts = record.conditions['trailing_stop']
     assert ts.peak_price == 54.67, '上调不改 peak'
+
+def _mk_seg_with_ops(db_path, stock, ops_rows):
+    """建 open 段 + 直写 operations 史（type, quantity, timestamp）。"""
+    from paper_trading_v2.storage import SqlStorage
+    from paper_trading_v2.models import Account, CapitalPool
+    s = SqlStorage(db_path)
+    s.save_account(Account(stock_name=stock, stock_code='sh600000',
+                           capital_pool=CapitalPool(total=500000, available=500000, used=0)))
+    conn = s._conn()
+    aid = conn.execute("SELECT id FROM position WHERE stock=? AND status='open'",
+                       (stock,)).fetchone()[0]
+    with conn:
+        for i, (typ, qty, ts) in enumerate(ops_rows):
+            conn.execute(
+                "INSERT INTO operations (account_id, seq, type, quantity, timestamp) "
+                "VALUES (?,?,?,?,?)", (aid, i, typ, qty, ts))
+    conn.close()
+    return s
+
+
+def test_round_start_half_reduce_is_break(db_path):
+    """2026-09-08 赣锋复发根修：≥45% 减仓（减半重建）→ 轮界。
+
+    减仓前旧 peak（54.67）必须出轮，否则 atr-sync merge 回抬 → 虚破位。
+    减半后无新 buy → 轮起点 = 减仓时点。
+    """
+    s = _mk_seg_with_ops(db_path, '赣锋锂业', [
+        ('buy', 463, '2026-08-31T09:40:00'),
+        ('sell', 92, '2026-09-03T10:16:00'),    # 20% 小减：不动轮界
+        ('sell', 185, '2026-09-04T14:31:00'),   # 185/371=49.9% 减半（真实赣锋）
+    ])
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    cm = ConditionsManager(storage=s)
+    rs = cm._current_build_round_start('赣锋锂业')
+    assert rs == '2026-09-04T14:31:00', f'轮起点应=9/4 减仓时点，实得 {rs}'
+    # 减仓前 high 出轮 → stale_peak 判定成立
+    klines = [{'high': 60.0, 'date': '2026-09-01'},   # 减仓前高点（54.67 场景）
+              {'high': 50.1, 'date': '2026-09-05'}]   # 减仓后
+    filtered, stale = cm._filter_klines_by_round('赣锋锂业', klines, 54.67)
+    assert stale is True, '旧 peak 应判 stale（不在减仓后轮内）'
+    assert all(k['date'] >= '2026-09-04' for k in filtered), '减仓前 K 线应被滤除'
+
+
+def test_round_start_small_reduce_keeps_original(db_path):
+    """止盈 1/3 级（33%）小减 → 不轮界，轮起点仍=首 buy。"""
+    s = _mk_seg_with_ops(db_path, '赛力斯', [
+        ('buy', 1000, '2026-08-01T09:30:00'),
+        ('sell', 330, '2026-09-02T10:00:00'),    # 33%：非重建
+    ])
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    cm = ConditionsManager(storage=s)
+    rs = cm._current_build_round_start('赛力斯')
+    assert rs == '2026-08-01T09:30:00', '33% 小减不动轮界'
+
+
+def test_round_start_clearance_then_rebuy(db_path):
+    """清仓后重建 → 轮起点=清仓后首 buy（原语义保留）。"""
+    s = _mk_seg_with_ops(db_path, '中科曙光', [
+        ('buy', 1000, '2026-07-01T09:30:00'),
+        ('sell', 1000, '2026-08-10T14:00:00'),   # 清仓
+        ('buy', 500, '2026-08-20T09:35:00'),     # 重建
+    ])
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    cm = ConditionsManager(storage=s)
+    rs = cm._current_build_round_start('中科曙光')
+    assert rs == '2026-08-20T09:35:00', '清仓后重建轮起点=新首 buy'

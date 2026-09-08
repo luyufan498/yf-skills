@@ -1089,15 +1089,18 @@ class ConditionsManager:
     # ========== 本轮建仓起点（Bug #2 修复：peak 只取本轮 K 线）==========
 
     def _current_build_round_start(self, stock_name: str) -> Optional[str]:
-        """返回本轮建仓起点的 ISO timestamp（最近一次清仓后的首笔 buy），无则 None。
+        """返回本轮建仓起点的 ISO timestamp（最近一次轮界后的首笔 buy），无则 None。
 
-        用累计 buy qty − 累计 sell qty 追踪持仓量，降到 <=0 即清仓点；
-        返回该清仓点之后的**第一笔 buy** 的 timestamp。
-        若从未清仓过（建仓后一直持有），返回第一笔 buy 的 timestamp（本轮=唯一轮）。
-        任何异常 / 无操作记录 → 返回 None（调用方退回现有行为）。
-
-        注意 op.type 是字符串（Operation.Config.use_enum_values=True），按
-        _is_within_build_buffer_period 的惯例用 == "buy"/"sell" 比较。
+        轮界 = 清仓（持仓归零）**或 ≥50% 大额减仓**（2026-09-08 赣锋复发补）：
+        两级模型一级减仓 50% 后重建恢复期线（现价×0.95），减仓前旧 peak（如赣锋
+        54.67）必须出轮——否则 atr-sync merge_peak 会把线回抬（49.64）→ #1962
+        同款虚破位。止盈 1/3（33%）非重建不动轮界（高点真实，peak 应保留）。
+        用累计 buy qty − 累计 sell qty 追踪持仓量：sell ≥ 卖前持仓 45% = 结构性
+        减仓（轮界）；降到 <=0 = 清仓（轮界）。
+        返回最近轮界之后的**第一笔 buy** 的 timestamp；轮界后无新 buy 时——
+        清仓=空仓返回 None（调用方退回），大额减仓=仍在持仓，返回减仓时点作轮
+        起点（减仓前 K 线出轮，旧 peak 判 stale 重置）。
+        从未轮界过（建仓后一直持有/只小减）→ 返回第一笔 buy（本轮=唯一轮）。
         """
         try:
             history = self.storage.load_operations(stock_name)
@@ -1106,7 +1109,8 @@ class ConditionsManager:
 
             ops = history.operations
             first_buy_ts = None
-            last_clearance_ts = None  # 最近一次使持仓归零的 sell 的 timestamp
+            last_break_ts = None   # 最近一次轮界时点（清仓 or ≥50% 减仓）
+            last_break_clearance = False  # 最近轮界是否=清仓
             holding = 0  # 累计持仓量（buy 加，sell 减）
 
             for op in ops:
@@ -1116,22 +1120,34 @@ class ConditionsManager:
                         first_buy_ts = op.timestamp
                     holding += op.quantity
                 elif t == "sell" and op.quantity:
+                    before = holding
                     holding -= op.quantity
                     if holding <= 0:
                         holding = 0
-                        last_clearance_ts = op.timestamp  # 记录最近一次清仓时点
+                        last_break_ts = op.timestamp
+                        last_break_clearance = True
+                    elif before > 0 and op.quantity >= before * 0.45:
+                        # ≥45% 结构性减仓（两级模型一级，减半取整容差：371→卖185=49.9%）
+                        # → 轮界（非清仓）
+                        last_break_ts = op.timestamp
+                        last_break_clearance = False
 
-            if last_clearance_ts is None:
-                # 从未清仓过 → 本轮就是唯一一轮，起点是首笔 buy
+            if last_break_ts is None:
+                # 从未轮界过 → 本轮就是唯一一轮，起点是首笔 buy
                 return first_buy_ts
 
-            # 找 last_clearance_ts 之后的第一笔 buy
+            # 找轮界之后的第一笔 buy
             for op in ops:
-                if op.type == "buy" and op.timestamp > last_clearance_ts:
+                if op.type == "buy" and op.timestamp > last_break_ts:
                     return op.timestamp
 
-            # 清仓后尚未重新建仓（当前应空仓，调用方一般不会走到这）
-            return None
+            # 轮界后尚未重新买入
+            if last_break_clearance:
+                # 清仓后未重建（当前应空仓，调用方一般不会走到这）
+                return None
+            # 大额减仓后未加仓（仍在持仓，重建线语义）：轮起点=减仓时点，
+            # 减仓前 K 线/旧 peak 出轮 → stale 判定成立 → 重置为当前价
+            return last_break_ts
         except Exception:
             return None
 

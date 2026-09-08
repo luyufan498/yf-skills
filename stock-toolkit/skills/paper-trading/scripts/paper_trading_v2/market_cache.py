@@ -298,13 +298,39 @@ def _upsert_bars(conn: sqlite3.Connection, code: str, bars: List[dict]):
 # ---------- 主入口 ----------
 
 def fetch_kline_cached(code: str, kline_type: str = 'day', count: int = 15,
-                       db_path: Optional[str] = None) -> List[dict]:
+                       db_path: Optional[str] = None,
+                       adjust: str = 'raw') -> List[dict]:
+    """带缓存的日K获取（默认 raw 不复权；adjust='qfq' → 除权折算的 qfq 等效序列）
+
+    adjust='qfq'（2026-09-09 加）：raw bar + exright_events 折算（o/h/l/c 同乘
+    1/∏factor），供 ATR/peak 等原本直抓腾讯 qfq 的消费者改走缓存。事件表退化
+    （首行无 'jump '）→ fail-closed 退回直抓腾讯 qfq（与合入前行为一致）。
+    """
+    bars = _fetch_kline_cached_raw(code, kline_type=kline_type, count=count, db_path=db_path)
+    if adjust not in ('qfq', 'qfq_equivalent') or not bars:
+        return bars
+    try:
+        folded = fold_qfq(bars, read_exright_events(code, db_path))
+    except Exception:
+        folded = None
+    if folded is None:
+        try:
+            from paper_trading_v2.kline_fetcher import KLineDataFetcher
+            return KLineDataFetcher().fetch_kline_data(code, 'day', count, adjust='qfq')
+        except Exception:
+            return bars
+    return folded
+
+
+def _fetch_kline_cached_raw(code: str, kline_type: str = 'day', count: int = 15,
+                            db_path: Optional[str] = None) -> List[dict]:
     """带缓存的日K获取（raw 不复权）
 
     策略：库内最新 date >= 最近已收盘交易日 → 纯读库（0 网络）；
-    有缺口 → 补缺 bar 落库；TTL 超 7 天 → DELETE 全量重拉 250 重建。
+    有缺口 → 补缺 bar 落库；TTL 超 7 交易日 → DELETE 全量重拉 250 重建。
     并发防风暴：刷新前 BEGIN IMMEDIATE 写锁 + 锁内二次检查。
     抓取失败 → 返回现有缓存（陈旧但可用）+ 记失败时间。
+    只落已收盘 bar（2026-09-09）。
 
     Args:
         code: 股票代码（如 'sh688041'）
@@ -601,19 +627,69 @@ def fetch_closes_cached(codes: List[str], count: int = 15, *,
 
 
 def fetch_klines_cached(codes: List[str], count: int = 15,
-                        db_path: Optional[str] = None) -> Dict[str, List[dict]]:
+                        db_path: Optional[str] = None,
+                        adjust: str = 'raw') -> Dict[str, List[dict]]:
     """批量：每票的已收盘日K bar 列表（走读时自愈）。
 
     2026-09-09 加（CLI: `ptrade2 klines-cached`）——需要 high/low 的消费者
     （ATR / peak 回填 / G5 回检）用它，避免逐票 spawn 子进程；只要收盘价的用
     `fetch_closes_cached`（额外拼一次批量实时价）。
+    adjust='qfq' → 除权折算（ATR 类消费者用，见 fetch_kline_cached）。
     """
     out: Dict[str, List[dict]] = {}
     for raw in codes:
         code = normalize_code(raw)
         if not code or code in out:
             continue
-        out[code] = fetch_kline_cached(code, count=count, db_path=db_path)
+        out[code] = fetch_kline_cached(code, count=count, db_path=db_path, adjust=adjust)
+    return out
+
+
+def fold_qfq(bars: List[dict], events: Optional[List[dict]] = None) -> Optional[List[dict]]:
+    """raw bars → qfq 等效 bars（除权折算，2026-09-09 泛化自 watch_scan._qfq_equivalent_closes）。
+
+    公式：ratio(d)=qfq(d)/raw(d)，最新 bar re-anchor ratio=1；除权日 factor=ratio 跳变系数
+    → 任意 bar 的 qfq 等效价 = raw × 1/∏factor(事件日 ∈ (bar_date, 今天])。
+    o/h/l/c 同乘折算系数，volume 不动。
+
+    Returns:
+        同长度 list（无事件 → 原样返回）；**None = fail-closed**（事件表首行退化/因子非法，
+        调用方应放弃该票或退回直抓 qfq），与 watch_scan 既有语义一致。
+    """
+    if not bars:
+        return bars
+    events = events or []
+    if not events:
+        return bars
+    start = str(bars[0].get('date') or '')
+    win: List[tuple] = []
+    for i, ev in enumerate(events):
+        d = str(ev.get('date') or '')
+        if not (start < d):
+            continue
+        try:
+            f = float(ev.get('factor') or 0)
+        except (TypeError, ValueError):
+            f = 0.0
+        # 首行无 'jump '（检测时无 prev bar，退化为绝对 ratio）或因子非法 → fail-closed
+        if f <= 0 or (i == 0 and 'jump ' not in str(ev.get('note') or '')):
+            return None
+        win.append((d, f))
+    if not win:
+        return bars
+    out: List[dict] = []
+    k, ei = 1.0, len(win) - 1
+    for b in reversed(bars):
+        d = str(b.get('date') or '')
+        while ei >= 0 and win[ei][0] > d:
+            k *= win[ei][1]
+            ei -= 1
+        nb = dict(b)
+        for fld in ('open', 'high', 'low', 'close'):
+            v = b.get(fld)
+            nb[fld] = (v / k) if isinstance(v, (int, float)) else v
+        out.append(nb)
+    out.reverse()
     return out
 
 

@@ -595,9 +595,10 @@ class SleeveOpener:
         if not code:
             return None
         try:
-            from paper_trading_v2.kline_fetcher import KLineDataFetcher
+            from paper_trading_v2.market_cache import fetch_kline_cached
             from paper_trading_v2.atr import compute_atr
-            klines = KLineDataFetcher().fetch_kline_data(code, 'day', 30)
+            # 2026-09-09 合入缓存：raw + 除权折算（原直抓腾讯 qfq，网络每次必打）
+            klines = fetch_kline_cached(code, count=30, adjust='qfq')
             return compute_atr(klines)
         except Exception:
             return None

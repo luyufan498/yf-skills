@@ -999,8 +999,9 @@ def _v9_backfill_peak(conn) -> int:
         code = r['code']
         if code:
             try:
-                from paper_trading_v2.kline_fetcher import KLineDataFetcher
-                klines = KLineDataFetcher().fetch_kline_data(code, 'day', 120) or []
+                # 2026-09-09 合入缓存：raw 缓存 + 除权折算（原直抓腾讯 qfq）
+                from paper_trading_v2.market_cache import fetch_kline_cached
+                klines = fetch_kline_cached(code, count=120, adjust='qfq') or []
                 since = (r['opened_at'] or '')[:10]
                 highs = [float(k.get('high') or 0) for k in klines
                          if (k.get('date') or '') >= since and k.get('high')]

@@ -258,7 +258,9 @@ def register(app):
                 try:
                     account = trader.storage.load_account(stock_name)
                     if account and account.stock_code:
-                        klines = KLineDataFetcher().fetch_kline_data(account.stock_code, "day", 30)
+                        # 2026-09-09 合入缓存：raw 缓存 + 除权折算（原直抓腾讯 qfq）
+                        from paper_trading_v2.market_cache import fetch_kline_cached
+                        klines = fetch_kline_cached(account.stock_code, count=30, adjust="qfq")
                         from paper_trading_v2.atr import compute_atr
                         atr_for_update = compute_atr(klines)
                 except Exception:
@@ -512,7 +514,9 @@ def register(app):
                 avg_cost = total_cost / total_qty
 
                 # 取K线 + 实时价
-                klines = KLineDataFetcher().fetch_kline_data(account.stock_code, "day", kline_count)
+                # 2026-09-09 合入缓存（同 set 条件路径）：读时自愈 + 除权折算
+                from paper_trading_v2.market_cache import fetch_kline_cached
+                klines = fetch_kline_cached(account.stock_code, count=kline_count, adjust="qfq")
                 atr = compute_atr(klines, period)
                 if atr is None:
                     results.append({"stock": name, "status": "skip",

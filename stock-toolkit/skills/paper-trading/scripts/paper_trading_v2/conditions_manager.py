@@ -337,12 +337,30 @@ class ConditionsManager:
         if result.allowed:
             reason = override_reason or user_reason or result.message
 
+            # 2026-09-08（#1962/赣锋判例根修）：下调 trailing_stop = 重建/恢复期线语义
+            # → peak 同步钳制 min(旧peak, 新价)——否则 atr-sync 会用减仓前旧 peak
+            # 把线再抬回虚高（赣锋 9/7 20:22：peak 54.67 → 线被抬 49.38 → 收盘 48.86
+            # 虚破位；#1962 同源）。atr-sync 的棘轮抬升走 sync_trailing_stop 不走此
+            # 路径，不受影响；仅手动/CLI 下调（重建线）时钳制。
+            old_peak = None
+            if (condition_type == ConditionType.TRAILING_STOP
+                    and new_price < old_price
+                    and condition.peak_price is not None
+                    and condition.peak_price > new_price):
+                old_peak = condition.peak_price
+                condition.peak_price = round(new_price, 2)
+
             condition.price = round(new_price, 2)
             condition.modified_at = datetime.now().isoformat()
+            if old_peak is not None:
+                reason_peak = (f"{reason}（peak 同步钳制 ¥{old_peak:.2f}→¥{new_price:.2f}："
+                               f"下调重建线语义，防 atr-sync 旧 peak 回抬）")
+            else:
+                reason_peak = reason
             condition.history.append(ConditionChange(
                 old_price=old_price,
                 new_price=round(new_price, 2),
-                reason=reason,
+                reason=reason_peak,
                 level=result.level,
                 override_triggers=active_triggers or [],
             ))

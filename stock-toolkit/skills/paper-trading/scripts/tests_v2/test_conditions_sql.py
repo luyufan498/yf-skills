@@ -163,3 +163,45 @@ def test_atr_sync_active_still_ratchets(cm):
     ts = loaded.conditions['trailing_stop']
     assert ts.price >= 100.0, 'active 线仍走棘轮（peak115−2.5×4=105 → max(100,105)=105）'
     assert ts.price == 105.0, f'预期 105.0，实得 {ts.price}'
+
+def test_update_down_rebuild_clamps_peak(cm):
+    """2026-09-08 根修：update 下调 trailing_stop（重建线）→ peak 同步钳制。
+
+    赣锋判例：线 49.38(旧peak 54.67 抬的虚高) 下调至 46.42 重建——若 peak 残留
+    54.67，下次 atr-sync 会再抬回 ~49.38 → 虚破位复发。下调即重建语义 → peak=新价。
+    """
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    from paper_trading_v2.conditions import ConditionsRecord, Condition, ConditionType
+    rec = ConditionsRecord(stock_name='赛力斯', updated_at='x')
+    rec.conditions['trailing_stop'] = Condition(
+        id='trailing_stop', type='trailing_stop', name='移动止损',
+        price=49.38, action='清仓', category='hard',
+        status='active', peak_price=54.67)
+    cm.save_conditions(rec)
+    result, record = cm.update_condition(
+        '赛力斯', ConditionType.TRAILING_STOP,
+        new_price=46.42, current_price=48.86, avg_cost=52.0,
+        has_position=True, user_reason='测试：减仓后重建恢复期线')
+    assert result.allowed
+    ts = record.conditions['trailing_stop']
+    assert ts.price == 46.42
+    assert ts.peak_price == 46.42, f'peak 应钳制为新价 46.42，实得 {ts.peak_price}'
+    assert 'peak 同步钳制' in ts.history[-1].reason
+
+def test_update_up_no_peak_clamp(cm):
+    """上调 trailing 不动 peak（止盈上移/棘轮路径不受干扰）。"""
+    from paper_trading_v2.conditions_manager import ConditionsManager
+    from paper_trading_v2.conditions import ConditionsRecord, Condition
+    rec = ConditionsRecord(stock_name='赛力斯', updated_at='x')
+    rec.conditions['trailing_stop'] = Condition(
+        id='trailing_stop', type='trailing_stop', name='移动止损',
+        price=46.42, action='清仓', category='hard',
+        status='active', peak_price=54.67)
+    cm.save_conditions(rec)
+    from paper_trading_v2.conditions import ConditionType
+    result, record = cm.update_condition(
+        '赛力斯', ConditionType.TRAILING_STOP,
+        new_price=50.0, current_price=55.0, avg_cost=52.0,
+        has_position=True, user_reason='测试上调')
+    ts = record.conditions['trailing_stop']
+    assert ts.peak_price == 54.67, '上调不改 peak'

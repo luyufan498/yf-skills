@@ -219,6 +219,13 @@ def expiry_scan():
             b = conn.execute("SELECT timestamp, price FROM trades WHERE account_id=? "
                              "AND operation='buy' ORDER BY timestamp, id LIMIT 1",
                              (seg['id'],)).fetchone()
+            if not b:
+                # 2026-09-09：挂单待成交（sleeve-order 已开槽未成交）段无 buy 成交，
+                # 原先硬取 b['timestamp'] 会 TypeError 整段崩（ND#743 本川智能 9/8 21:19 触发）
+                rows.append({'stock': seg['stock'], 'code': seg['code'],
+                             'buy': '—', 'buy_px': '—', 'n': 0,
+                             'status': '待成交', 'note': '段已开无buy成交（挂单待成交）'})
+                continue
             buy_date = str(b['timestamp'])[:10]
             buy_px = float(b['price'])
             if not seg['code']:

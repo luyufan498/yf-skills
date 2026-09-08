@@ -1651,8 +1651,9 @@ def fetch_kline_cached_cmd(
 @app.command("closes-cached")
 def closes_cached_cmd(
     codes: str = typer.Argument(..., help="逗号分隔多股票代码，如 'sh600703,sz002648,600703'"),
-    count: int = typer.Option(15, "--count", "-n", help="每票取回的已收盘 bar 数（历史序列长度）"),
-    tail: int = typer.Option(5, "--tail", help="pretty 每票显示多少根收盘价（json 始终给全量 count 根）"),
+    count: Optional[int] = typer.Option(
+        None, "--count", "-n",
+        help="每票取回并显示的已收盘 bar 数（不指定=取 15 根、显示尾部 5 根）"),
     no_today: bool = typer.Option(False, "--no-today", help="不拼当日实时价（纯缓存读，0 网络）"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
 ):
@@ -1661,6 +1662,9 @@ def closes_cached_cmd(
     2026-09-09 定稿的取数契约：历史 bar 只从 market.db 已收盘缓存来（读时自愈缺口/
     TTL/超前 bar），当日价只从腾讯批量实时接口来——缓存永不存当日 bar。
     重复/等价代码自动归一去重（600703 ≡ sh600703 ≡ 600703.SH），输出会注明。
+
+    `--count` 同时管取回和显示：指定 N → 取 N 根、显示 N 根；不指定 → 取 15 根、
+    只显示尾部 5 根（默认口径，防几十只票刷屏）。
     """
     from paper_trading_v2.market_cache import fetch_closes_cached, normalize_code
     try:
@@ -1674,14 +1678,17 @@ def closes_cached_cmd(
         for c in raw_list:
             norm_map.setdefault(normalize_code(c), []).append(c)
 
-        res = fetch_closes_cached(raw_list, count=count, include_today=not no_today)
+        fetch_n = count if count else 15
+        show_n = count if count else 5
+
+        res = fetch_closes_cached(raw_list, count=fetch_n, include_today=not no_today)
 
         if format == "json":
             import json
             typer.echo(json.dumps({
                 'requested': raw_list,
                 'deduped': {k: v for k, v in norm_map.items() if len(v) > 1},
-                'count': count,
+                'count': fetch_n,
                 'data': res,
             }, ensure_ascii=False, indent=2))
             return
@@ -1693,12 +1700,12 @@ def closes_cached_cmd(
         dup_note = ''
         if dup:
             dup_note = '｜去重: ' + ', '.join(f"{'/'.join(v)}→{k}" for k, v in dup.items())
+        show_note = f"｜显示尾部 {min(show_n, fetch_n)} 根" if show_n < fetch_n else ""
         typer.echo(f"📊 closes-cached｜输入 {len(raw_list)} 码 → 归一后 {len(res)} 只"
-                   f"｜每只取回 {count} 根已收盘 bar（raw 不复权）"
-                   f"｜下方显示尾部 {min(tail, count)} 根{dup_note}")
+                   f"｜每只取回 {fetch_n} 根已收盘 bar（raw 不复权）{show_note}{dup_note}")
         for code, r in res.items():
             closes = r.get('closes') or []
-            show = closes[-tail:] if tail > 0 else []
+            show = closes[-show_n:] if show_n > 0 else []
             tail_txt = ' '.join(f"{c:.2f}" for c in show) or '—'
             price = f"{r['today']:.2f}" if r.get('today') is not None else 'N/A'
             pre = f"{r['pre_close']:.2f}" if r.get('pre_close') is not None else 'N/A'

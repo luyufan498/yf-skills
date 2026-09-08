@@ -600,6 +600,23 @@ def fetch_closes_cached(codes: List[str], count: int = 15, *,
     return out
 
 
+def fetch_klines_cached(codes: List[str], count: int = 15,
+                        db_path: Optional[str] = None) -> Dict[str, List[dict]]:
+    """批量：每票的已收盘日K bar 列表（走读时自愈）。
+
+    2026-09-09 加（CLI: `ptrade2 klines-cached`）——需要 high/low 的消费者
+    （ATR / peak 回填 / G5 回检）用它，避免逐票 spawn 子进程；只要收盘价的用
+    `fetch_closes_cached`（额外拼一次批量实时价）。
+    """
+    out: Dict[str, List[dict]] = {}
+    for raw in codes:
+        code = normalize_code(raw)
+        if not code or code in out:
+            continue
+        out[code] = fetch_kline_cached(code, count=count, db_path=db_path)
+    return out
+
+
 def _mark_fetch_fail(code: str, db_path: str):
     """记失败时间（独立短连接，绝不抛）"""
     try:

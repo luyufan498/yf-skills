@@ -1726,6 +1726,53 @@ def closes_cached_cmd(
         raise typer.Exit(1)
 
 
+@app.command("klines-cached")
+def klines_cached_cmd(
+    codes: str = typer.Argument(..., help="逗号分隔多股票代码，如 'sh600703,sz002648'"),
+    count: int = typer.Option(15, "--count", "-n", help="每票取回的已收盘 bar 数"),
+    format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
+):
+    """批量已收盘日K（raw 不复权，含 high/low）——需要 OHLC 的消费者用这条
+
+    与 `closes-cached` 同一读时自愈契约（缺口补抓/TTL/超前 bar），区别：
+    - `closes-cached`：只要收盘价 + 当日实时价（额外 1 次批量实时价）
+    - `klines-cached`：完整 OHLC bar（ATR / peak 回填 / G5 回检），0 网络（暖缓存）
+    """
+    from paper_trading_v2.market_cache import fetch_klines_cached, normalize_code
+    try:
+        raw_list = [c.strip() for c in codes.split(',') if c.strip()]
+        if not raw_list:
+            typer.echo("❌ 未提供有效股票代码", err=True)
+            raise typer.Exit(1)
+        res = fetch_klines_cached(raw_list, count=count)
+        if not res:
+            typer.echo("❌ 所有代码均未取到数据", err=True)
+            raise typer.Exit(1)
+        if format == "json":
+            import json
+            typer.echo(json.dumps({
+                'requested': raw_list,
+                'normalized': {normalize_code(c): c for c in raw_list},
+                'count': count,
+                'adjust': 'raw',
+                'data': res,
+            }, ensure_ascii=False, indent=2))
+            return
+        typer.echo(f"📊 klines-cached｜输入 {len(raw_list)} 码 → 归一后 {len(res)} 只"
+                   f"｜每只 {count} 根上限（raw 不复权，含 OHLC）")
+        for code, bars in res.items():
+            if not bars:
+                typer.echo(f"  {code}\t无缓存 bar")
+                continue
+            typer.echo(f"  {code}\t共 {len(bars)} 根\t最新 {bars[-1]['date']}\t"
+                       f"收 {bars[-1]['close']:.2f}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"❌ 批量取K线失败: {e}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def market_summary(
     code: str = typer.Argument(..., help="股票代码"),

@@ -256,6 +256,14 @@ class TestFetchKlineCached:
         assert res['sh688041']['today'] == 9.9 and res['sh688041']['pre_close'] == 9.0
         assert len(res['sh688041']['closes']) == 4
 
+    def test_fetch_klines_cached_batch(self, cache_env):
+        """批量 OHLC 取数（klines-cached 底层）：N 票一次读、归一去重、含 high/low"""
+        db = cache_env['db']
+        res = mc.fetch_klines_cached(['sh688041', '688041', 'sz002536'], count=15, db_path=db)
+        assert set(res) == {'sh688041', 'sz002536'}
+        assert len(res['sh688041']) == 4
+        assert {'date', 'open', 'high', 'low', 'close'} <= set(res['sh688041'][-1])
+
     def test_fetch_fail_returns_stale_cache(self, cache_env, monkeypatch):
         """抓取失败：返回现有缓存（陈旧但可用）+ 记失败时间，不崩"""
         db, counter = cache_env['db'], cache_env['counter']

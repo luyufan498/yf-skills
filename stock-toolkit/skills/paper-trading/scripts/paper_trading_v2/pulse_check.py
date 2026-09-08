@@ -215,12 +215,6 @@ def expiry_scan():
             "WHERE strategy='NEWS' AND status='open'").fetchall()
         rows = []
         for seg in segs:
-            buy = conn.execute(
-                "SELECT MIN(timestamp) bt, price FROM trades WHERE account_id=? "
-                "AND operation='buy' GROUP BY price ORDER BY bt LIMIT 1",
-                (seg['id'],)).fetchone()
-            if not buy:
-                continue
             # 首 buy（最早时间那笔的价）
             b = conn.execute("SELECT timestamp, price FROM trades WHERE account_id=? "
                              "AND operation='buy' ORDER BY timestamp, id LIMIT 1",
@@ -281,7 +275,6 @@ def run_expiry_scan(fmt: str = "pretty"):
         if r['n'] == 0:
             print(f"  {r['stock']:<7} {r['buy']} 买¥{r['buy_px']:<8} {r['status']}（{r['note']}）")
             continue
-        tag = f"{r['max5_r']:>5.1f}%/{r['last_r']:>5.1f}%" if r['n'] >= 1 else "  n/a"
         print(f"  {r['stock']:<7} {r['buy']} 买¥{r['buy_px']:<8.2f} T+{r['n']}日 "
               f"至今最高¥{r['max5']:<8.2f} 现¥{r['last']:<8.2f} {r['status']}")
         if r['A'] or r['B'] or r['n'] >= 5:

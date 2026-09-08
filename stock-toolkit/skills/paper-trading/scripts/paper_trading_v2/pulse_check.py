@@ -120,11 +120,16 @@ def compute_pulse(ks: List[dict], window: int = WINDOW) -> Optional[dict]:
 
 
 def run(stock_name: str, window: int = WINDOW, fmt: str = "pretty") -> None:
-    name = normalize_stock_name(stock_name)
-    code = lookup_code_for_name(name)
-    if not code:
-        typer.echo(f"❌ 无法解析 {name} 的代码（试 code_searcher 映射/传入代码）", err=True)
-        raise typer.Exit(1)
+    from paper_trading_v2.code_searcher import looks_like_stock_code, canonical_stock_code
+    if looks_like_stock_code(stock_name):
+        code = canonical_stock_code(stock_name)
+        name = code
+    else:
+        name = normalize_stock_name(stock_name)
+        code = lookup_code_for_name(name)
+        if not code:
+            typer.echo(f"❌ 无法解析 {name} 的代码（试 code_searcher 映射/传入代码）", err=True)
+            raise typer.Exit(1)
     ks = _load_klines(code, window + 15)
     if len(ks) < window + 2:
         typer.echo(f"⚠️ {name}({code}) K线不足（{len(ks)} 根）——先跑 fetch-kline-cached {code} -n 60", err=True)

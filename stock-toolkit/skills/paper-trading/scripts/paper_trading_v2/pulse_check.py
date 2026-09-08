@@ -66,13 +66,38 @@ def compute_pulse(ks: List[dict], window: int = WINDOW) -> Optional[dict]:
     F = (peak - trough) / trough * 100 if trough else 0.0
     # 距峰天数：从检查点（最后根）往回数到峰
     days_from_peak = len(pre) - 1 - pi
-    # 峰前连涨结构：峰前连续 close 递增天数（拉升段斜率参考）
-    consec_up = 0
-    for k in range(pi - 1, 0, -1):
-        if pre[k]['close'] > pre[k - 1]['close']:
-            consec_up += 1
+    # 拉升结构（2026-09-08 修正——原"从峰倒数连涨"被峰前阴线打断失真，
+    # 星网案例：三连板但 9/1 阴线夹断 → 报 0 误导）：
+    # 窗口内最大连续阳线段 + 涨停计数，捕捉连板脉冲形态
+    max_run, run = 0, 0
+    run_start = run_end = None
+    cur_start = None
+    for k in range(len(pre)):
+        if pre[k]['close'] >= pre[k]['open']:
+            if run == 0:
+                cur_start = k
+            run += 1
+            if run > max_run:
+                max_run = run
+                run_start, run_end = cur_start, k
         else:
-            break
+            run = 0
+    limit_ups = sum(1 for k in range(1, len(pre))
+                    if pre[k]['close'] >= pre[k - 1]['close'] * 1.095)
+    big_ups = sum(1 for k in range(1, len(pre))
+                  if 0.05 <= pre[k]['close'] / pre[k - 1]['close'] - 1 < 0.095)
+    rs, re = run_start, run_end
+    if rs is not None and re is not None and max_run >= 2:
+        seg0, seg1 = pre[rs], pre[re]
+        run_gain = (seg1['close'] - seg0['open']) / seg0['open'] * 100
+        struct = (f"连阳{max_run}日({seg0['date'][5:]}~{seg1['date'][5:]},"
+                  f" +{run_gain:.0f}%)")
+    else:
+        struct = "无明显连阳段"
+    if limit_ups:
+        struct += f" ｜ 涨停×{limit_ups}"
+    elif big_ups:
+        struct += f" ｜ 大涨×{big_ups}"
     last = pre[-1]
     px = last['close']
     drawdown = (px - peak) / peak * 100  # 现价 vs 峰（负=峰下）
@@ -88,7 +113,8 @@ def compute_pulse(ks: List[dict], window: int = WINDOW) -> Optional[dict]:
     return {
         'F': F, 'peak': peak, 'peak_date': peak_date, 'trough': trough,
         'days_from_peak': days_from_peak, 'drawdown': drawdown,
-        'consec_up': consec_up, 'px': px, 'state': state, 'tag': st_tag,
+        'structure': struct, 'limit_ups': limit_ups, 'px': px,
+        'state': state, 'tag': st_tag,
         'window_start': pre[0]['date'], 'window_end': pre[-1]['date'],
     }
 
@@ -119,7 +145,7 @@ def run(stock_name: str, window: int = WINDOW, fmt: str = "pretty") -> None:
            if p['drawdown'] >= 0 else f"现价 ¥{p['px']:.2f} = 段峰下 {-p['drawdown']:.1f}%")
     typer.echo(f"📐 发酵段脉冲检查 {name} ({code})")
     typer.echo(f"   窗口: {p['window_start']} ~ {p['window_end']}（前 {window} 交易日）")
-    typer.echo(f"   {seg_len} ｜ 峰日 {p['peak_date']}（距今 {p['days_from_peak']} 交易日）｜ 峰前连涨 {p['consec_up']} 日")
+    typer.echo(f"   {seg_len} ｜ 峰日 {p['peak_date']}（距今 {p['days_from_peak']} 交易日）｜ {p['structure']}")
     typer.echo(f"   {pos}")
     typer.echo(f"   状态: {p['state']}")
     typer.echo("   ── 只报不拦（软保护参考）：🟢 尊重趋势 / 🟡 降档谨慎或挂点 / 🔴 禁市价追，挂企稳或放弃")

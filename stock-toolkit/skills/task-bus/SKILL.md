@@ -167,18 +167,19 @@ pending ──claim──▶ processing ──done──▶ done
 - `claim` 是**原子认领**（`UPDATE ... WHERE status='pending'`）：串行消费 + 认领失败跳过，双保险防抢事件/重复消费
 - `recover` 把卡死（agent 崩溃）的 processing 重置回 pending，默认超时 2 小时
 
-### 📰 v12 消息挂单三类型与 claim 硬门（2026-09-03，方案 v12-news-order-20260903）
+### 📰 v12 消息链路四类型与 claim 硬门（2026-09-03，方案 v12-news-order-20260903；2026-09-09 起含 MSG_EXPIRE）
 
 | 类型 | 含义 | 生产者 | 唯一消费者 |
 |------|------|--------|-----------|
 | `MSG_CANDIDATE` | newsdb 新事件检出（imp≥4 bullish、入库 24h 内、未入池；payload 含 event_key/anchor_price=检出时刻实时价/event_title） | `watch_scan.py --scope news` | msg-watch 专用心跳 stock-msg-watch |
 | `MSG_ORDER` | 带内挂单（band=[anchor×95%, anchor×105%]，TTL=下一节收盘） | 专用心跳（G1-G4 过闸后） | C1 price-watch（槽扫描） |
 | `MSG_REJUDGE` | 弃单/破带后重判 | watch_scan/paper_trading_v2（expire 路径） | msg-watch 专用心跳 stock-msg-watch |
+| `MSG_EXPIRE` | 消息组论点失效清退令（晚审基于**收盘数据**判定 A∧B∧n≥5∧C 腿核验后"该不该清"，只挂事件**不碰钱**；执行=实时价卖出+关槽归 msg-watch 盘中。payload 带 event_key/stock/code/seg_id/buy_date/buy_price/ABC 三腿快照/decided_date/newsdb 依据） | 晚审 supervisor-evening-audit 0c（收盘判定后 `taskbus add`，19:35 盘后） | msg-watch 专用心跳 stock-msg-watch（C2 心跳盘中执行） |
 
 > **2026-09-03 改名**：v12 消息面处理链事件前缀 NEWS_*→MSG_*（对齐 msg-watch consumer，与信息收集域 COLLECT/news-collect 区分）。旧名 NEWS_CANDIDATE/ORDER/REJUDGE 已全链退役（存量 done 事件保留原值不追溯）。
 
-- **claim 硬门**：`taskbus claim <id> --consumer <name>`——上述三类型仅 `--consumer msg-watch` 可认领（MSG_ORDER 归 C1 槽扫描不经 claim），其余（含缺省）一律拒绝（exit 3，提示消费者归属）；**存量类型不校验**（晨审/旧心跳无 `--consumer` 照常 claim，向后兼容）。consumer 写入 payload `claimed_by` 供审计。
-- **legacy 心跳隔离**：`check_tasks` 的 NOT IN 清单已加这三类型——旧心跳连 `[EVENT]` 列表都看不到，配合 prompt 断根句双保险。
+- **claim 硬门**：`taskbus claim <id> --consumer <name>`——上述消息链路四类型仅 `--consumer msg-watch` 可认领（MSG_ORDER 归 C1 槽扫描不经 claim），其余（含缺省）一律拒绝（exit 3，提示消费者归属）；**存量类型不校验**（晨审/旧心跳无 `--consumer` 照常 claim，向后兼容）。consumer 写入 payload `claimed_by` 供审计。
+- **legacy 心跳隔离**：`check_tasks` 的 NOT IN 清单已加这四类型——旧心跳连 `[EVENT]` 列表都看不到，配合 prompt 断根句双保险。MSG_EXPIRE 同时在 news scope 唤醒层 `news_pending_lines` 的 IN 清单（C2 monitor 持久可见防积压死锁）。
 - **`--scope` 分流**：`watch_scan.py --scope news`（专用心跳 monitor：只检 newsdb 新事件 + 列 `[NEWS]` 待办，**静默** SLEEVE_FILL/[SLEEVE] 与一切 legacy 检测）；缺省/`--scope legacy` = 旧全量逻辑原样（SLEEVE 链路保留可回滚）。
 
 ## CLI 命令

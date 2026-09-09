@@ -15,6 +15,10 @@ DEFAULT_DB = os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 TYPES = ["DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", "SLEEVE_FILL",
          # v12 消息挂单链路（方案 v12-news-order-20260903）：msg-watch 专属三类型
          "MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE",
+         # 消息论点失效清退令（2026-09-09）：生产者=晚审（supervisor-evening-audit，
+         # 19:35 盘后按收盘数据判定 A∧B∧n≥5∧C 腿核验，只挂事件不碰钱），
+         # 消费者=msg-watch（C2 心跳盘中实时价执行卖出+关槽，claim 硬门）
+         "MSG_EXPIRE",
          # 事件链注入采集（2026-09-03 M1，news-collect 心跳 v2 方案 §4/§5）：
          # COLLECT 独立新增（不复用 REFRESH——已退役，见上）
          "COLLECT",
@@ -23,9 +27,9 @@ TYPES = ["DEEP_DIVE", "WATCH_ALERT", "CALENDAR", "L3_SNAPSHOT", "MSG_SNAPSHOT", 
          "ANALYSIS_REFRESH"]
 STATUSES = ["pending", "processing", "done", "failed"]
 
-# v12 claim 硬门：消息挂单三类型仅专用心跳（consumer='msg-watch'）可认领；
+# v12 claim 硬门：消息链路四类型仅专用心跳（consumer='msg-watch'）可认领；
 # 存量类型不在本集合内 → 不校验（向后兼容，晨审/旧心跳照常 claim）。
-MSG_TYPES = ("MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE")
+MSG_TYPES = ("MSG_CANDIDATE", "MSG_ORDER", "MSG_REJUDGE", "MSG_EXPIRE")
 MSG_CONSUMER = "msg-watch"
 
 # M1 claim 硬门扩展（news-collect 心跳 v2 方案 §5）：COLLECT 仅专用心跳
@@ -101,8 +105,8 @@ def add(type_: str, entity: str, source: str = "user", priority: int = 3,
 def claim(task_id: int, consumer: str | None = None) -> dict | None:
     """原子认领：pending → processing。认领失败（已被抢/状态不对/不存在）返回 None。
 
-    v12 claim 硬门：消息三类型（MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE）仅
-    consumer='msg-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
+    v12 claim 硬门：消息链路四类型（MSG_CANDIDATE/MSG_ORDER/MSG_REJUDGE/MSG_EXPIRE）
+    仅 consumer='msg-watch' 可认领——不符抛 PermissionError（含归属提示）；consumer
     缺省同样拒绝（fail-closed，防旧 prompt 漏传参数绕过）。M1 扩展（news-collect
     心跳 v2 方案 §5）：COLLECT 仅 consumer='news-collect' 可认领，规则同构。
     存量类型不校验（向后兼容：晨审/旧心跳无 --consumer 照常 claim）。consumer
@@ -117,7 +121,7 @@ def claim(task_id: int, consumer: str | None = None) -> dict | None:
         if row["type"] in MSG_TYPES and consumer != MSG_CONSUMER:
             who = consumer or "(未提供 --consumer)"
             raise PermissionError(
-                f"#{task_id} [{row['type']}] 属消息挂单链路，唯一消费者=msg-watch"
+                f"#{task_id} [{row['type']}] 属消息链路，唯一消费者=msg-watch"
                 f"（专用心跳 stock-msg-watch）；当前 consumer={who}。"
                 f"旧心跳/晨审请跳过 MSG_* 类型（review 修订#5：唯一消费者保证）")
         if row["type"] in COLLECT_TYPES and consumer != COLLECT_CONSUMER:

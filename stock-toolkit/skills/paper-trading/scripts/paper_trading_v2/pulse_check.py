@@ -172,7 +172,7 @@ def register(app):
 # T+5 论点失效扫描（msg-expiry-scan，2026-09-08 晚审 0c 步）
 # ============================================================
 # 消息组试探仓：买入满 5 交易日后若 ①无发酵(5日最高<买价×1.03)
-# ②回踩(现价≤买价) ③无新 imp≥4 利好 → 论点失效候选（晚审核 C 腿后
+# ②回踩(现价≤买价) ③无新 imp≥4 事件(方向待核) → 论点失效候选（晚审核 C 腿后
 # 自动清退关槽）。水位因子：池紧 5 日即清，池松放宽 T+8/T+10。
 # 历史校准（18 笔）：×1.03 抓用户点名 5 只全中，真发酵票(新易盛110%/
 # 源杰118%/东方盛虹107%)无一误伤；恒瑞(101.8%平盘)靠 B 腿放行。
@@ -270,7 +270,7 @@ def run_expiry_scan(fmt: str = "pretty"):
         import json
         typer.echo(json.dumps({'rows': rows, 'water': wl}, ensure_ascii=False, indent=2, default=str))
         return
-    typer.echo(f"📡 消息槽论点失效扫描（T+5，A=5日最高<买价×{NO_FERMENT} B=现价≤买价 C=无imp4利好）")
+    typer.echo(f"📡 消息槽论点失效扫描（T+5，A=5日最高<买价×{NO_FERMENT} B=现价≤买价 C=无imp4新事件(方向待核)）")
     typer.echo(f"   水位: 消息池 free ¥{wl['free']:,.0f}/{wl['total']:,.0f} ｜ 槽占用 {wl['slots']}/20 "
                f"｜ {'🔴 池紧——5 日即清（腾坑）' if wl['tight'] else '🟢 池松——可放宽 T+8/10'}")
     typer.echo("")
@@ -289,13 +289,13 @@ def run_expiry_scan(fmt: str = "pretty"):
             if r['B']: detail.append(f"B回踩(现{r['last_r']}%≤100%)")
             imp = r['news_imp4']
             if imp is None: detail.append("C新闻库未连")
-            elif imp > 0: detail.append(f"C有imp4利好×{imp}(可重置/agent核)")
-            else: detail.append("C无新利好")
+            elif imp > 0: detail.append(f"C有imp4事件×{imp}(方向/时序待核)")
+            else: detail.append("C无新事件")
             print(f"            {' '.join(detail)}")
 
 
 def _register_expiry(app):
     @app.command("msg-expiry-scan")
     def msg_expiry_scan(fmt: str = typer.Option("pretty", "--format", "-f", help="pretty/json")):
-        """消息槽 T+5 论点失效扫描：买入满 5 交易日无发酵+回踩+无新利好 → 清退候选（晚审 0c 步）"""
+        """消息槽 T+5 论点失效扫描：买入满 5 交易日无发酵+回踩+无新imp4事件 → 清退候选（晚审 0c 步）"""
         run_expiry_scan(fmt=fmt)

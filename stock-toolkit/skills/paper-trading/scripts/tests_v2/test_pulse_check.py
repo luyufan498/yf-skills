@@ -120,6 +120,26 @@ def test_compute_plunge_no_plunge():
     assert p is not None and p['has_plunge'] is False and p['tag'] == 'none'
 
 
+def test_compute_plunge_freshness():
+    """反弹新鲜度（2026-09-09 加）：低点距今 ≤20 交易日 = fresh；>20 → tag='stale'、不作加分。
+
+    实证：甜点区内 低点近(≤20) − 远(>20) fwd20 +3.9pp (t 3.5)，2025/2026 分年皆成立。
+    """
+    # 新鲜：反弹 8 日 → rdays=8 ≤ 20
+    p = compute_plunge(_plunge_bars(), window=PLUNGE_WINDOW)
+    assert p['rdays'] == 8 and p['fresh'] is True and p['fresh_limit'] == 20
+    assert p['tag'] in ('has', 'mid')
+
+    # 陈旧：谷后横盘 17 日 → rdays=25 > 20（窗口 60 根，谷距末根 25 根）
+    ks = _plunge_bars()
+    base = ks[-1]['close']
+    for i in range(17):
+        ks.append(_k(f'2026-08-{i + 1:02d}', base, base + 0.5, base - 0.5, base))
+    p2 = compute_plunge(ks, window=PLUNGE_WINDOW)
+    assert p2['rdays'] == 25 and p2['fresh'] is False
+    assert p2['tag'] == 'stale' and '反弹陈旧' in p2['state']
+
+
 def test_compute_plunge_steep_flag():
     """极急跌（≤-2.5%/日）→ tag='steep'（样本外最弱档，只影响排序）。"""
     ks = [_k(f'2026-04-{i + 1:02d}', 98, 99.0, 97.0, 98.5) for i in range(45)]

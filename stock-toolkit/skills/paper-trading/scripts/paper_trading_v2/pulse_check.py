@@ -338,6 +338,7 @@ PLUNGE_WINDOW = 60          # 窗口交易日
 PLUNGE_MIN = -15.0          # depth ≤ -15% → 有跳水段
 PLUNGE_STEEP = -2.5         # ≤ -2.5%/日 → 极急跌（样本外最弱）
 PLUNGE_MID = (-1.5, -0.8)   # 中速档（池内最强；样本外未复现，仅排序用）
+PLUNGE_FRESH_RDAYS = 20     # 低点距今 ≤20 交易日 = 反弹新鲜（2026-09-09 实证：>20 显著变差）
 
 
 def compute_plunge(ks: List[dict], window: int = PLUNGE_WINDOW) -> Optional[dict]:
@@ -357,8 +358,11 @@ def compute_plunge(ks: List[dict], window: int = PLUNGE_WINDOW) -> Optional[dict
     rdays = len(win) - 1 - ti
     px = win[-1]['close']
     has = depth <= PLUNGE_MIN
+    fresh = rdays <= PLUNGE_FRESH_RDAYS
     if not has:
         state, tag = '⬜ 无跳水段（甜点区排序降级）', 'none'
+    elif not fresh:
+        state, tag = f'🟠 反弹陈旧（低点距今 {rdays} 交易日 > {PLUNGE_FRESH_RDAYS}，不作加分）', 'stale'
     elif speed <= PLUNGE_STEEP:
         state, tag = '🔴 极急跌（样本外最弱档）', 'steep'
     elif PLUNGE_MID[0] <= speed <= PLUNGE_MID[1]:
@@ -366,6 +370,7 @@ def compute_plunge(ks: List[dict], window: int = PLUNGE_WINDOW) -> Optional[dict
     else:
         state, tag = '🟡 有跳水段', 'has'
     return {'depth': depth, 'pdays': pdays, 'speed': speed, 'rdays': rdays,
+            'fresh': fresh, 'fresh_limit': PLUNGE_FRESH_RDAYS,
             'rb_pct': (px / trough - 1) * 100 if trough else 0.0,
             'px': px, 'trough': trough, 'peak': peak,
             'peak_date': win[pi]['date'], 'trough_date': win[ti]['date'],
@@ -404,6 +409,9 @@ def run_plunge(stock_name: str, window: int = PLUNGE_WINDOW, fmt: str = "pretty"
                f"({p['trough_date']}) = {p['depth']:+.1f}% ｜ 历时 {p['pdays']} 交易日"
                f" ｜ 速度 {p['speed']:+.2f}%/日")
     typer.echo(f"   离低点 {p['rdays']} 交易日，反弹 {p['rb_pct']:+.1f}%（现价 ¥{p['px']:.2f}）")
+    typer.echo(f"   反弹新鲜度: " + ("✅ 新鲜（≤%d 交易日）" % p['fresh_limit'] if p['fresh']
+               else "⚠️ 陈旧（>%d 交易日）→ 不作加分" % p['fresh_limit'])
+               + " ｜ 实证：甜点区内低点近(≤20)−远(>20) fwd20 +3.9pp (t 3.5)")
     typer.echo(f"   状态: {p['state']}")
     typer.echo("   ── 只作技术组候选排序参考（软加分，只影响先看谁）；不构成门控；"
                "消息组禁用（宪法 2.6）")

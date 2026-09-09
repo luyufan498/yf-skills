@@ -484,3 +484,64 @@ def lookup_code_for_name(name) -> Optional[str]:
         if key in mkt:
             return mkt[key]
     return _newsdb_code_for_name(key)
+
+
+# ---------- 代码 ↔ 名称一致性校验（2026-09-09 北方铜业错码事故后新增） ----------
+
+_NAME_STRIP_SUFFIXES = ('股份有限公司', '有限责任公司', '有限公司', '集团股份', '股份', '集团', '公司')
+_NAME_STRIP_PREFIXES = ('*ST', 'ST', 'N', 'C')
+
+
+def _norm_name(s) -> str:
+    """名称归一：去空白（含全角空格）→ 去 *ST/ST/N/C 前缀 → 去股份/集团/公司等后缀
+    → 去「-U/-W/-D」等交易所标记后缀（盛科通信-U → 盛科通信）。
+
+    仅用于「是否同一只票」的宽松比较（避免 北方铜业 vs 北方铜业股份 误判为错配）。
+    """
+    s = str(s or '').strip().replace(' ', '').replace('\u3000', '').replace('\xa0', '')
+    if '-' in s:                      # 腾讯对未盈利/同股不同权标的加 -U/-W/-D 后缀
+        s = s.split('-')[0]
+    changed = True
+    while changed:
+        changed = False
+        for pre in _NAME_STRIP_PREFIXES:
+            if s.startswith(pre) and len(s) > len(pre):
+                s = s[len(pre):]
+                changed = True
+    for suf in _NAME_STRIP_SUFFIXES:
+        if s.endswith(suf) and len(s) > len(suf):
+            s = s[:-len(suf)]
+            break
+    return s
+
+
+def verify_code_name(stock_name, raw_code, allow_network: bool = True):
+    """校验「代码 ↔ 名称」是否指向同一只票 → (ok, 该代码的真实名称)。
+
+    ok=False **仅当正向查到名字且与 stock_name 不同**（真错配，如 北方铜业 配 sh605577
+    = 龙版传媒）；查不到（本地三级查不到 + 网络失败/未安装）→ ok=True **fail-open**，
+    不阻塞批量入池（与 canonical_stock_code 的 fail-closed 语义刻意相反：这里宁漏拦不误拦）。
+
+    名称来源优先级：腾讯实时接口（权威、覆盖全）> 本地三级反查（fallback 反查/hot_stocks/
+    newsdb，零网络）。allow_network=False 时只走本地（测试/离线场景）。
+    """
+    name = str(stock_name or '').strip()
+    if not name or not raw_code:
+        return True, None
+    try:
+        canonical = canonical_stock_code(raw_code)
+    except ValueError:
+        canonical = str(raw_code).strip()
+    found = None
+    if allow_network:
+        try:
+            from paper_trading_v2.price_fetcher import StockPriceFetcher
+            info = StockPriceFetcher().get_realtime_price(canonical)
+            found = getattr(info, 'name', None) if info else None
+        except Exception:
+            found = None
+    if not found:
+        found = resolve_name_for_code(canonical)
+    if not found:
+        return True, None
+    return (_norm_name(found) == _norm_name(name)), found

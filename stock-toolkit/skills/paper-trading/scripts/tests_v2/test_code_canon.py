@@ -256,3 +256,52 @@ def test_canon_code_name_path_unparseable_exit_1(no_newsdb, monkeypatch):
     r = runner.invoke(app, ["canon-code", "乱七八糟###"])
     assert r.exit_code == 1
     assert "无法解析" in r.output
+
+
+# ============ verify_code_name：代码↔名称一致性（2026-09-09 北方铜业错码事故） ============
+
+def _offline(monkeypatch):
+    """断网：腾讯实时接口返回 None → 校验只走本地三级反查"""
+    monkeypatch.setattr(
+        'paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price',
+        lambda self, code: None)
+
+
+def test_verify_code_name_match_mismatch_and_failopen(no_newsdb, monkeypatch):
+    """一致放行 / 错配拒绝（北方铜业配龙版传媒码）/ 查不到 fail-open"""
+    _offline(monkeypatch)
+    from paper_trading_v2.code_searcher import verify_code_name
+    ok, found = verify_code_name("北方铜业", "sz000737")
+    assert ok and found == "北方铜业"
+    ok, found = verify_code_name("北方铜业", "sh605577")     # 龙版传媒
+    assert not ok and found == "龙版传媒"
+    ok, found = verify_code_name("北方铜业", "605577.SH")    # 后缀形态同样归一后判定
+    assert not ok and found == "龙版传媒"
+    ok, found = verify_code_name("某不存在的票", "sh999999")
+    assert ok and found is None                              # fail-open 不阻塞
+
+
+def test_verify_code_name_norm_tolerates_suffix(no_newsdb, monkeypatch):
+    """名称前后缀归一：北方铜业 vs 北方铜业股份/ST北方铜业 不算错配"""
+    from paper_trading_v2 import code_searcher as cs
+    for variant in ("北方铜业股份", "北方铜业股份有限公司", "ST北方铜业", "北方铜业 "):
+        monkeypatch.setattr(cs, "resolve_name_for_code", lambda c, v=variant: v)
+        ok, _ = cs.verify_code_name("北方铜业", "sz000737", allow_network=False)
+        assert ok, variant
+
+
+def test_watchlist_add_rejects_mismatched_code(ws, db_path, monkeypatch):
+    """CLI 闸门：--code 与名称不符 → exit 1 且零写入；PTRADE2_ALLOW_CODE_MISMATCH=1 放行"""
+    monkeypatch.setenv("NEWS_DB_PATH", str(ws / "absent-news.db"))
+    _offline(monkeypatch)
+    from paper_trading_v2.cli import app
+    r = runner.invoke(app, ["watchlist-add", "北方铜业", "--code", "sh605577", "--strategy", "L2"])
+    assert r.exit_code == 1
+    assert "代码与股票名不符" in r.output
+    assert "sz000737" in r.output          # 提示正确代码
+    assert "龙版传媒" in r.output          # 指出该码真实对应谁
+    assert not db_path.exists()            # 零写入
+    monkeypatch.setenv("PTRADE2_ALLOW_CODE_MISMATCH", "1")
+    r2 = runner.invoke(app, ["watchlist-add", "北方铜业", "--code", "sh605577", "--strategy", "L2"])
+    assert r2.exit_code == 0, r2.output
+    assert ("北方铜业", "sh605577") in _pool_rows(db_path)   # 逃生阀生效

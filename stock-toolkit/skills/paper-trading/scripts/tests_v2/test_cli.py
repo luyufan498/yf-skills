@@ -17,7 +17,9 @@ def test_cli_master_pool_init_show(ws):
     assert "10,000,000" in r.output
 
 
-def test_cli_watchlist_add_remove(ws):
+def test_cli_watchlist_add_remove(ws, monkeypatch):
+    # 本用例用合成 code 验档位/pin 生命周期，与「代码↔名称一致性闸门」无关 → 关掉闸门
+    monkeypatch.setenv("PTRADE2_ALLOW_CODE_MISMATCH", "1")
     from paper_trading_v2.cli import app
     r = runner.invoke(app, ["watchlist-add", "赛力斯", "--code", "sh603527",
                             "--strategy", "L1", "--source", "manual", "--reason", "锁"])

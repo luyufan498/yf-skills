@@ -1,4 +1,5 @@
 """ptrade2 CLI — master-pool / watchlist / sleeve / 交易命令组"""
+import os
 import sys
 
 import typer
@@ -357,13 +358,34 @@ def watchlist_list():
 
 
 def _ensure_code(stock: str, code: Optional[str]) -> str:
-    """自动查码兜底：--code 缺失时先查本地 pool/position，再触网查码补全；都查不到才拒绝。
+    """自动查码兜底 + 代码↔名称一致性校验。
 
     2026-08-25 加入：堵住"入池/建段不带 code"导致网站代码列空白 + 无法取价的坑。
     v9：本地兜底源=pool 表 + position 段表（accounts 已退役，段即账户）。
+    2026-09-09 加入：**--code 传入时校验名称**——北方铜业 配 sh605577(=龙版传媒)
+    曾静默入库，watch_scan 按 pool.code 取价 → 心跳一直盯错票。
     """
     if code and code.strip():
-        return code.strip()
+        code = code.strip()
+        if os.environ.get('PTRADE2_ALLOW_CODE_MISMATCH') != '1':
+            try:
+                from paper_trading_v2.code_searcher import verify_code_name
+                ok, found = verify_code_name(stock, code)
+            except Exception:
+                ok, found = True, None          # 校验器自身异常 → fail-open 不阻塞
+            if not ok:
+                hint = None
+                try:
+                    from paper_trading_v2.code_searcher import lookup_code_for_name
+                    hint = lookup_code_for_name(stock)
+                except Exception:
+                    hint = None
+                raise ValueError(
+                    f"代码与股票名不符：{stock} 应配 {hint or '<未查到，请人工确认>'}，"
+                    f"传入的 {code} 对应「{found}」。确认无误可设 "
+                    f"PTRADE2_ALLOW_CODE_MISMATCH=1 跳过校验"
+                )
+        return code
     # 1) 本地兜底：pool 表 / position 段表已有该股 code（离线也可靠）
     try:
         from paper_trading_v2.db import get_connection

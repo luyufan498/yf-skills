@@ -231,12 +231,13 @@ class SleeveOpener:
                     # TOCTOU 免疫——并发抢不到坑即出局，不再"查-判-写"）
                     cur = conn.execute(
                         "INSERT INTO event_slots (event_key, status, opened_at, budget, "
-                        "news_kind, title, members_json, fill_status, note) "
-                        "SELECT ?, 'open', ?, ?, ?, ?, ?, 'pending', ? "
+                        "news_kind, title, members_json, fill_status, created_by, note) "
+                        "SELECT ?, 'open', ?, ?, ?, ?, ?, 'pending', ?, ? "
                         f"WHERE (SELECT COUNT(*) FROM event_slots WHERE status IN "
                         f"({','.join('?' * len(SLOT_ACTIVE))})) < ?",
                         (event_key, now, budget, news_kind, title,
-                         json.dumps(stocks, ensure_ascii=False), note,
+                         json.dumps(stocks, ensure_ascii=False),
+                         'msg-watch', note,
                          *SLOT_ACTIVE, MAX_ACTIVE_SLOTS))
                     if cur.rowcount == 0:
                         raise ValueError(f"事件坑已满（{active_slot_count(conn)}/"

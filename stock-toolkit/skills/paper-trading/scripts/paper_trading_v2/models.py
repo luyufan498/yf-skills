@@ -124,6 +124,7 @@ class Position(BaseModel):
     operation: OperationType
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     note: str = ""
+    event_id: str = Field(default="", description="v13/A2 幂等键（关联事件执行请求；''=无事件关联）")
 
     class Config:
         use_enum_values = True

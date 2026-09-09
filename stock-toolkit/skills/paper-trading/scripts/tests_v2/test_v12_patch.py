@@ -431,7 +431,9 @@ def test_e4_rejudge_count_column_and_migrate_idempotent(pools, env):
     try:
         cols = {r[1] for r in c.execute("PRAGMA table_info(event_slots)").fetchall()}
         assert 'rejudge_count' in cols
-        assert c.execute("SELECT version FROM schema_meta").fetchone()[0] == 12
+        # v13 起 SCHEMA_VERSION 推进（任务书A 2026-09-10）；此处锁"版本到位"非 pin 死数字
+        from paper_trading_v2.db import SCHEMA_VERSION
+        assert c.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
     finally:
         c.close()
     with get_connection(_db(env)) as c0:

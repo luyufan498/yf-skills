@@ -913,14 +913,18 @@ def sleeve_order_place(
                             help="挂单到期 ISO 时刻=挂单后第一个交易节收盘（11:30/15:00 先到）"),
     reason: str = typer.Option("", "--reason", help="挂单依据（审计）"),
     source: str = typer.Option("agent", "--source"),
+    placed_px: Optional[float] = typer.Option(None, "--placed-px",
+                                              help="v13/A5 挂单时刻价（anchor_price=事件入库价，两者都留）"),
 ):
     """挂单（开槽后）：band=[0.95,1.05]×anchor，槽 open → pending_order，资金零挪动
     （专用心跳消费 MSG_CANDIDATE → sleeve-open → 本命令）"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:
-        r = SleeveOrder().place(event_key, anchor, ttl, source=source, reason=reason)
+        r = SleeveOrder().place(event_key, anchor, ttl, source=source, reason=reason,
+                                placed_px=placed_px)
         typer.echo(f"✅ 挂单 {r['order_id']}：带 [{r['band_min']}, {r['band_max']}]"
-                   f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order")
+                   f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order"
+                   + (f"，placed_px={r['placed_px']}" if r.get('placed_px') is not None else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1)
@@ -1062,6 +1066,9 @@ def buy(
     qty: Optional[int] = typer.Option(None, "--qty", "-q"),
     amount: Optional[float] = typer.Option(None, "--amount", "-a"),
     note: str = typer.Option("", "--note", "-n"),
+    event_id: str = typer.Option("", "--event-id", help="v13/A2 幂等键（同键已成交即拒绝）"),
+    price: Optional[float] = typer.Option(None, "--price",
+                                          help="v13/A3 显式检测价成交（默认自取实时价；带 E3 行情防线）"),
 ):
     """买入股票"""
     stock_name = normalize_stock_name(stock_name)
@@ -1069,7 +1076,8 @@ def buy(
     from paper_trading_v2.trading import PaperTrader
     try:
         enforce(stock_name, 'buy')      # 能力矩阵：消息组禁直接 buy（只走 sleeve-fill）
-        account = PaperTrader().buy_stock(stock_name, quantity=qty, amount=amount, note=note)
+        account = PaperTrader().buy_stock(stock_name, quantity=qty, amount=amount,
+                                          note=note, event_id=event_id, price=price)
         typer.echo(f"✅ 买入成功：{stock_name} ｜ 剩余可用 ¥{account.capital_pool.available:,.0f}")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -1082,12 +1090,16 @@ def sell(
     qty: Optional[int] = typer.Option(None, "--qty", "-q"),
     all: bool = typer.Option(False, "--all", help="全部卖出"),
     note: str = typer.Option("", "--note", "-n"),
+    event_id: str = typer.Option("", "--event-id", help="v13/A2 幂等键（同键已成交即拒绝）"),
+    price: Optional[float] = typer.Option(None, "--price",
+                                          help="v13/A3 显式检测价成交（默认自取实时价；带 E3 行情防线）"),
 ):
     """卖出股票"""
     stock_name = normalize_stock_name(stock_name)
     from paper_trading_v2.trading import PaperTrader
     try:
-        account = PaperTrader().sell_stock(stock_name, quantity=qty, sell_all=all, note=note)
+        account = PaperTrader().sell_stock(stock_name, quantity=qty, sell_all=all,
+                                           note=note, event_id=event_id, price=price)
         typer.echo(f"✅ 卖出成功：{stock_name} ｜ 可用 ¥{account.capital_pool.available:,.0f}")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

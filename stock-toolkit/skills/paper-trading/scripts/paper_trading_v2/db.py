@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 12  # 与 migrate_db 实际最高版同步（v12: v12-patch E4 rejudge_count，2026-09-03）
+SCHEMA_VERSION = 13  # 与 migrate_db 实际最高版同步（v13: 任务书A 2026-09-10——trades.event_id + 创建者列 + placed_px/band_out_count）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -206,6 +206,9 @@ CREATE TABLE IF NOT EXISTS event_slots (
     order_ttl TEXT,                        -- v12 挂单到期（ISO；=挂单时刻后第一个交易节收盘）
     order_id TEXT,                         -- v12 挂单标识（order:<event_key>:<epoch>）
     rejudge_count INTEGER DEFAULT 0,       -- v12-patch/E4 重判 keep 次数（帽 2 次，超限强制 close）
+    created_by TEXT DEFAULT '',            -- v13/A4 对象创建者（msg-watch/analysis-watch/atr-auto/user…失败路由依据）
+    placed_px REAL,                        -- v13/A5 挂单时刻价（anchor_price=事件入库价，两者都留）
+    band_out_count INTEGER DEFAULT 0,      -- v13/A5 连续出带计数（供消费侧用）
     note TEXT
 );
 
@@ -298,6 +301,7 @@ CREATE TABLE trades (
     total_cost REAL,
     timestamp TEXT,
     note TEXT,
+    event_id TEXT DEFAULT '',      -- v13/A2 幂等键（关联事件执行请求；''=无事件关联）
     FOREIGN KEY(account_id) REFERENCES position(id)
 );
 """
@@ -584,6 +588,42 @@ def migrate_db(conn: sqlite3.Connection):
                     if 'duplicate column' not in str(e).lower():
                         raise
         conn.execute("UPDATE schema_meta SET version=12")
+        conn.commit()
+    if current < 13:
+        # v13: 任务书A（2026-09-10 条件/挂单执行链改造 v3，A 批契约/数据层）——
+        #   A2：trades.event_id（幂等键，执行前查同 event_id 已成交即拒绝）；
+        #   A4：conditions/event_slots.created_by（对象创建者，失败路由依据）；
+        #   A5：event_slots.placed_px（挂单时刻价，anchor_price=事件入库价，两者都留）
+        #       + band_out_count（连续出带计数，供消费侧用）。
+        # 只加列零行改写；存量行默认 event_id=''/created_by=''/placed_px=NULL/
+        # band_out_count=0（兼容旧流水与旧槽）。SCHEMA_DDL/V9_DDL 同步新库建表；
+        # 此处 ALTER 覆盖存量库（duplicate column 幂等）。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
+        if cols and 'event_id' not in cols:
+            try:
+                conn.execute("ALTER TABLE trades ADD COLUMN event_id TEXT DEFAULT ''")
+            except sqlite3.OperationalError as e:
+                if 'duplicate column' not in str(e).lower():
+                    raise
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(conditions)").fetchall()]
+        if cols and 'created_by' not in cols:
+            try:
+                conn.execute("ALTER TABLE conditions ADD COLUMN created_by TEXT DEFAULT ''")
+            except sqlite3.OperationalError as e:
+                if 'duplicate column' not in str(e).lower():
+                    raise
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(event_slots)").fetchall()]
+        if cols:
+            for col, decl in (('created_by', "TEXT DEFAULT ''"),
+                              ('placed_px', 'REAL'),
+                              ('band_out_count', 'INTEGER DEFAULT 0')):
+                if col not in cols:
+                    try:
+                        conn.execute(f"ALTER TABLE event_slots ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError as e:
+                        if 'duplicate column' not in str(e).lower():
+                            raise
+        conn.execute("UPDATE schema_meta SET version=13")
         conn.commit()
 
 

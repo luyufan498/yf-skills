@@ -35,7 +35,11 @@ from paper_trading_v2.sleeve_open import SleeveOpener
 BAND_LO = 0.95
 BAND_HI = 1.05
 ORDER_STATES = ('pending_order', 'pending_rejudge')
-EXPIRE_REASONS = ('expired', 'band_break')
+# v13/A5（任务书A 2026-09-10）：expire reason 白名单扩 band_left / band_skipped——
+# band_left=立即型挂单出带（§2 判据：连续 2 拍确认，消费侧负责判定后弃单）；
+# band_skipped=等待型挂单整带穿越未成交（跨到另一侧）。语义同弃单（pending_rejudge，
+# 预算冻结保留），只是失败路由依据（created_by 词表 §1.1）不同。
+EXPIRE_REASONS = ('expired', 'band_break', 'band_left', 'band_skipped')
 
 # v12-patch 补洞轮（双模型对抗审计节，2026-09-03）：
 SESSION_CLOSES = ((11, 30), (15, 0))   # E5 交易节收盘（裁决 3：11:30/15:00 取先到）
@@ -211,7 +215,8 @@ class SleeveOrder:
 
     # ---------- sleeve-order-place ----------
 
-    def place(self, event_key, anchor, ttl, source='agent', reason=''):
+    def place(self, event_key, anchor, ttl, source='agent', reason='',
+              placed_px=None):
         """挂单：band=[BAND_LO,BAND_HI]×anchor，槽 open → pending_order。
 
         anchor=事件入库（newsdb created_at）时刻价格快照（watch_scan 检出时读价
@@ -219,6 +224,9 @@ class SleeveOrder:
         （E5 fail-closed 校验：必须=next_session_close(now)，否则拒绝）。
         只从 open（sleeve-open 刚建、未挂单）态挂——重复挂单/弃单待重判态出局
         （重判重挂走 rejudge --keep，带刷新语义在那里）。资金零挪动。
+        placed_px（v13/A5）：挂单时刻价快照（--placed-px 显式传入；缺省 NULL=
+        挂单时刻价未知，不与入库价混写——anchor_price 是事件入库价，两者都留）。
+        created_by='msg-watch'（v13/A4：MSG 挂单创建者，失败路由归宿=msg-watch）。
         """
         if anchor is None or float(anchor) <= 0:
             raise ValueError(f"anchor 必须是正价格，收到 {anchor!r}")
@@ -247,18 +255,21 @@ class SleeveOrder:
                 cur = conn.execute(
                     "UPDATE event_slots SET status='pending_order', band_min=?, "
                     "band_max=?, anchor_price=?, order_ttl=?, order_id=?, "
+                    "placed_px=?, "
                     "note=COALESCE(note,'')||? "
                     "WHERE event_key=? AND status='open' AND COALESCE(order_id,'')=''",
-                    (band_min, band_max, anchor, ttl, order_id,
+                    (band_min, band_max, anchor, ttl, order_id, placed_px,
                      f" [挂单@{anchor} 带[{band_min},{band_max}] ttl={ttl}]", event_key))
                 if cur.rowcount == 0:
                     raise ValueError(f"挂单未获认领（并发已挂/状态已变），{event_key} 未改动")
                 shadow_write(conn, 'news_order_place', event_key,
                              {"anchor": anchor, "band": [band_min, band_max],
                               "order_ttl": ttl, "order_id": order_id,
+                              "placed_px": placed_px,
                               "reason": reason, "source": source, "ts": now})
             return {"event_key": event_key, "order_id": order_id, "anchor": anchor,
                     "band_min": band_min, "band_max": band_max, "order_ttl": ttl,
+                    "placed_px": placed_px,
                     "status": "pending_order"}
         finally:
             conn.close()
@@ -435,7 +446,7 @@ class SleeveOrder:
                 if ttl_dt > datetime.now():
                     raise ValueError(f"挂单未到期（order_ttl={slot['order_ttl']} > now）——"
                                      f"expired 弃单被拒（fail-closed），到期前不得弃单")
-            else:
+            elif reason == 'band_break':
                 # E9：band_break 必须带现价证据——价 < band_min 才有效
                 q = self._fetch_quote(self._first_member_code(conn, event_key))
                 if q is None or q.current_price is None:
@@ -449,6 +460,9 @@ class SleeveOrder:
                     raise ValueError(
                         f"band_break 核价被拒：现价 {px} ≥ band_min {slot['band_min']}"
                         f"（未破带不可弃单，只能 --reason expired 到期弃单）")
+            # v13/A5：band_left / band_skipped——消费侧（check_price_orders，§2 判据）
+            # 已完成出带/越带判定后发起弃单，证据在判定拍上，本层不再核价
+            #（与 expired 同语义：发起方负责证据，TTL/破带两个旧码保留原核价防线）。
             self._attach_tasks_db(conn)     # E2：事务外 ATTACH（ATTACH 不可入事务）
             try:
                 with conn:

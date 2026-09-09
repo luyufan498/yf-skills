@@ -8,6 +8,7 @@ cron 关键集：atr-sync + check-triggers + conditions 是交易循环的止损
 """
 import typer
 from typing import Optional
+import os
 
 from paper_trading_v2.helpers import normalize_stock_name, auto_exright_check, get_stock_name_suggestions
 from paper_trading_v2.conditions import ConditionType, ConditionCategory, EventConditionType
@@ -77,9 +78,11 @@ def register(app):
         trigger_price: Optional[float] = typer.Option(None, "--trigger-price", help="触发时价格"),
         # --update ATR（手动按 ATR 设定成本保护时传入，或省略由命令自动算）
         atr_value: Optional[float] = typer.Option(None, "--atr", help="ATR 值（用于按 ATR 设定 cost_protection；省略则自动取K线计算）"),
-        # event condition params
+        # --event condition params
         event_type: Optional[str] = typer.Option(None, "--event-type", help="事件类型: profit_protect(利润保护)/loss_protect(亏损保护)/tech_break(技术破位)/target_profit(目标价止盈, 别名 take_profit)/add_position(加仓)/fundamental(基本面)/market_risk(市场风险)"),
         event_id: Optional[str] = typer.Option(None, "--event-id", help="事件条件ID（用于移除/触发/过期）"),
+        # --created-by（v13/A4：对象创建者，失败路由依据 §1.1 词表；缺省 env PTRADE2_CREATOR，再缺省 user）
+        created_by: Optional[str] = typer.Option(None, "--created-by", help="对象创建者（msg-watch/analysis-watch/check-open/l3-scan/portfolio-review/atr-auto/user…失败路由依据；缺省 env PTRADE2_CREATOR，再缺省 user）"),
         # --force（2026-08-27 加：跳过"保护价高于现价=设置即触发"校验）
         force: bool = typer.Option(False, "--force", help="跳过保护价>现价的设置即触发校验（手动补录/立即触发等特殊场景）"),
     ):
@@ -104,6 +107,12 @@ def register(app):
             pass
 
         manager = ConditionsManager()
+
+        # v13/A4 创建者解析：--created-by 显式 > env PTRADE2_CREATOR > 'user'（词表 §1.1）
+        def _resolve_creator():
+            if created_by:
+                return created_by
+            return os.environ.get('PTRADE2_CREATOR') or 'user'
 
         # 获取当前价格（用于校验）
         def _get_current_price():
@@ -205,12 +214,14 @@ def register(app):
                 expiry_days=expiry_days,
                 auto_link_cost=auto_link,
                 name=cond_name,
+                created_by=_resolve_creator(),
             )
 
             typer.echo(f"✅ 条件设定成功: {stock_name}")
             typer.echo(f"   类型: {ct.value}")
             typer.echo(f"   价格: ¥{price:.2f}")
             typer.echo(f"   类别: {cc.value}")
+            typer.echo(f"   创建者: {_resolve_creator()}")
             if cond_name:
                 typer.echo(f"   名称: {cond_name}")
             if cc == ConditionCategory.SOFT and expiry_days:
@@ -398,6 +409,7 @@ def register(app):
                 action=action_str or "执行",
                 category=cc,
                 expiry_days=expiry_days,
+                created_by=_resolve_creator(),
             )
 
             if event_id:

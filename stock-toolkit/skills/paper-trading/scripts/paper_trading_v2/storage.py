@@ -148,6 +148,8 @@ class SqlStorage(StorageBackend):
             stock_code=r['stock_code'] or '', quantity=r['quantity'] or 0,
             price=r['price'] or 0.0, total_cost=r['total_cost'] or 0.0,
             operation=r['operation'], timestamp=r['timestamp'] or '', note=r['note'] or '',
+            # v13/A2：幂等键列（旧库迁移前无列 → 键缺失兜底 ''）
+            event_id=(r['event_id'] or '') if 'event_id' in r.keys() else '',
         ) for r in rows]
 
     def _load_exright(self, conn, account_id: int) -> List[ExRightAppliedRecord]:
@@ -194,9 +196,11 @@ class SqlStorage(StorageBackend):
                 for i, pos in enumerate(account.positions):
                     conn.execute(
                         "INSERT INTO trades (account_id, seq, operation, stock_code, "
-                        "quantity, price, total_cost, timestamp, note) VALUES (?,?,?,?,?,?,?,?,?)",
+                        "quantity, price, total_cost, timestamp, note, event_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (account_id, i, pos.operation, pos.stock_code, pos.quantity,
-                         pos.price, pos.total_cost, pos.timestamp, pos.note))
+                         pos.price, pos.total_cost, pos.timestamp, pos.note,
+                         getattr(pos, 'event_id', '') or ''))
                 conn.execute("DELETE FROM exright_applied WHERE account_id=?", (account_id,))
                 for i, ex in enumerate(account.exright_applied):
                     conn.execute(

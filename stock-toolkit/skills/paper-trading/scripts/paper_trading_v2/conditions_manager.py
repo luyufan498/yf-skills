@@ -56,6 +56,8 @@ class ConditionsManager:
                     auto_link_cost=bool(r['auto_link_cost']), peak_price=r['peak_price'],
                     created_at=r['created_at'] or datetime.now().isoformat(),
                     modified_at=r['modified_at'] or datetime.now().isoformat(),
+                    # v13/A4：created_by 列（旧库迁移前无列 → 取键缺失兜底 ''）
+                    created_by=(r['created_by'] or '') if 'created_by' in r.keys() else '',
                 )
                 hist_rows = conn.execute(
                     "SELECT * FROM condition_history WHERE condition_id=? ORDER BY id",
@@ -135,10 +137,11 @@ class ConditionsManager:
         cur = conn.execute(
             "INSERT INTO conditions (account_id, cond_key, is_event, cond_uid, type, name, price, "
             "action, category, expiry_date, status, auto_link_cost, peak_price, created_at, "
-            "modified_at, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "modified_at, seq, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account_id, key, is_event, cond.id, cond.type, cond.name, cond.price, cond.action,
              cond.category, cond.expiry_date, cond.status, int(cond.auto_link_cost),
-             cond.peak_price, cond.created_at, cond.modified_at, seq))
+             cond.peak_price, cond.created_at, cond.modified_at, seq,
+             getattr(cond, 'created_by', '') or ''))
         cid = cur.lastrowid
         for h in cond.history:
             conn.execute(
@@ -376,8 +379,10 @@ class ConditionsManager:
                       category: ConditionCategory,
                       expiry_days: int = None,
                       auto_link_cost: bool = False,
-                      name: Optional[str] = None) -> ConditionsRecord:
-        """设定新条件（初始化用）"""
+                      name: Optional[str] = None,
+                      created_by: Optional[str] = None) -> ConditionsRecord:
+        """设定新条件（初始化用）。created_by=v13/A4 对象创建者（词表 §1.1，
+        缺省 ''——CLI 层解析 env/默认后传入）。"""
         record = self.load_conditions(stock_name)
         if not record:
             record = ConditionsRecord(stock_name=stock_name)
@@ -403,6 +408,7 @@ class ConditionsManager:
             category=category,
             expiry_date=expiry_date,
             auto_link_cost=auto_link_cost,
+            created_by=created_by or '',
             created_at=now,
             modified_at=now,
             history=[ConditionChange(
@@ -438,9 +444,10 @@ class ConditionsManager:
                             price: float,
                             action: str,
                             category: ConditionCategory,
-                            expiry_days: int = None) -> tuple:
+                            expiry_days: int = None,
+                            created_by: Optional[str] = None) -> tuple:
         """
-        添加事件条件（支持同类型多实例）
+        添加事件条件（支持同类型多实例）。created_by=v13/A4 对象创建者。
 
         返回: (event_id, ConditionsRecord)
         """
@@ -471,6 +478,7 @@ class ConditionsManager:
             action=action,
             category=category,
             expiry_date=expiry_date,
+            created_by=created_by or '',
             created_at=now,
             modified_at=now,
             history=[ConditionChange(
@@ -893,16 +901,21 @@ class ConditionsManager:
 
     def sync_take_profit_ladder(self, stock_name: str, avg_cost: float,
                                 current_price: Optional[float] = None) -> Optional[ConditionsRecord]:
-        """分批止盈阶梯自动挂载（2026-08-30 止盈三件套②，双层审计回测定稿）。
+        """分批止盈阶梯自动挂载（2026-08-30 止盈三件套②，2026-09-10 A1 重锚改造）。
 
         C 方案：+30% → take_profit_1 卖1/3；+50% → take_profit_2 再卖1/3；
         余仓走 trailing_stop 2.5×ATR 跟随。触发口径=收盘浮盈（atr-sync 盘后跑，
         触发后次日执行=T+1 合规，ultra 校准参数）。
 
         hard 类别（持仓周期内有效，不设软条件过期——软条件 7 天到期会让挂载率
-        回到 0 的老病）。幂等：已有同类型 active 条件则跳过；clearance 后由
-        resume_all/suspend_all 管生命周期，重新建仓按新成本重挂（triggered 状态
-        不覆盖——阶梯每轮只触发一次）。
+        回到 0 的老病）。生命周期：clearance 后由 resume_all/suspend_all 管理，
+        重新建仓按新成本重挂（triggered 状态不覆盖——阶梯每轮只触发一次）。
+
+        A1 重锚（2026-09-10，方案 v3/WP0）：未触发档（active）按剩余仓位 FIFO 均价
+        成对重算（TP1=均价×1.30、TP2=均价×1.50，保序 TP1<TP2）；已触发档
+        （triggered）永不重挂；成本基变化 >0.5% 才改价（阈值防每日抖动噪音），
+        改价写 condition_history（reason 含"成本基重算"）；重算后档位若已 ≤ 现价
+        → 照写新价正常触发（不静默改价避开触发）。
         """
         from paper_trading_v2.atr import TP1_TRIGGER, TP2_TRIGGER
         record = self.load_conditions(stock_name)
@@ -910,16 +923,36 @@ class ConditionsManager:
             return record
 
         ladder = [
-            (ConditionType.TAKE_PROFIT_1, TP1_TRIGGER, f"分批止盈①+{TP1_TRIGGER*100:.0f}%卖1/3"),
-            (ConditionType.TAKE_PROFIT_2, TP2_TRIGGER, f"分批止盈②+{TP2_TRIGGER*100:.0f}%卖1/3"),
+            (ConditionType.TAKE_PROFIT_1, TP1_TRIGGER,
+             f"分批止盈①+{TP1_TRIGGER*100:.0f}%卖1/3"),
+            (ConditionType.TAKE_PROFIT_2, TP2_TRIGGER,
+             f"分批止盈②+{TP2_TRIGGER*100:.0f}%卖1/3"),
         ]
         changed = False
         now = datetime.now().isoformat()
-        for ctype, trig, label in ladder:
-            trig_price = round(avg_cost * (1 + trig), 2)
+        # 成对重算：先按统一均价算两个目标价（保序 TP1<TP2——均价同时变，
+        # 若逐档算可能出现上档先改下档未改的中间态破坏保序）
+        targets = [(ctype, trig, round(avg_cost * (1 + trig), 2))
+                   for ctype, trig, _label in ladder]
+        for (ctype, trig, label), (_ct, _t, trig_price) in zip(ladder, targets):
             existing = record.get(ctype)
             if existing and existing.status in (ConditionStatus.ACTIVE, ConditionStatus.TRIGGERED):
-                continue  # 已挂或本轮已触发过，幂等跳过
+                if existing.status == ConditionStatus.TRIGGERED:
+                    continue  # 已触发档永不重挂（A1 红线）
+                # A1：active 未触发档按 FIFO 均价重锚，成本基变化 >0.5% 才改价
+                old_price = existing.price or 0.0
+                if old_price > 0 and abs(trig_price / old_price - 1) <= 0.005:
+                    continue  # 成本基变化 ≤0.5%：不改价（防每日抖动噪音）
+                existing.price = trig_price
+                existing.modified_at = now
+                existing.history.append(ConditionChange(
+                    old_price=old_price, new_price=trig_price,
+                    reason=(f"成本基重算（FIFO均价¥{avg_cost:.2f}×{1+trig:.2f}，"
+                            f"旧价¥{old_price:.2f}，现价¥{current_price:.2f}）"),
+                    level=ConditionLevel.LEVEL_1,
+                ))
+                changed = True
+                continue
             record.set(Condition(
                 type=ctype,
                 name=label,
@@ -930,6 +963,7 @@ class ConditionsManager:
                 peak_price=None,
                 created_at=now,
                 modified_at=now,
+                created_by="atr-auto",   # v13/A4：ATR 自动线创建者（路由依据）
                 history=[ConditionChange(
                     old_price=0, new_price=trig_price,
                     reason=f"止盈阶梯自动挂载（成本¥{avg_cost:.2f}×{1+trig:.2f}，现价¥{current_price:.2f}）",

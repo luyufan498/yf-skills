@@ -106,6 +106,7 @@ class Condition(BaseModel):
     history: List[ConditionChange] = Field(default_factory=list, description="变更历史")
     auto_link_cost: bool = Field(default=False, description="是否自动跟随持仓成本")
     peak_price: Optional[float] = Field(None, description="ATR移动止损所锚定的持仓最高价（只升不降，仅 trailing_stop 使用）")
+    created_by: str = Field(default="", description="对象创建者（v13/A4：msg-watch/analysis-watch/atr-auto/user…失败路由依据）")
 
     def to_table_row(self, current_date: str = None) -> dict:
         """转换为表格行数据"""

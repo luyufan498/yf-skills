@@ -5,6 +5,7 @@
 
 from typing import Optional
 import os
+from datetime import datetime
 from paper_trading_v2.models import (
     Account,
     CapitalPool,
@@ -183,7 +184,9 @@ class PaperTrader:
         stock_name: str,
         quantity: Optional[int] = None,
         amount: Optional[float] = None,
-        note: str = ""
+        note: str = "",
+        event_id: Optional[str] = None,
+        price: Optional[float] = None
     ) -> Account:
         """
         买入股票
@@ -193,6 +196,9 @@ class PaperTrader:
             quantity: 买入股数（与amount二选一）
             amount: 买入金额（与quantity二选一）
             note: 备注
+            event_id: v13/A2 幂等键（同 event_id 已成交即拒绝，防 agent 崩溃
+                recover requeue 双买；'' / None=不启用幂等查重）
+            price: v13/A3 显式检测价成交（默认 None=现状自取实时价；带 E3 行情防线）
 
         Returns:
             更新后的Account对象
@@ -213,11 +219,12 @@ class PaperTrader:
             else:
                 raise ValueError(f"无法获取股票代码")
 
-        price_info = self.price_fetcher.get_realtime_price(account.stock_code)
-        if not price_info or not price_info.current_price:
-            raise ValueError("无法获取实时价格")
+        # v13/A2：同 event_id 已成交即拒绝（幂等键，执行发生在资金变动之前）
+        self._reject_if_event_fulfilled(account, event_id, 'buy')
 
-        current_price = price_info.current_price
+        current_price = self._resolve_trade_price(account, price)
+        if current_price is None:
+            raise ValueError("无法获取实时价格")
 
         if quantity is not None:
             trade_qty = quantity
@@ -254,7 +261,8 @@ class PaperTrader:
             price=current_price,
             total_cost=required,
             operation=OperationType.BUY,
-            note=note
+            note=note,
+            event_id=event_id or ''
         )
         account.positions.append(position)
 
@@ -284,7 +292,9 @@ class PaperTrader:
         stock_name: str,
         quantity: Optional[int] = None,
         sell_all: bool = False,
-        note: str = ""
+        note: str = "",
+        event_id: Optional[str] = None,
+        price: Optional[float] = None
     ) -> Account:
         """
         卖出股票
@@ -294,6 +304,9 @@ class PaperTrader:
             quantity: 卖出股数
             sell_all: 是否全部卖出
             note: 备注
+            event_id: v13/A2 幂等键（同 event_id 已成交即拒绝，防 agent 崩溃
+                recover requeue 双卖；'' / None=不启用幂等查重）
+            price: v13/A3 显式检测价成交（默认 None=现状自取实时价；带 E3 行情防线）
 
         Returns:
             更新后的Account对象
@@ -323,11 +336,12 @@ class PaperTrader:
         if not account.stock_code:
             raise ValueError("未找到股票代码")
 
-        price_info = self.price_fetcher.get_realtime_price(account.stock_code)
-        if not price_info or not price_info.current_price:
-            raise ValueError("无法获取实时价格")
+        # v13/A2：同 event_id 已成交即拒绝（幂等键，执行发生在资金/FIFO 变动之前）
+        self._reject_if_event_fulfilled(account, event_id, 'sell')
 
-        current_price = price_info.current_price
+        current_price = self._resolve_trade_price(account, price)
+        if current_price is None:
+            raise ValueError("无法获取实时价格")
 
         trade_amount = trade_qty * current_price
 
@@ -345,7 +359,8 @@ class PaperTrader:
             price=current_price,
             total_cost=cost_amount,
             operation=OperationType.SELL,
-            note=note
+            note=note,
+            event_id=event_id or ''
         )
         account.positions.append(sell_position)
 
@@ -470,6 +485,75 @@ class PaperTrader:
                 account.fifo_index = i
                 account.fifo_offset = 0
                 return
+
+    # ---------- v13/A2+A3：幂等键查重 + 显式检测价（E3 行情防线） ----------
+
+    def _reject_if_event_fulfilled(self, account: Account, event_id, side: str):
+        """v13/A2 幂等键查重：同 event_id 已成交即拒绝（抛 ValueError + audit 留痕）。
+
+        防护场景：agent 崩溃 → taskbus recover requeue → 同一执行请求被重放 = 双买/
+        双卖。查重键=trades.event_id（''/None 不查，旧行为零变化——手动单无事件关联）。
+        拒绝发生在资金变动之前（零部分写入），audit 表 action='idempotent_reject'
+        留痕（audit 表缺失的合成 schema 容错跳过）。
+        """
+        eid = (event_id or '').strip()
+        if not eid:
+            return False
+        from paper_trading_v2.storage import resolve_account
+        conn = self.storage._conn()
+        try:
+            row = resolve_account(conn, account.stock_name)
+            if row is None:
+                return False
+            seg_id = row['id']
+            dup = conn.execute(
+                "SELECT 1 FROM trades WHERE account_id=? AND event_id=? LIMIT 1",
+                (seg_id, eid)).fetchone()
+            if dup is None:
+                return False
+            reason = (f"幂等键拒绝：event_id={eid} 已成交（{side}），"
+                      f"重放执行被拒（防 agent 崩溃 recover 双{side}）")
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO audit (timestamp, action, stock, amount, "
+                        "free_before, free_after, reason, source) "
+                        "VALUES (?, 'idempotent_reject', ?, 0, NULL, NULL, ?, ?)",
+                        (datetime.now().isoformat(), account.stock_name,
+                         reason, side))
+            except Exception:
+                pass    # audit 表缺失（合成 schema）不阻断幂等拒绝本身
+            raise ValueError(
+                f"event_id {eid} 已成交（幂等拒绝，同请求不重复执行）")
+        finally:
+            conn.close()
+
+    def _resolve_trade_price(self, account: Account, price) -> Optional[float]:
+        """v13/A3 成交价解析：显式 price（检测价）优先 + E3 行情防线；默认自取实时价。
+
+        - price 显式传入（保护线同拍直调/sleeve 同款 --price 检测价成交）：
+          走 E3 行情防线（停牌/一字板/报价陈旧 >5min 拒绝，照抄 sleeve_order.fill
+          E3——快照仅作防线，成交价=传入价；快照缺失/不合格 fail-closed 拒）。
+        - price 为 None：现状自取实时价（旧行为逐字不变，无防线——手动单容忍迟报价）。
+        """
+        if price is None:
+            price_info = self.price_fetcher.get_realtime_price(account.stock_code)
+            if not price_info or not price_info.current_price:
+                return None
+            return price_info.current_price
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            return None
+        if px <= 0:
+            return None
+        # E3 行情防线（sleeve_order._quote_block_reason 同款判据）
+        from paper_trading_v2.sleeve_order import SleeveOrder
+        quote = SleeveOrder._fetch_quote(self, account.stock_code)
+        block = SleeveOrder._quote_block_reason(quote)
+        if block is not None:
+            raise ValueError(f"E3 行情防线拒绝按检测价成交：{block}")
+        return px
 
     def _consume_fifo(self, account: Account, quantity: int) -> float:
         """

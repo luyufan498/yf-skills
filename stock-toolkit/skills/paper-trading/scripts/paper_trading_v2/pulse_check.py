@@ -191,22 +191,35 @@ TIGHT_FREE = 400000.0      # 池紧：消息池 free < 40 万
 TIGHT_SLOT = 0.75          # 池紧：槽占用 ≥75%
 
 
-def _newsdb_events_since(stock_code: str, since_date: str, imp_min: int = 4):
-    """newsdb 该股买入后 imp≥4 事件数 hint（晚审 C 腿核验用，库挂返回 None）。"""
+def _newsdb_events_since(stock_code: str, since_ts: str, imp_min: int = 4,
+                         exclude_ids: tuple = (), db_path: str | None = None):
+    """newsdb 该股成交后 imp≥4 事件明细（晚审 C 腿核验用，库挂返回 None）。
+
+    2026-09-09 修（晚审 0c 口径误计）：since 必须传**完整成交时间戳**。旧版传
+    `str(timestamp)[:10]`（纯日期），字符串比较等价于"成交日 00:00 起"→ 成交当日
+    盘前入库的**开槽论点事件**被误计成"买后新催化"（生益科技 ND#561 富时罗素
+    9/3 08:42:59 早于成交 10:10:11 仍被计入）。SQLite 是字符串比较，故把 ISO 的
+    'T' 规范化为空格（`substr(...,1,19)` 去毫秒）保证与 started_at 同格式；
+    exclude_ids 排除槽自身论据事件（event_key=ND#<id>，防 started_at 事后订正
+    把论据事件重新计进窗口）。
+    """
     try:
-        from paper_trading_v2.market_cache import market_db_path as _mkp
-        p = _mkp()
-        db = os.path.join(os.path.dirname(os.path.dirname(p)), 'data', 'news', 'news.db')
-        if not os.path.exists(db):
+        if db_path is None:
+            from paper_trading_v2.market_cache import market_db_path as _mkp
+            p = _mkp()
+            db_path = os.path.join(os.path.dirname(os.path.dirname(p)), 'data', 'news', 'news.db')
+        if not os.path.exists(db_path):
             return None
-        conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
         conn.row_factory = sqlite3.Row
-        n = conn.execute(
-            "SELECT COUNT(*) n FROM events e JOIN event_stock es ON es.event_id=e.id "
-            "WHERE es.stock_code=? AND e.importance>=? AND e.started_at>?",
-            (stock_code, imp_min, since_date)).fetchone()[0]
+        rows = conn.execute(
+            "SELECT e.id, e.title, e.started_at FROM events e "
+            "JOIN event_stock es ON es.event_id=e.id "
+            "WHERE es.stock_code=? AND e.importance>=? "
+            "AND e.started_at > replace(substr(?,1,19),'T',' ') "
+            "ORDER BY e.started_at", (stock_code, imp_min, since_ts)).fetchall()
         conn.close()
-        return n
+        return [dict(r) for r in rows if r['id'] not in exclude_ids]
     except Exception:
         return None
 
@@ -222,6 +235,26 @@ def expiry_scan():
         segs = conn.execute(
             "SELECT id, stock, code, opened_at FROM position "
             "WHERE strategy='NEWS' AND status='open'").fetchall()
+        # 槽自身论据事件 id（event_key=ND#<id>）→ C 腿排除用（2026-09-09 口径修）
+        slot_ev_ids = {}
+        try:
+            for sr in conn.execute(
+                    "SELECT s.event_key, m.stock FROM event_slots s "
+                    "JOIN event_slot_members m ON m.event_key=s.event_key "
+                    "WHERE s.status IN ('open','partial')"):
+                ek = str(sr['event_key'] or '').strip()
+                if not ek.startswith('ND#'):
+                    continue
+                try:
+                    eid = int(ek[3:])
+                except ValueError:
+                    continue
+                for nm in str(sr['stock'] or '').split(','):
+                    nm = nm.strip()
+                    if nm:
+                        slot_ev_ids.setdefault(nm, set()).add(eid)
+        except sqlite3.Error:
+            pass
         rows = []
         for seg in segs:
             # 开槽日（UTC 存 → +8 折本地，2026-09-09 口径裁决）
@@ -245,6 +278,7 @@ def expiry_scan():
                              'status': '待成交', 'note': '段已开无buy成交（挂单待成交）'})
                 continue
             buy_date = str(b['timestamp'])[:10]
+            buy_ts = str(b['timestamp'])          # 完整成交时间戳（C 腿窗口真源）
             buy_px = float(b['price'])
             if not seg['code']:
                 rows.append({'stock': seg['stock'], 'status': 'no_code', 'note': '段无代码'})
@@ -267,13 +301,17 @@ def expiry_scan():
             last_c = ks[-1]['close']
             A = max5 < buy_px * NO_FERMENT
             B = last_c <= buy_px
-            news_n = _newsdb_events_since(seg['code'], buy_date)
+            news_ev = _newsdb_events_since(seg['code'], buy_ts,
+                                           exclude_ids=tuple(slot_ev_ids.get(seg['stock'], ())))
+            news_n = None if news_ev is None else len(news_ev)
             rows.append({'stock': seg['stock'], 'code': seg['code'],
                          'buy': buy_date, 'buy_px': round(buy_px, 2),
                          'n': n_after, 'max5': round(max5, 2),
                          'max5_r': round(max5 / buy_px * 100, 1),
                          'last': round(last_c, 2), 'last_r': round(last_c / buy_px * 100, 1),
                          'A': A, 'B': B, 'news_imp4': news_n,
+                         'news_events': ([f"ND#{e['id']}@{e['started_at']}"
+                                          for e in news_ev] if news_ev else []),
                          'status': ('🔴论点失效候选' if (A and B and n_after >= 5)
                                     else '🟢观察中')})
         # 水位
@@ -312,7 +350,9 @@ def run_expiry_scan(fmt: str = "pretty"):
             if r['B']: detail.append(f"B回踩(现{r['last_r']}%≤100%)")
             imp = r['news_imp4']
             if imp is None: detail.append("C新闻库未连")
-            elif imp > 0: detail.append(f"C有imp4事件×{imp}(方向/时序待核)")
+            elif imp > 0:
+                evs = ' '.join(r.get('news_events') or [])
+                detail.append(f"C有imp4事件×{imp} {evs}(方向/时序待核)".rstrip())
             else: detail.append("C无新事件")
             print(f"            {' '.join(detail)}")
 

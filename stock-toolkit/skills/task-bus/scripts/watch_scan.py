@@ -455,31 +455,76 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
         conn.commit()
     finally:
         conn.close()
-    # 触发即失效：把该股票该方向的所有 active 条件标记为 triggered
+    # 触发即失效：防重复进入流程（2026-09-09 精确化，晚审 TRIGGERED-STALE 根因修复）
     # （仅 trade 模式；eval 模式的价格点由调用方负责移除）
-    # tp_only（止盈阶梯）：只标记本条件——阶梯卖1/3后仓位存续，禁止连坐保护线（2026-08-30）
     if mode == "trade" and os.path.exists(POOL_DB) and cond_id and cond_id > 0:
-        cond_params = ()
-        if tp_only:
-            cond_filter = "id=?"
-            cond_params = (cond_id,)
-        elif direction == "buy":
-            cond_filter = ("(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')")
-        else:
-            cond_filter = ("(action LIKE '%清仓%' OR action LIKE '%减仓%' OR action LIKE '%止损%' "
-                           "OR action LIKE '%止盈%' OR category='hard')")
-        pconn = sqlite3.connect(POOL_DB)
-        try:
-            pconn.execute(
-                f"UPDATE conditions SET status='triggered' "
-                f"WHERE account_id=(SELECT account_id FROM conditions WHERE id=?) "
-                f"AND status='active' AND {cond_filter}",
-                (cond_id,) + cond_params,
-            )
-            pconn.commit()
-        finally:
-            pconn.close()
+        _mark_triggered_family(cond_id, cond_name, direction, current_price, tp_only)
     return True
+
+
+def _mark_triggered_family(cond_id: int, cond_name: str, direction: str,
+                           current_price, tp_only: bool) -> None:
+    """触发即失效标记 + 留痕（2026-09-09 精确化）。
+
+    旧版无差别连坐（sell 方向 `OR category='hard'`）把该段**全部** active 硬条件标
+    triggered——含现价根本没碰到的止盈阶梯线；而 sync_take_profit_ladder 对
+    active/triggered 幂等跳过 → 阶梯永久失效（恒申 2026-09-07 实证：TP 10.40/12.00
+    在现价 7.5 被标掉，晚审连报 TRIGGERED-STALE）。现按语义分档：
+
+    - tp_only：只标本条件（阶梯卖 1/3 后仓位存续，禁连坐）——同 2026-08-30 语义
+    - buy 方向：沿用旧过滤（建仓/买入/加仓关键词）
+    - 清仓类触发（action/name 含"清仓"）：保留旧语义整段全标——仓位将归零，
+      全标防同一次破位重复下单；闭仓后 migrate 6b 归档 + atr-sync 空仓跳过会清干净
+    - 其余卖出（减仓/止损/止盈/保护）：**只标本次价格已突破的线**
+      （止损/保护线 price>=现价；止盈线 price<=现价）+ 本次触发线
+    - 现价缺失：降级只标本次触发线并告警（不阻塞告警主流程）
+
+    同时写 modified_at + condition_history（旧版无痕写，审计无法归因）。
+    """
+    conn = sqlite3.connect(POOL_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        trig = conn.execute("SELECT account_id, action, name FROM conditions WHERE id=?",
+                            (cond_id,)).fetchone()
+        if not trig:
+            return
+        aid = trig["account_id"]
+        trig_text = f"{trig['action'] or ''}{trig['name'] or ''}{cond_name or ''}"
+        if tp_only:
+            where, params = "id=?", [cond_id]
+        elif direction == "buy":
+            where = "(action LIKE '%建仓%' OR action LIKE '%买入%' OR action LIKE '%加仓%')"
+            params = []
+        elif "清仓" in trig_text:
+            where = ("(action LIKE '%清仓%' OR action LIKE '%减仓%' OR action LIKE '%止损%' "
+                     "OR action LIKE '%止盈%' OR category='hard')")
+            params = []
+        elif current_price is None:
+            print(f"⚠️ 触发失效降级：{cond_name} 现价缺失，只标条件#{cond_id}", file=sys.stderr)
+            where, params = "id=?", [cond_id]
+        else:
+            where = ("((type IN ('trailing_stop','cost_protection') AND price >= ?) "
+                     "OR (type LIKE 'take_profit%' AND price <= ?) OR id=?)")
+            params = [current_price, current_price, cond_id]
+        ids = [r["id"] for r in conn.execute(
+            f"SELECT id FROM conditions WHERE account_id=? AND status='active' AND {where}",
+            (aid, *params)).fetchall()]
+        if not ids:
+            return
+        now = datetime.now().isoformat()
+        ph = ",".join("?" * len(ids))
+        conn.execute(f"UPDATE conditions SET status='triggered', modified_at=? "
+                     f"WHERE id IN ({ph})", (now, *ids))
+        for cid in ids:
+            conn.execute(
+                "INSERT INTO condition_history (condition_id, old_price, new_price, reason, "
+                "timestamp, level, override_triggers) "
+                "SELECT id, price, ?, ?, ?, 'auto', '[]' FROM conditions WHERE id=?",
+                (current_price, f"触发即失效（{cond_name} 触发，现价 ¥{current_price}）",
+                 now, cid))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def check_naked_conditions() -> list[str]:

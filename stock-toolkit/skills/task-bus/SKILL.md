@@ -155,6 +155,28 @@ taskbus watchpoint add <股> --price 24.5 --mode buy --amount 200000 --code <代
 - 补录后立即将该条件标 triggered（或由消费 agent 处理后标记），防止下一 tick 重复触发
 - 怀疑重复时，优先**不补录**，而是人工核验后直接处置（如本次爱司凯事件：旧条件#81 昨已触发建仓，今现价再穿越系重复，直接 done 不执行）
 
+### 触发即失效标记的精确语义（2026-09-09 重写，晚审 TRIGGERED-STALE 根因）
+
+`watch_scan._mark_triggered_family()`（由 `_write_alert` 在 `mode=trade` 时调用）——**不再无差别连坐**：
+
+| 场景 | 标记范围 |
+|---|---|
+| `tp_only`（止盈阶梯触发） | 只标本次 TP 条件 |
+| buy 方向 | 沿用 `action LIKE 建仓/买入/加仓` 过滤 |
+| **清仓类**触发（action/name 含"清仓"） | 该段全部 active 硬条件（旧语义：仓位归零，防重复下单） |
+| 其余卖出（减仓/止损/保护） | **只标本次价格已突破的线**：止损/保护 `price>=现价`、止盈 `price<=现价` + 本次触发线 |
+| 现价缺失 | 降级只标本次触发线并告警 |
+
+- 每行转移写 `modified_at` + `condition_history`（reason=「触发即失效（…触发，现价 ¥X）」），旧版无痕写导致晚审无法归因。
+- **旧版危害**：连坐把未触及的止盈阶梯线也标掉 → `sync_take_profit_ladder()` 对 active/triggered 幂等跳过 → 阶梯永久失效（恒申 2026-09-07 实证：TP 10.40/12.00 在现价 7.5 被标）。
+- **晚审判读 TRIGGERED-STALE 的正确姿势**：`status='triggered'` ≠ 漏执行。先看 `condition_history` 有无「条件已触发」/「触发即失效」记录 + K 线是否真触及阈值，再判定。
+- **A3 清理分档**（`~/.hermes/scripts` 外的 `/tmp/a3_cleanup.py`，2026-09-09 实跑）：R1 未突破→恢复 active；R2 同型 active 已重建→archived；R3 已破+modified_at 当日或之后有卖出成交→archived（义务已履行）；R4 已破无成交→**保留**（真·未执行，报警是对的）。
+
+### 无锚强事件扫描（2026-09-09 加入，ND#761 漏网配套）
+
+`~/.hermes/scripts/news_noanchor_scan.py --hours 24`：imp≥4 **行业**事件 + bullish + **0 关联股** + 未入池 → `scan_news()` 因无锚价 fail-closed 静默顺延，消息组永远收不到。晚审 0d 步原样引用其输出点名，采集侧补 `--stock` 后下一 tick 自动收编。
+
+
 ## 状态机
 
 ```

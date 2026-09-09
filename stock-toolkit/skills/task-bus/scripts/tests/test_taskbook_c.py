@@ -684,3 +684,72 @@ if __name__ == "__main__":
     if failures:
         raise SystemExit(f"{failures} 个用例失败")
     print("ALL PASS")
+
+
+# ---------- 审计补丁（2026-09-10 主代理 R1.5）：非清仓数量语义不得直调 ----------
+
+def test_audit_tp_ladder_third_defers_to_agent(tmp_path):
+    """TP 阶梯 action="次日卖出1/3（收盘确认触发）" → 禁 --all，不直调，交 agent。"""
+    t = T(tmp_path)
+    _mk_pool(tmp_path, [(1, "uid001", "take_profit_1", "分批止盈①+30%卖1/3", 9.0,
+                         "次日卖出1/3（收盘确认触发）", "analysis-watch")])
+    captured = []
+    with patch.object(watch_scan, "ptrade2",
+                      lambda *a, **k: captured.append(list(a)) or "✅ 已卖出"), \
+         patch.object(watch_scan, "in_trade_hours", lambda: True), \
+         _patch_prices({"sh600000": 9.50}):
+        lines = watch_scan.check_price_triggers()
+    assert not captured, f"1/3 语义不得直调 --all（超卖 3 倍），实得 {captured}"
+    ev = t.alerts()
+    assert ev, "事件仍写（留痕 + 交 agent 消费）"
+    p = json.loads(ev[0]["payload"])
+    assert p["exec"]["result"] == "deferred_agent", p
+    assert p["exec"]["code"] == "qty_not_full_exit", p
+    assert ev[0]["status"] == "pending", "事件保持 pending 等 agent"
+    assert ev[0]["handled_at"] is None, "handled_at 是消费方标记，执行方不得写"
+    assert any("交 agent" in ln for ln in lines), lines
+
+
+def test_audit_ambiguous_action_defers_to_agent(tmp_path):
+    """trailing_stop action="执行"（两级减半语义）→ 同样不直调。"""
+    t = T(tmp_path)
+    _mk_pool(tmp_path, [(1, "uid002", "trailing_stop", "移动止损", 9.0,
+                         "执行", "atr-auto")])
+    captured = []
+    with patch.object(watch_scan, "ptrade2",
+                      lambda *a, **k: captured.append(list(a)) or "✅"), \
+         patch.object(watch_scan, "in_trade_hours", lambda: True), \
+         _patch_prices({"sh600000": 8.80}):
+        lines = watch_scan.check_price_triggers()
+    assert not captured, f"模糊数量语义不得直调，实得 {captured}"
+    ev = t.alerts()
+    p = json.loads(ev[0]["payload"])
+    assert p["exec"]["result"] == "deferred_agent" and p["exec"]["code"] == "qty_not_full_exit", p
+
+
+def test_audit_full_exit_still_direct_calls(tmp_path):
+    """清仓语义 → 仍同拍直调 --all（机械腿覆盖 38/115 条，不放宽）。"""
+    t = T(tmp_path)
+    _mk_pool(tmp_path, [(1, "uid003", "cost_protection", "sleeve成本保护-2.0×ATR", 9.0,
+                         "清仓", "atr-auto")])
+    captured = []
+    with patch.object(watch_scan, "ptrade2",
+                      lambda *a, **k: captured.append(list(a)) or "✅ 已卖出"), \
+         patch.object(watch_scan, "in_trade_hours", lambda: True), \
+         _patch_prices({"sh600000": 8.80}):
+        watch_scan.check_price_triggers()
+    assert captured and captured[0][0] == "sell" and "--all" in captured[0], captured
+
+
+def test_audit_exec_write_leaves_handled_at_null(tmp_path):
+    """执行方写 exec 时不得写 handled_at（否则 tech-watch 查不到未处置失败）。"""
+    t = T(tmp_path)
+    _mk_pool(tmp_path, [(1, "uid004", "cost_protection", "成本保护", 9.0, "清仓", "atr-auto")])
+    with patch.object(watch_scan, "ptrade2",
+                      lambda *a, **k: "❌ E3 行情防线拒绝按检测价成交：报价陈旧（>5min）"), \
+         patch.object(watch_scan, "in_trade_hours", lambda: True), \
+         _patch_prices({"sh600000": 8.80}):
+        watch_scan.check_price_triggers()
+    ev = t.alerts()
+    assert ev and json.loads(ev[0]["payload"])["exec"]["code"] == "stale_quote"
+    assert ev[0]["handled_at"] is None, "执行方不得写 handled_at（消费方 tech-watch 才写）"

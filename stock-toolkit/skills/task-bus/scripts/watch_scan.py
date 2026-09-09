@@ -351,6 +351,19 @@ def _resolve_cond_uid(db_path: str, cond_id: int) -> str | None:
     return uid or None
 
 
+def _is_full_exit(action: str, name: str) -> bool:
+    """C1 审计补丁（2026-09-10 主代理 R1.5）：卖出数量是否"清仓"语义。
+
+    机械腿唯一可安全直调的情形。生产库 115 条卖出/保护类 active 条件实测：
+    38 条明写"清仓"（--all 正确）、60 条明写比例（"次日卖出1/3"/"减半"/"50%"）、
+    17 条文本模糊（"执行"/"移动止损-2.5ATR"）——一律 --all 会超卖 2–3 倍
+    （打桩重放：寒武纪 TP1 action="次日卖出1/3（收盘确认触发）" 被下成 sell --all）。
+    非清仓语义 → 不直调，退回 agent 路径（事件保持 pending）。
+    """
+    text = f"{action or ''} {name or ''}"
+    return any(k in text for k in ("清仓", "全清", "全部卖出", "清空"))
+
+
 def _condition_created_by(db_path: str, cond_id: int) -> str:
     """C1/C2：条件创建者（A 批 conditions.created_by 列；空 → '' 由调用方 fail-closed）。"""
     uid_row = None
@@ -793,14 +806,15 @@ def _update_alert_exec(event_id: int, result: str, code: str | None, price: floa
             p = {}
         p["exec"] = {"result": result, "code": code,
                      "at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "price": price}
+        # 审计补丁（2026-09-10 主代理 R1.5）：handled_at/handled_by 是**消费方**处置标记
+        # （tech-watch/msg-watch 处置完才写）；执行方写会让"未处置失败"查询永远查不到
+        # → 失败静默丢失。执行时间已由 exec.at 承载。
         if status:
-            conn.execute("UPDATE task_events SET payload=?, status=?, "
-                         "handled_at=datetime('now','localtime'), handled_by=? WHERE id=?",
-                         (json.dumps(p, ensure_ascii=False), status, handled_by, event_id))
+            conn.execute("UPDATE task_events SET payload=?, status=? WHERE id=?",
+                         (json.dumps(p, ensure_ascii=False), status, event_id))
         else:
-            conn.execute("UPDATE task_events SET payload=?, "
-                         "handled_at=datetime('now','localtime'), handled_by=? WHERE id=?",
-                         (json.dumps(p, ensure_ascii=False), handled_by, event_id))
+            conn.execute("UPDATE task_events SET payload=? WHERE id=?",
+                         (json.dumps(p, ensure_ascii=False), event_id))
         conn.commit()
     finally:
         conn.close()
@@ -920,6 +934,15 @@ def check_price_triggers() -> list[str]:
             triggers.append(
                 f"⚠️ {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发但 creator 为空"
                 f"（fail-closed，事件#{ev_id} 待晚审+通知，不直调执行）")
+            continue
+        if direction == "sell" and not _is_full_exit(action, cname):
+            # 审计补丁（2026-09-10 主代理 R1.5）：数量语义非"清仓"（1/3、减半、模糊文本）
+            # → 机械腿下不准数量，禁止直调，退回 agent 路径（事件保持 pending，
+            # 记 exec.result=deferred_agent 留痕；不得写 handled_at——那是消费方标记）。
+            _update_alert_exec(ev_id, "deferred_agent", "qty_not_full_exit", price)
+            triggers.append(
+                f"📤 {r['stock_name']}({r['stock_code']}) SELL 命中但数量语义非清仓"
+                f"（action=「{action}」）→ 不直调，交 agent 消费（事件#{ev_id} 保持 pending）")
             continue
         if direction == "sell":
             out = ptrade2("sell", r["stock_name"], "--all",

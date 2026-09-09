@@ -350,6 +350,11 @@ def atr_sync_daily() -> list[str]:
 
     例行维护静默：成功不输出（monitor 判定无变化 → 不唤醒 agent），
     仅失败输出告警（止损位未同步是需要 agent 关注的异常）。
+
+    2026-09-10 批量化：一次 `ptrade2 atr-sync --format json`（不带股票名 → CLI
+    内部遍历全部账户）替代逐票子进程——实测 31 票 19.5s → 2.8s。逐票判定取自
+    results[]（status ok/skip 不算失败，其余逐个出告警）；批量失败/JSON 不可解析
+    时**回退逐票子进程**（原路径行为逐字不变）。
     """
     if not in_trade_hours() or not os.path.exists(POOL_DB):
         return []
@@ -364,13 +369,33 @@ def atr_sync_daily() -> list[str]:
         conn.close()
     if not stocks:
         return []
-    alerts = []
-    for s in stocks:
-        out = ptrade2("atr-sync", s, timeout=60)
-        # 半盲修复（cron-audit 2026-09-02）：ptrade2 报错文本走 stdout 非空，
-        # 旧判据 `if not out` 看不见失败 → 报错关键字并入告警条件
-        if not out or "报错" in out or "❌" in out or "Error" in out:
-            alerts.append(f"⚠️ {s} atr-sync 失败（止损位未同步，需人工核验）: {out[:120]}")
+    alerts: list[str] = []
+    batch_ok = False
+    try:
+        out = ptrade2("atr-sync", "--format", "json", timeout=300)
+        data = json.loads(out)
+        items = data.get("results") if isinstance(data, dict) else data
+        if isinstance(items, list):
+            batch_ok = True
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                status = str(it.get("status") or "")
+                if status in ("ok", "skip"):
+                    continue
+                alerts.append(
+                    f"⚠️ {it.get('stock') or '?'} atr-sync 失败（止损位未同步，需人工核验）: "
+                    f"{status} {it.get('reason') or ''}"[:160])
+    except Exception:
+        batch_ok = False
+    if not batch_ok:
+        # 回退：逐票子进程（2026-09-02 半盲修复的判据原样保留）
+        for s in stocks:
+            out = ptrade2("atr-sync", s, timeout=60)
+            # 半盲修复（cron-audit 2026-09-02）：ptrade2 报错文本走 stdout 非空，
+            # 旧判据 `if not out` 看不见失败 → 报错关键字并入告警条件
+            if not out or "报错" in out or "❌" in out or "Error" in out:
+                alerts.append(f"⚠️ {s} atr-sync 失败（止损位未同步，需人工核验）: {out[:120]}")
     st["last_atr_date"] = today
     save_state(st)
     return alerts

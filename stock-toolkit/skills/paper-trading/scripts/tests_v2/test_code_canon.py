@@ -292,6 +292,7 @@ def test_verify_code_name_norm_tolerates_suffix(no_newsdb, monkeypatch):
 
 def test_watchlist_add_rejects_mismatched_code(ws, db_path, monkeypatch):
     """CLI 闸门：--code 与名称不符 → exit 1 且零写入；PTRADE2_ALLOW_CODE_MISMATCH=1 放行"""
+    monkeypatch.delenv("PTRADE2_ALLOW_CODE_MISMATCH", raising=False)   # 打开闸门（conftest 默认关）
     monkeypatch.setenv("NEWS_DB_PATH", str(ws / "absent-news.db"))
     _offline(monkeypatch)
     from paper_trading_v2.cli import app

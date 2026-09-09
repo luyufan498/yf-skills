@@ -160,8 +160,14 @@ def test_cli_gate_blocks_buy_on_news_account(sleeve_ready):
 def test_cli_allocate_rejects_news_strategy_stock(sleeve_ready):
     """技术组禁直接买 NEWS 票（须走迁移桥）。"""
     from paper_trading_v2.cli import app
-    _run(app, 'watchlist-add', 'NEWS票', '--code', 'sh600003', '--strategy', 'NEWS',
-         '--event-key', 'ND#603', '--news-kind', 'policy')
+    from unittest.mock import patch as _patch
+    # G2 次新检查会触网取K（sh600003 已退市/接口空 → fail-closed 拒收编），
+    # 本用例只测 allocate 拦截 → 钉住 60 根K，避免网络抖动导致前置入池失败
+    with _patch('paper_trading_v2.kline_fetcher.KLineDataFetcher.fetch_kline_data',
+                return_value=[{'date': '2026-01-05', 'open': 1, 'high': 1, 'low': 1,
+                               'close': 1}] * 60):
+        _run(app, 'watchlist-add', 'NEWS票', '--code', 'sh600003', '--strategy', 'NEWS',
+             '--event-key', 'ND#603', '--news-kind', 'policy')
     r = _run(app, 'master-pool-allocate', 'NEWS票', '--amount', '100000', '--reason', '绕过')
     assert r.exit_code == 1, r.output
     assert '迁移桥' in r.output

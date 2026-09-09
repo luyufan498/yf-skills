@@ -37,19 +37,24 @@ CLOSE_PEAK = 3.0     # 现价高于峰×97% → 🟢 贴峰
 EMO_TOP_DAYS = 3     # 峰后 ≤3 交易日 → 🟡 情绪顶高发区
 
 
-def _load_klines(code: str, limit: int = 40) -> List[dict]:
+def _load_klines(code: str, limit: int = 40, adjust: str = 'raw') -> List[dict]:
     """读 market.db 日K（走读时刷新路径，2026-09-09 修正）。
 
     原实现直连 SQL 只读缓存 → check-pulse/msg-expiry-scan 会看到陈旧 K
     （sh688041 停在 9/4 仍被当"最新"）。改为 fetch_kline_cached：
     库内最新 >= 最近已收盘交易日 → 纯读库 0 网络；有缺口 → 补抓落库；
     TTL 超期 → 全量重建；抓取失败 → 回退旧缓存（不抛错）。
+
+    adjust='qfq'（2026-09-09 加）：**任何算涨跌幅/回撤/峰谷的消费者都必须用 qfq**
+    ——raw 序列在除权日会留下假缺口（如新易盛 6/11 10转4 = 单日 -31.9% raw），
+    会让跳水段/拉升段误判为「-30% 暴跌」。check-plunge 已用 qfq；
+    check-pulse 沿用 raw（736 段统计的历史口径，改口径需重新校准）。
     """
     from paper_trading_v2.market_cache import fetch_kline_cached, market_db_path
     path = market_db_path()
     if not os.path.exists(path):
         raise typer.Exit(f"market.db 不存在：{path}——先跑 fetch-kline-cached")
-    return [dict(x) for x in fetch_kline_cached(code, count=limit)]
+    return [dict(x) for x in fetch_kline_cached(code, count=limit, adjust=adjust)]
 
 
 def compute_pulse(ks: List[dict], window: int = WINDOW) -> Optional[dict]:
@@ -317,3 +322,99 @@ def _register_expiry(app):
     def msg_expiry_scan(fmt: str = typer.Option("pretty", "--format", "-f", help="pretty/json")):
         """消息槽 T+5 论点失效扫描：买入满 5 交易日无发酵+回踩+无新imp4事件 → 清退候选（晚审 0c 步）"""
         run_expiry_scan(fmt=fmt)
+
+
+# ============================================================
+# 跳水段检查（check-plunge，2026-09-09 样本外定稿）
+# ============================================================
+# 镜像 check-pulse 的拉升段逻辑：窗口内先找最低 low（trough），再向左侧找
+# 最高 high（peak）→ 跳水段；输出 depth/pdays/speed/rdays/rb_pct。
+# 样本外实测（241 只随机 A 股 / 104,928 快照 / 445 交易日，同日配对消 regime）：
+#   「有跳水段(depth≤-15%) − 无跳水段」fwd5 +1.28pp(t 2.62)、fwd10 +1.68pp(t 2.79)、
+#   fwd20 +1.21pp(t 1.26，衰减）；「中速最强」「极深必避」两个池内细节参数**未复现**。
+#   → 因此只作技术组候选排序参考（软加分，只影响先看谁），不构成门控；
+#     消息组禁用（宪法 2.6：技术面入场门禁用于消息组）。
+PLUNGE_WINDOW = 60          # 窗口交易日
+PLUNGE_MIN = -15.0          # depth ≤ -15% → 有跳水段
+PLUNGE_STEEP = -2.5         # ≤ -2.5%/日 → 极急跌（样本外最弱）
+PLUNGE_MID = (-1.5, -0.8)   # 中速档（池内最强；样本外未复现，仅排序用）
+
+
+def compute_plunge(ks: List[dict], window: int = PLUNGE_WINDOW) -> Optional[dict]:
+    """窗口内先找最低 low（trough），再向左侧找最高 high（peak）→ 跳水段指标。"""
+    if len(ks) < window + 2:
+        return None
+    win = ks[-window:]
+    ti = min(range(len(win)), key=lambda i: win[i]['low'])
+    trough = win[ti]['low']
+    pi = max(range(ti + 1), key=lambda i: win[i]['high'])
+    peak = win[pi]['high']
+    if not trough or not peak:
+        return None
+    depth = (trough / peak - 1) * 100
+    pdays = ti - pi
+    speed = depth / pdays if pdays > 0 else 0.0
+    rdays = len(win) - 1 - ti
+    px = win[-1]['close']
+    has = depth <= PLUNGE_MIN
+    if not has:
+        state, tag = '⬜ 无跳水段（甜点区排序降级）', 'none'
+    elif speed <= PLUNGE_STEEP:
+        state, tag = '🔴 极急跌（样本外最弱档）', 'steep'
+    elif PLUNGE_MID[0] <= speed <= PLUNGE_MID[1]:
+        state, tag = '🟢 中速跳水段（排序优先）', 'mid'
+    else:
+        state, tag = '🟡 有跳水段', 'has'
+    return {'depth': depth, 'pdays': pdays, 'speed': speed, 'rdays': rdays,
+            'rb_pct': (px / trough - 1) * 100 if trough else 0.0,
+            'px': px, 'trough': trough, 'peak': peak,
+            'peak_date': win[pi]['date'], 'trough_date': win[ti]['date'],
+            'window_start': win[0]['date'], 'window_end': win[-1]['date'],
+            'has_plunge': has, 'state': state, 'tag': tag}
+
+
+def run_plunge(stock_name: str, window: int = PLUNGE_WINDOW, fmt: str = "pretty") -> None:
+    from paper_trading_v2.code_searcher import looks_like_stock_code, canonical_stock_code
+    if looks_like_stock_code(stock_name):
+        code = canonical_stock_code(stock_name)
+        name = code
+    else:
+        name = normalize_stock_name(stock_name)
+        code = lookup_code_for_name(name)
+        if not code:
+            typer.echo(f"❌ 无法解析 {name} 的代码（试 code_searcher 映射/传入代码）", err=True)
+            raise typer.Exit(1)
+    ks = _load_klines(code, window + 15, adjust='qfq')
+    if len(ks) < window + 2:
+        typer.echo(f"⚠️ {name}({code}) K线不足（{len(ks)} 根）——先跑 fetch-kline-cached {code} -n {window + 15}",
+                   err=True)
+        raise typer.Exit(1)
+    p = compute_plunge(ks, window)
+    if not p:
+        typer.echo(f"⚠️ {name}({code}) K线过短，无法计算跳水段", err=True)
+        raise typer.Exit(1)
+    if fmt == "json":
+        import json
+        typer.echo(json.dumps({**p, 'stock': name, 'code': code},
+                              ensure_ascii=False, indent=2, default=str))
+        return
+    typer.echo(f"🕳️ 跳水段检查 {name} ({code})")
+    typer.echo(f"   窗口: {p['window_start']} ~ {p['window_end']}（前 {window} 交易日）")
+    typer.echo(f"   段: 峰 ¥{p['peak']:.2f}({p['peak_date']}) → 谷 ¥{p['trough']:.2f}"
+               f"({p['trough_date']}) = {p['depth']:+.1f}% ｜ 历时 {p['pdays']} 交易日"
+               f" ｜ 速度 {p['speed']:+.2f}%/日")
+    typer.echo(f"   离低点 {p['rdays']} 交易日，反弹 {p['rb_pct']:+.1f}%（现价 ¥{p['px']:.2f}）")
+    typer.echo(f"   状态: {p['state']}")
+    typer.echo("   ── 只作技术组候选排序参考（软加分，只影响先看谁）；不构成门控；"
+               "消息组禁用（宪法 2.6）")
+
+
+def _register_plunge(app):
+    @app.command("check-plunge")
+    def check_plunge(
+        stock_name: str = typer.Argument(..., help="股票名称/代码"),
+        window: int = typer.Option(PLUNGE_WINDOW, "--window", "-w", help="检查窗口（交易日数）"),
+        fmt: str = typer.Option("pretty", "--format", "-f", help="pretty/json"),
+    ):
+        """跳水段检查：窗口内峰→谷跌幅/速度/离低点天数/反弹幅度——技术组排序参考（只报不拦）"""
+        run_plunge(stock_name, window=window, fmt=fmt)

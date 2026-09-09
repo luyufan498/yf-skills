@@ -77,3 +77,62 @@ def test_state_yellow_emo_top():
 
 def test_insufficient_klines():
     assert compute_pulse([_k('2026-09-01', 1, 1, 1, 1)], window=10) is None
+
+
+# ============ 跳水段（check-plunge，2026-09-09 样本外定稿） ============
+from paper_trading_v2.pulse_check import compute_plunge, PLUNGE_WINDOW
+
+
+def _plunge_bars():
+    """峰 100 → 谷 70（20 个交易日）→ 反弹 8 根到 78：depth≈-30%、speed≈-1.5%/日。
+
+    峰必须唯一（横盘段 high 压低到 98），否则 argmax 会取到最早的同高 bar。
+    """
+    ks = [_k(f'2026-04-{i + 1:02d}', 97, 98.0, 96.0, 97.5) for i in range(40)]
+    for i, px in enumerate((99.0, 99.5, 100.0)):        # 冲顶（峰=100，唯一）
+        ks.append(_k(f'2026-05-{i + 1:02d}', px - 1, px, px - 1.5, px))
+    for i in range(20):                                  # 跳水 20 日到 70
+        px = 100 - 30 * (i + 1) / 20
+        ks.append(_k(f'2026-06-{i + 1:02d}', px + 0.5, px + 1.0, px, px))
+    for i in range(8):                                   # 反弹 8 日到 78
+        px = 70 + 8 * (i + 1) / 8
+        ks.append(_k(f'2026-07-{i + 1:02d}', px - 0.3, px + 0.5, px - 0.5, px))
+    return ks
+
+
+def test_compute_plunge_metrics():
+    p = compute_plunge(_plunge_bars(), window=PLUNGE_WINDOW)
+    assert p is not None
+    assert abs(p['peak'] - 100.0) < 0.01 and abs(p['trough'] - 70.0) < 0.01
+    assert abs(p['depth'] - (-30.0)) < 0.1, f'depth 应≈-30%，实得 {p["depth"]}'
+    assert p['pdays'] == 20, f'跳水历时应 20 交易日，实得 {p["pdays"]}'
+    assert abs(p['speed'] - (-1.5)) < 0.05, f'speed 应≈-1.5%/日，实得 {p["speed"]}'
+    assert p['rdays'] == 8, f'离低点应 8 交易日，实得 {p["rdays"]}'
+    assert p['has_plunge'] is True
+    assert p['tag'] in ('has', 'mid')
+
+
+def test_compute_plunge_no_plunge():
+    """一路上涨无跳水 → has_plunge False、tag='none'。"""
+    ks = [_k(f'2026-0{1 + i // 28}-{i % 28 + 1:02d}', 50 + i, 51 + i, 49.5 + i, 50.5 + i)
+          for i in range(70)]
+    p = compute_plunge(ks, window=PLUNGE_WINDOW)
+    assert p is not None and p['has_plunge'] is False and p['tag'] == 'none'
+
+
+def test_compute_plunge_steep_flag():
+    """极急跌（≤-2.5%/日）→ tag='steep'（样本外最弱档，只影响排序）。"""
+    ks = [_k(f'2026-04-{i + 1:02d}', 98, 99.0, 97.0, 98.5) for i in range(45)]
+    for i, px in enumerate((99.5, 100.0)):               # 唯一峰 100
+        ks.append(_k(f'2026-05-{i + 1:02d}', px - 1, px, px - 1.5, px))
+    for i in range(15):                                  # 15 日跌 45% → -3%/日
+        px = 100 - 45 * (i + 1) / 15
+        ks.append(_k(f'2026-06-{i + 1:02d}', px + 0.5, px + 1.0, px, px))
+    for i in range(5):
+        ks.append(_k(f'2026-07-{i + 1:02d}', 55 + i, 56 + i, 54 + i, 55.5 + i))
+    p = compute_plunge(ks, window=PLUNGE_WINDOW)
+    assert p is not None and p['tag'] == 'steep' and p['speed'] <= -2.5
+
+
+def test_compute_plunge_short_series():
+    assert compute_plunge(_plunge_bars()[:20], window=PLUNGE_WINDOW) is None

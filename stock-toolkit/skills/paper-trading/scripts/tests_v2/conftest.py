@@ -10,6 +10,17 @@ def isolate_tasks_db(tmp_path, monkeypatch):
     测试显式 monkeypatch.setenv 可覆盖，仍在本测试 tmp_path 域内）。"""
     monkeypatch.setenv('STOCK_TASKS_DB', str(tmp_path / 'tasks.db'))
 
+
+@pytest.fixture(autouse=True)
+def _disable_code_name_gate(monkeypatch):
+    """测试默认关闭「代码↔名称一致性闸门」（_ensure_code，2026-09-09 北方铜业事故）。
+
+    合成名称（NEWS票/收编票…）配真实代码必然对不上，且校验器会触网 → 让用例
+    随网络抖动 flaky（test_sleeve_cli 曾因此偶发失败）。需要测闸门的用例自行
+    `monkeypatch.delenv('PTRADE2_ALLOW_CODE_MISMATCH', raising=False)` 打开。
+    """
+    monkeypatch.setenv('PTRADE2_ALLOW_CODE_MISMATCH', '1')
+
 @pytest.fixture
 def ws(tmp_path):
     """临时 workspace 根，模拟 STOCK_ANALYSIS_WORKSPACE"""

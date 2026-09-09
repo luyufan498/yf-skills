@@ -1909,6 +1909,8 @@ from paper_trading_v2.pulse_check import register as _register_pulse
 _register_pulse(app)
 from paper_trading_v2.pulse_check import _register_expiry as _register_expiry
 _register_expiry(app)
+from paper_trading_v2.pulse_check import _register_plunge as _register_plunge
+_register_plunge(app)
 
 # 注册 export/fix/fetch-news/temp-data/analysis（T5 数据/分析命令组，显式注册）
 from paper_trading_v2.data_cmd import register as _register_data

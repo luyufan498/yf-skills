@@ -58,8 +58,8 @@ def query_due_lines(conn: sqlite3.Connection, now: datetime) -> list[str]:
 def query_collect_inject(tasks_db_path: Path, now: datetime) -> list[str]:
     """查 b) tasks.db pending COLLECT 事件数（只读；无表/无库=0）。
 
-    COLLECT 类型 M0 尚未登记 task-bus 白名单（v12 迁移 M2 才上），
-    这里只查 task_events 表有无 type='COLLECT' AND status='pending' 的行。
+    COLLECT 类型已登记 task-bus TYPES 白名单，news-collect 心跳消费侧已有
+    claim 硬门（v12）；这里只查 task_events 表有无 type='COLLECT' AND status='pending' 的行。
     """
     lines = []
     if tasks_db_path.exists():

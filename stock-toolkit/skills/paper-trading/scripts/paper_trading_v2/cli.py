@@ -1762,13 +1762,18 @@ def closes_cached_cmd(
 def klines_cached_cmd(
     codes: str = typer.Argument(..., help="逗号分隔多股票代码，如 'sh600703,sz002648'"),
     count: int = typer.Option(15, "--count", "-n", help="每票取回的已收盘 bar 数"),
+    adjust: str = typer.Option("raw", "--adjust", "-a",
+                               help="复权口径：raw（默认）| qfq（除权折算，算涨跌幅/均线/回撤用）"),
     format: str = typer.Option("pretty", "--format", "-f", help="输出格式 (pretty/json)")
 ):
-    """批量已收盘日K（raw 不复权，含 high/low）——需要 OHLC 的消费者用这条
+    """批量已收盘日K（默认 raw，含 high/low）——需要 OHLC 的消费者用这条
 
     与 `closes-cached` 同一读时自愈契约（缺口补抓/TTL/超前 bar），区别：
     - `closes-cached`：只要收盘价 + 当日实时价（额外 1 次批量实时价）
     - `klines-cached`：完整 OHLC bar（ATR / peak 回填 / G5 回检），0 网络（暖缓存）
+
+    `--adjust qfq`（2026-09-09 加）：除权折算序列——**算均线/回撤/涨跌幅/月K聚合必须用它**，
+    raw 在除权日有假缺口（新易盛 6/11 10转4 = 单日 -31.9%）。
     """
     from paper_trading_v2.market_cache import fetch_klines_cached, normalize_code
     try:
@@ -1776,7 +1781,10 @@ def klines_cached_cmd(
         if not raw_list:
             typer.echo("❌ 未提供有效股票代码", err=True)
             raise typer.Exit(1)
-        res = fetch_klines_cached(raw_list, count=count)
+        if adjust not in ('raw', 'qfq', 'qfq_equivalent'):
+            typer.echo(f"❌ 不支持的 adjust={adjust}（可选 raw/qfq）", err=True)
+            raise typer.Exit(1)
+        res = fetch_klines_cached(raw_list, count=count, adjust=adjust)
         if not res:
             typer.echo("❌ 所有代码均未取到数据", err=True)
             raise typer.Exit(1)
@@ -1786,12 +1794,12 @@ def klines_cached_cmd(
                 'requested': raw_list,
                 'normalized': {normalize_code(c): c for c in raw_list},
                 'count': count,
-                'adjust': 'raw',
+                'adjust': adjust,
                 'data': res,
             }, ensure_ascii=False, indent=2))
             return
         typer.echo(f"📊 klines-cached｜输入 {len(raw_list)} 码 → 归一后 {len(res)} 只"
-                   f"｜每只 {count} 根上限（raw 不复权，含 OHLC）")
+                   f"｜每只 {count} 根上限（{adjust}，含 OHLC）")
         for code, bars in res.items():
             if not bars:
                 typer.echo(f"  {code}\t无缓存 bar")

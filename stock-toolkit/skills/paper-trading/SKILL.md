@@ -23,8 +23,8 @@ description: 模拟盘交易系统，支持 A股、港股和美股的模拟交�
 **硬规则：买卖（allocate+buy / sell）只能在交易时段执行**。执行 agent 操作前先 `date +%H:%M` 判断当前时间，非交易时段**禁止直接买卖**。
 
 **非交易时段（凌晨/午休/收盘后）发现交易信号 → 挂买卖点，开盘后由心跳价格触发**：
-- **建仓信号**（NEWS_SNAPSHOT 收编判定通过 / 组合审查通道判定通过 / 分析设点）：不直接 buy → `taskbus watchpoint add <股> --price <触发价> --mode buy --amount <预算> --code <代码> --note "非交易时段判定，开盘触发:<原因>"`（**必须 --mode buy**——默认 eval 次日触发只唤醒评估不建仓，链路断裂）→ 开盘后心跳检测现价≤触发价 → 交易时段内执行
-- **止损信号**（非交易时段价格触及止损位）：可挂 `taskbus watchpoint add <股> --price <触发价> --mode sell --code <代码>`（**现价≥触发价触发**，2026-09-04 CLI 已支持）**或**沿用 conditions（止损位已存在 conditions 表 cost_protection/trailing_stop，`check_price_triggers` 次日交易时段自动检测破位触发执行）——**二选一**
+- **建仓信号**（NEWS_SNAPSHOT 收编判定通过 / 组合审查通道判定通过 / 分析设点）：不直接 buy → `taskbus watchpoint add <股> --price <触发价> --mode buy --amount <预算> --code <代码> --creator <发起job/agent名> --note "非交易时段判定，开盘触发:<原因>"`（**必须 --mode buy**——默认 eval 次日触发只唤醒评估不建仓，链路断裂）→ 开盘后心跳检测现价≤触发价 → 交易时段内执行
+- **止损信号**（非交易时段价格触及止损位）：可挂 `taskbus watchpoint add <股> --price <触发价> --mode sell --code <代码> --creator <发起job/agent名>`（**现价≥触发价触发**，2026-09-04 CLI 已支持）**或**沿用 conditions（止损位已存在 conditions 表 cost_protection/trailing_stop，`check_price_triggers` 次日交易时段自动检测破位触发执行）——**二选一**
 - **移动止损两级模型（2026-09-05 定稿）**：首次破位 → 减仓 50% → 剩余仓重建恢复期线 = 现价 × 0.95 → 再破 → 清仓剩余；**破位 = 事件触发**（C1 price-watch 15min 扫线写 WATCH_ALERT），不等收盘、不隔日
 - **紧急破位**：同样只标记不直接执行（模拟盘无真实滑点，等开盘触发即可）
 
@@ -58,7 +58,7 @@ ptrade2 watchlist-remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 > 转换语言不同（技术组=价格，消息组=清单），退出引擎共享。
 
 **技术组（趋势池 pool_ledger）**
-- **L2 待命**（原 L2/L3 合并）：准备建仓的股票，池名单留置。**可设建仓点**：`taskbus watchpoint add <股> --price <价> --mode buy --amount 500000 --code <代码>`（**--amount = 段预算 = 总池 5% = ¥500,000，不是首笔买入金额**；可选 `--min` 设区间触发）→ 到价触发 `WATCH_ALERT(mode=buy)` → 核验 → `master-pool-allocate`（自动升 L1）→ `ptrade2 buy`；也可主动建仓。无持仓 + 短期不打算买入 → 降级观察（降级 + CALENDAR 回查，见 stock-daily-analysis 步骤 8）；**甜点区/追高检测只对技术组有效（入场侧禁止当买入许可线，见宪法）**
+- **L2 待命**（原 L2/L3 合并）：准备建仓的股票，池名单留置。**可设建仓点**：`taskbus watchpoint add <股> --price <价> --mode buy --amount 500000 --code <代码> --creator <发起job/agent名>`（**--amount = 段预算 = 总池 5% = ¥500,000，不是首笔买入金额**；可选 `--min` 设区间触发）→ 到价触发 `WATCH_ALERT(mode=buy)` → 核验 → `master-pool-allocate`（自动升 L1）→ `ptrade2 buy`；也可主动建仓。无持仓 + 短期不打算买入 → 降级观察（降级 + CALENDAR 回查，见 stock-daily-analysis 步骤 8）；**甜点区/追高检测只对技术组有效（入场侧禁止当买入许可线，见宪法）**
 - **L1 持仓段**：被 allocate 分配预算的股票（**自动升 L1**）。**初始建段统一 = 总池 5%**；段预算内按策略分批建仓（首笔比例查交易纪律 3.0.0 矩阵；补仓优先段内弹药，弹药用尽才 topup ≤30%）。`release` 空仓段释放后：**SLEEVE_ARCHIVE_ON_CLEAR=1 → 池行 archived 终态（清仓不自动回池，回池要新证据，方案 2.6b）；flag 关（M1/M2 默认）→ 旧行为降回 L2**
 - **pin 名单保护（独立字段，与档位正交）**：`watchlist-add --pin`。pin=1：允许升降级但禁止删除；取消需人工确认（source=manual）
 
@@ -70,7 +70,7 @@ ptrade2 watchlist-remove 股票 --reason 依据   # 出池（僵尸剔除/降级
 ```bash
 # ===== 技术组 =====
 ptrade2 watchlist-add 股票 --strategy L2 --source agent --reason "依据"
-taskbus watchpoint add 股票 --price 24.5 --mode buy --amount 500000 --code <代码>
+taskbus watchpoint add 股票 --price 24.5 --mode buy --amount 500000 --code <代码> --creator <发起job/agent名>
 ptrade2 master-pool-allocate 股票 --amount 500000 --reason "建仓点触发"
 
 # ===== 消息组 =====

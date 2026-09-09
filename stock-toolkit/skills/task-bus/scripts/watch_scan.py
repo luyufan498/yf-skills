@@ -286,7 +286,10 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     claimed_at  TEXT,
     done_at     TEXT,
-    note        TEXT
+    note        TEXT,
+    creator     TEXT NOT NULL DEFAULT '',
+    handled_at  TEXT,
+    handled_by  TEXT
 );
 CREATE TABLE IF NOT EXISTS kv_store (
     key         TEXT PRIMARY KEY,
@@ -295,16 +298,74 @@ CREATE TABLE IF NOT EXISTS kv_store (
 );
 """
 
+# C1（WP1）失败码分流：连续失败计数 kv_state 键名（{cond_uid: {"code":…, "count":N}}）。
+# 文档：insufficient_funds/insufficient_shares 连续 3 次 → 条件 suspended + 升级；
+# error 重试 ≤2 次 → 升级。计数持久化到 watch_scan_state["cond_exec_fails"]（重启不丢）。
+COND_EXEC_FAILS_KEY = "cond_exec_fails"
+SUSPEND_AFTER_FAILS = 3          # 资金类连续失败挂起阈值（B5：防 15min 一轮无限洪泛）
+ERROR_ESCALATE_AFTER = 2         # error 重试耗尽阈值（重试 ≤2 次后升级）
+SUCCESS_RESETS_FAILS = True      # 成功执行后清零该条件失败计数
+COND_EXEC_TICK_WINDOW = 600.0    # 同拍窗口（秒）：窗口内重复失败不重复计数（防 cron/手动重叠双计）
+
+
+def _handled_columns_ensure(db_path: str | None = None) -> sqlite3.Connection:
+    """C2（WP3）：task_events.handled_at/handled_by 列幂等迁移（与 B 的 creator 同法）。
+
+    旧库（B 批前建的表，无 handled 列）连库自动补列；新库 TASKS_SCHEMA 已含列。
+    返回连接（调用方负责 close）。"""
+    p = db_path or TASKS_DB
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    conn = sqlite3.connect(p)
+    conn.executescript(TASKS_SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(task_events)")}
+    for col in ("creator", "handled_at", "handled_by"):
+        if col not in cols:
+            if col == "creator":
+                conn.execute("ALTER TABLE task_events ADD COLUMN creator TEXT NOT NULL DEFAULT ''")
+            else:
+                conn.execute(f"ALTER TABLE task_events ADD COLUMN {col} TEXT")
+    conn.commit()
+    return conn
+
 
 def _ensure_task_table():
     """确保任务表存在（脚本独立运行时不依赖 taskbus init）。"""
-    os.makedirs(os.path.dirname(TASKS_DB), exist_ok=True)
-    conn = sqlite3.connect(TASKS_DB)
+    conn = _handled_columns_ensure(TASKS_DB)
+    conn.close()
+
+
+def _resolve_cond_uid(db_path: str, cond_id: int) -> str | None:
+    """C4（WP4）：条件行 id → cond_uid（行 id 随 conditions_manager.save DELETE+INSERT
+    漂移，cond_uid 跨 save 稳定；去重键=(entity, cond_uid)）。查不到 → None。"""
+    if not cond_id or cond_id <= 0 or not os.path.exists(db_path):
+        return None
     try:
-        conn.executescript(TASKS_SCHEMA)
-        conn.commit()
-    finally:
-        conn.close()
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT cond_uid FROM conditions WHERE id=?", (cond_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    uid = (row[0] or "").strip() if row else ""
+    return uid or None
+
+
+def _condition_created_by(db_path: str, cond_id: int) -> str:
+    """C1/C2：条件创建者（A 批 conditions.created_by 列；空 → '' 由调用方 fail-closed）。"""
+    uid_row = None
+    if not cond_id or cond_id <= 0 or not os.path.exists(db_path):
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            uid_row = conn.execute("SELECT created_by FROM conditions WHERE id=?",
+                                   (cond_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ""
+    return (uid_row[0] or "").strip() if uid_row else ""
 
 
 # ---------- 1. 任务事件检查 ----------
@@ -403,27 +464,35 @@ def atr_sync_daily() -> list[str]:
 
 # ---------- 3. 价格条件触发检测 ----------
 def _has_pending_event(entity: str, direction: str, cond_id: int | None = None) -> bool:
-    """去重：同实体同方向已有 pending/processing 事件则跳过。
+    """去重：同实体同条件已有 pending/processing 事件则跳过（C4/WP4）。
 
-    cond_id > 0 时进一步按条件 ID 精确去重（同条件不重复入队），
-    防手动补录与自动触发叠加造成重复事件。
+    去重键从 payload LIKE '%"cond_id": <行id>%' 改为 **(entity, cond_uid)**——
+    行 id 随 conditions_manager.save DELETE+INSERT 漂移（实测 id 范围 4–2878 而
+    现存 189 行），同 cond_uid 行 id 变化后旧键查不到 → 重复入队。cond_uid 跨
+    save 稳定（非全局唯一：sleeve 段 cond_uid=type 名跨 18 账户），故必须带实体。
+    窗口明文 = pending + processing（failed 即释放窗口）。
+    cond_id 解析不出 cond_uid（条件已删/行 id 失效）→ 退回 entity+direction 宽键。
     """
     if not os.path.exists(TASKS_DB):
         return False
     conn = sqlite3.connect(TASKS_DB)
     try:
         if cond_id and cond_id > 0:
-            row = conn.execute(
-                "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
-                "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
-                (entity, f"%\"cond_id\": {cond_id}%"),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
-                "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
-                (entity, f"%{direction}%"),
-            ).fetchone()
+            cond_uid = _resolve_cond_uid(POOL_DB, cond_id)
+            if cond_uid:
+                row = conn.execute(
+                    "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
+                    "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
+                    (entity, f"%\"cond_uid\": \"{cond_uid}\"%"),
+                ).fetchone()
+                if row is not None:
+                    return True
+            # cond_uid 不可得 → 宽键兜底（entity+direction，防同向叠加）
+        row = conn.execute(
+            "SELECT 1 FROM task_events WHERE entity=? AND status IN ('pending','processing') "
+            "AND type='WATCH_ALERT' AND payload LIKE ? LIMIT 1",
+            (entity, f"%{direction}%"),
+        ).fetchone()
         return row is not None
     finally:
         conn.close()
@@ -446,8 +515,19 @@ def _cond_active(cond_id: int) -> bool:
 def _write_alert(entity: str, code: str, direction: str, cond_id: int,
                  cond_name: str, trigger_price: float, current_price: float,
                  manual: bool = False, mode: str = "trade", budget: float | None = None,
-                 tp_only: bool = False) -> bool:
+                 tp_only: bool = False, ref_id: str | None = None,
+                 creator: str | None = None) -> bool:
     """写 WATCH_ALERT 事件 + 原子标记条件为 triggered（触发即失效，防重复进入流程）。
+
+    C2（WP3）payload 契约（v3 方案）：
+    - exec={result, code, at, price}：直调执行结果回写位（写入时 result='pending'，
+      C1 直调后同事件更新 done/failed + 原因码，消费方按 payload 路由）；
+    - ref={kind, id}：对象指针——condition → cond_uid（行 id 漂移，uid 跨 save 稳定）、
+      watchpoint → wp_id（ref_id 传入时 kind=watchpoint）；
+    - creator：对象创建者（trade 模式取 conditions.created_by；watchpoint 由调用方
+      传 row.created_by；空 → fail-closed 由消费方晚审+通知）；
+    - snapshot：5 字段最小快照 {entity, direction, threshold, price, code}（审计 B3：
+      cond_uid 有 NULL/类型名行，纯指针会悬空，快照兜底）。
 
     manual=True（手动补录路径）：仅当条件仍 active 才允许写入，已 triggered/不存在则拒绝，
     返回 False 由调用方记录跳过原因——防对旧条件重复补录（如"买点上沿"昨已触发今又补）。
@@ -465,17 +545,35 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     if _has_pending_event(entity, direction, cond_id):
         return False  # 已有同向/同条件待处理事件，去重
     _ensure_task_table()
-    conn = sqlite3.connect(TASKS_DB)
+    cond_uid = _resolve_cond_uid(POOL_DB, cond_id) if cond_id and cond_id > 0 else None
+    if creator is None:
+        creator = _condition_created_by(POOL_DB, cond_id) if cond_id and cond_id > 0 else ""
+    if ref_id:
+        ref = {"kind": "watchpoint", "id": ref_id}
+    elif cond_uid:
+        ref = {"kind": "condition", "id": cond_uid}
+    else:
+        ref = {"kind": "condition", "id": str(cond_id)} if cond_id and cond_id > 0 \
+            else {"kind": "watchpoint", "id": f"{entity}:{mode}"}
+    payload = json.dumps({
+        "mode": mode, "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
+        "trigger_price": trigger_price, "current_price": current_price,
+        "budget": budget,
+        "cond_uid": cond_uid,
+        "exec": {"result": "pending", "code": None,
+                 "at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                 "price": current_price},
+        "ref": ref,
+        "creator": creator or "",
+        "snapshot": {"entity": entity, "direction": direction, "threshold": trigger_price,
+                     "price": current_price, "code": code},
+    }, ensure_ascii=False)
+    conn = _handled_columns_ensure(TASKS_DB)
     try:
-        payload = json.dumps({
-            "mode": mode, "direction": direction, "cond_id": cond_id, "cond_name": cond_name,
-            "trigger_price": trigger_price, "current_price": current_price,
-            "budget": budget,
-        }, ensure_ascii=False)
         conn.execute(
-            "INSERT INTO task_events (type, entity, source, priority, payload) "
-            "VALUES ('WATCH_ALERT', ?, 'heartbeat-scan', 1, ?)",
-            (entity, payload),
+            "INSERT INTO task_events (type, entity, source, priority, payload, creator) "
+            "VALUES ('WATCH_ALERT', ?, 'heartbeat-scan', 1, ?, ?)",
+            (entity, payload, creator or ""),
         )
         conn.commit()
     finally:
@@ -617,8 +715,114 @@ def check_naked_conditions() -> list[str]:
         conn.close()
 
 
+def _parse_exec_fail_code(out: str) -> str:
+    """C1（WP1）：ptrade2 sell/buy CLI 输出/返回码 → 原因码（失败分流依据）。
+
+    判据从 CLI 输出解析（空输出/超时/异常 → 'error'）：
+    - '报价陈旧'/'stale' → stale_quote；'停牌' → halted；'资金不足' → insufficient_funds；
+    - '持仓不足' → insufficient_shares；'无持仓' → no_position；'已成交（幂等拒绝）' → already_fulfilled；
+    - 其余非空非 ✅ 输出 → error；'✅' 开头 → 空（成功，不进分流）。
+    """
+    t = (out or "").strip()
+    if not t or "Error" in t[:32] and "❌" not in t:
+        return "error"
+    if "报价陈旧" in t or "stale" in t.lower():
+        return "stale_quote"
+    if "停牌" in t or "halted" in t.lower():
+        return "halted"
+    if "资金不足" in t or "insufficient_funds" in t:
+        return "insufficient_funds"
+    if "持仓不足" in t or "insufficient_shares" in t:
+        return "insufficient_shares"
+    if "无持仓" in t or "no_position" in t:
+        return "no_position"
+    if "已成交" in t and "幂等拒绝" in t or "already_fulfilled" in t:
+        return "already_fulfilled"
+    return "error"
+
+
+def _record_cond_exec_fail(cond_uid: str, code: str) -> int:
+    """C1：连续失败计数（kv_state watch_scan_state[COND_EXEC_FAILS_KEY]，持久化重启不丢）。
+
+    同码连击 +1；换码重置为 1（连续=同一原因码连续出现）。返回当前连击数。
+    拍次守卫（2026-09-10 审计补）：同一拍窗口内重复调用（cron 与手动 --scope price
+    重叠）不重复计数——上次计数时间在 COND_EXEC_TICK_WINDOW 秒内 → 返回现值不加。"""
+    st = load_state()
+    fails = st.get(COND_EXEC_FAILS_KEY) or {}
+    ent = fails.get(cond_uid) or {}
+    now = time.time()
+    last_at = ent.get("ts_epoch") or 0
+    if ent.get("code") == code and (now - last_at) < COND_EXEC_TICK_WINDOW:
+        return ent.get("count", 1)  # 同拍重复调用不重复计数
+    n = ent.get("count", 0) + 1 if ent.get("code") == code else 1
+    fails[cond_uid] = {"code": code, "count": n, "at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                       "ts_epoch": now}
+    st[COND_EXEC_FAILS_KEY] = fails
+    save_state(st)
+    return n
+
+
+def _reset_cond_exec_fail(cond_uid: str):
+    """C1：成功执行后清零该条件连续失败计数（SUCCESS_RESETS_FAILS）。"""
+    if not SUCCESS_RESETS_FAILS or not cond_uid:
+        return
+    st = load_state()
+    fails = st.get(COND_EXEC_FAILS_KEY) or {}
+    if cond_uid in fails:
+        fails.pop(cond_uid, None)
+        st[COND_EXEC_FAILS_KEY] = fails
+        save_state(st)
+
+
+def _update_alert_exec(event_id: int, result: str, code: str | None, price: float,
+                       status: str | None = None, handled_by: str = "watch-scan") -> None:
+    """C1/C2：同事件回写 exec={result, code, at, price}（直调结果落 payload，留痕）。
+
+    status 传入时同步改事件状态（done=成功留痕闭环 / failed=终态失败 / None=保持
+    pending 重试车辆）。handled_at/handled_by 独立列（WP3：防双消费者互覆 JSON）。"""
+    if not os.path.exists(TASKS_DB) or not event_id:
+        return
+    conn = _handled_columns_ensure(TASKS_DB)
+    try:
+        row = conn.execute("SELECT payload FROM task_events WHERE id=?", (event_id,)).fetchone()
+        if row is None:
+            return
+        try:
+            p = json.loads(row[0]) if row[0] else {}
+        except (ValueError, TypeError):
+            p = {}
+        p["exec"] = {"result": result, "code": code,
+                     "at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "price": price}
+        if status:
+            conn.execute("UPDATE task_events SET payload=?, status=?, "
+                         "handled_at=datetime('now','localtime'), handled_by=? WHERE id=?",
+                         (json.dumps(p, ensure_ascii=False), status, handled_by, event_id))
+        else:
+            conn.execute("UPDATE task_events SET payload=?, "
+                         "handled_at=datetime('now','localtime'), handled_by=? WHERE id=?",
+                         (json.dumps(p, ensure_ascii=False), handled_by, event_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def check_price_triggers() -> list[str]:
-    """读 active 条件 vs 实时价，穿越触发 → 写 WATCH_ALERT（去重）。"""
+    """读 active 条件 vs 实时价，穿越触发 → 同拍直调执行（C1/WP1，2026-09-10）。
+
+    旧版：只写 WATCH_ALERT 等 agent 认领（判断腿延迟 + 机械腿空转）。
+    新版（v3 方案 WP1）：检测命中 → **同拍** `ptrade2 sell/buy <股> <数量> --price <检测价>
+    --event-id <事件id>`（成交价=检测价，E3 行情防线在 CLI 内）；事件仍写 WATCH_ALERT
+    （留痕/升级通道），不再"等 agent 认领"。无 60s SLO、无人工门。
+
+    失败分流（机械，从 CLI 输出解析原因码 → payload.exec）：
+    - stale_quote|halted（防线拒）→ 条件保持 active，下一拍重试，不升级（事件留 pending 重试）；
+    - insufficient_funds|insufficient_shares → 连续 3 次 → 条件置 suspended + 升级告警
+      （计数持久化 kv_state watch_scan_state["cond_exec_fails"]，B5 防洪泛）；
+    - no_position|already_fulfilled → 条件归档（archived），事件 exec.result=done；
+    - error（异常/超时/未知）→ 重试 ≤2 次 → 升级（条件保持 active，事件留 pending）。
+    - creator 为空（fail-closed，v3 §1.1）→ 不直调执行，事件保持 pending（晚审+通知）。
+    卖出数量：保护线/止损类=清仓 --all；买入类=预算金额（budget 无则 5 万缺省）。
+    """
     if not in_trade_hours() or not os.path.exists(POOL_DB):
         return []
     conn = sqlite3.connect(POOL_DB)
@@ -662,16 +866,219 @@ def check_price_triggers() -> list[str]:
         hit = price >= r["price"] if is_up else price <= r["price"]
         if not hit:
             continue
+        cond_uid = _resolve_cond_uid(POOL_DB, r["id"]) or f"cond:{r['id']}"
+        arrow = "≥" if is_up else "≤"
+        # ---- C1 重试路径：pending 事件作重试载体（上一拍 exec 失败可重试码）----
         if _has_pending_event(r["stock_name"], direction, r["id"]):
-            continue  # 已有同向/同条件待处理事件，去重
+            retry = _pending_retry_event(r["stock_name"], cond_uid)
+            if retry is None or retry.get("code") not in RETRYABLE_CODES \
+                    or not _cond_active(r["id"]):
+                continue  # 已有同向/同条件待处理事件（正常去重），跳过
+            ev_id = retry["id"]
+            # 重试不再写新事件（同事件留痕，exec 更新计次）
+            creator = retry.get("creator") or ""
+            if creator == "":
+                triggers.append(
+                    f"⚠️ {r['stock_name']}({r['stock_code']}) {direction.upper()} 重试被拒："
+                    f"creator 为空（fail-closed，事件#{ev_id} 待晚审）")
+                continue
+            out = ptrade2("sell" if direction == "sell" else "buy", r["stock_name"],
+                          *(["--all"] if direction == "sell" else ["50000"]),
+                          "--price", f"{price:.2f}", "--event-id", str(ev_id), timeout=90)
+            ok = bool(out) and "✅" in out
+            if ok:
+                _update_alert_exec(ev_id, "done", "ok", price, status="done")
+                _reset_cond_exec_fail(cond_uid)
+                triggers.append(
+                    f"⚡ {r['stock_name']}({r['stock_code']}) {direction.upper()} 重试成交: "
+                    f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f}（事件#{ev_id} done）")
+            else:
+                code = _parse_exec_fail_code(out)
+                n = _record_cond_exec_fail(cond_uid, code)
+                _route_exec_fail(r, direction, price, action, cond_uid, ev_id, code, n, triggers)
+            continue
         if not _write_alert(r["stock_name"], r["stock_code"], direction, r["id"],
                             action, r["price"], price, tp_only=is_up):
             continue  # 条件已非 active（极端竞态），跳过
-        arrow = "≥" if is_up else "≤"
-        triggers.append(
-            f"🔔 {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发: "
-            f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f} [{action}]")
+        # ---- C1 同拍直调（事件已写，取回 id 后带 --event-id 执行）----
+        ev_id, creator, ev_payload = None, "", "{}"
+        try:
+            _conn = sqlite3.connect(TASKS_DB)
+            try:
+                row = _conn.execute(
+                    "SELECT id, creator, payload FROM task_events WHERE type='WATCH_ALERT' "
+                    "AND entity=? AND status='pending' ORDER BY id DESC LIMIT 1",
+                    (r["stock_name"],)).fetchone()
+            finally:
+                _conn.close()
+            if row:
+                ev_id, creator, ev_payload = row[0], row[1] or "", row[2] or "{}"
+        except sqlite3.Error:
+            creator = ""
+        if creator is None or creator == "":
+            # fail-closed（v3 §1.1）：无创建者 → 不执行，事件保持 pending 晚审+通知
+            triggers.append(
+                f"⚠️ {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发但 creator 为空"
+                f"（fail-closed，事件#{ev_id} 待晚审+通知，不直调执行）")
+            continue
+        if direction == "sell":
+            out = ptrade2("sell", r["stock_name"], "--all",
+                          "--price", f"{price:.2f}", "--event-id", str(ev_id), timeout=90)
+        else:
+            budget = None
+            try:
+                budget = json.loads(ev_payload or "{}").get("budget")
+            except (ValueError, TypeError):
+                budget = None
+            amt = f"{budget:,.0f}" if budget else "50000"
+            out = ptrade2("buy", r["stock_name"], amt,
+                          "--price", f"{price:.2f}", "--event-id", str(ev_id), timeout=90)
+        ok = bool(out) and "✅" in out
+        if ok:
+            _update_alert_exec(ev_id, "done", "ok", price, status="done")
+            _reset_cond_exec_fail(cond_uid)
+            triggers.append(
+                f"⚡ {r['stock_name']}({r['stock_code']}) {direction.upper()} 同拍直调成交: "
+                f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f} [{action}]（事件#{ev_id} done）")
+            continue
+        code = _parse_exec_fail_code(out)
+        n = _record_cond_exec_fail(cond_uid, code)
+        _route_exec_fail(r, direction, price, action, cond_uid, ev_id, code, n, triggers)
     return triggers
+
+
+RETRYABLE_CODES = ("stale_quote", "halted", "insufficient_funds", "insufficient_shares", "error")
+
+
+def _pending_retry_event(entity: str, cond_uid: str) -> dict | None:
+    """C1：查同 (entity, cond_uid) pending 事件的 exec（重试载体）。返回 {id, code, creator}。"""
+    if not os.path.exists(TASKS_DB):
+        return None
+    conn = sqlite3.connect(TASKS_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT id, creator, payload FROM task_events WHERE type='WATCH_ALERT' "
+            "AND entity=? AND status='pending' ORDER BY id DESC LIMIT 10",
+            (entity,)).fetchall()
+        for row in rows:
+            try:
+                p = json.loads(row["payload"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if p.get("cond_uid") and cond_uid and str(p.get("cond_uid")) == str(cond_uid):
+                ex = p.get("exec") or {}
+                return {"id": row["id"], "code": ex.get("code"),
+                        "creator": row["creator"] or p.get("creator") or ""}
+        return None
+    finally:
+        conn.close()
+
+
+def _route_exec_fail(r, direction: str, price: float, action: str, cond_uid: str,
+                     ev_id: int, code: str, n: int, triggers: list) -> None:
+    """C1 失败分流（机械）：按原因码路由（条件终态 + 事件 exec + 告警行）。
+
+    - stale_quote|halted → 条件恢复 active，下一拍重试，不升级；
+    - insufficient_funds|insufficient_shares → 连续 3 次 → suspended + 升级，否则恢复 active 重试；
+    - no_position|already_fulfilled → 条件归档（archived），事件 exec.result=done；
+    - error → 重试 ≤2 次（n>2）→ 升级，否则恢复 active 重试。
+    """
+    if code in ("stale_quote", "halted"):
+        _restore_active(r["id"], cond_uid, f"exec失败恢复（{code}，下一拍重试）")
+        _update_alert_exec(ev_id, "failed", code, price)  # 事件留 pending 作重试载体
+        triggers.append(
+            f"🔁 {r['stock_name']}({r['stock_code']}) {direction.upper()} 直调被拒[{code}]: "
+            f"现价¥{price:.2f} 条件¥{r['price']:.2f} [{action}] → 条件保持 active 下一拍重试")
+    elif code in ("insufficient_funds", "insufficient_shares"):
+        _restore_active(r["id"], cond_uid, f"exec失败恢复（{code}）")
+        if n >= SUSPEND_AFTER_FAILS:
+            _suspend_condition(r["id"], cond_uid, f"连续 {n} 次 {code}")
+            _update_alert_exec(ev_id, "failed", code, price, status="failed")
+            triggers.append(
+                f"🚨 {r['stock_name']}({r['stock_code']}) {direction.upper()} 连续 {n} 次 {code}"
+                f" → 条件置 suspended + 升级（事件#{ev_id}，需人工核资金/仓位）")
+        else:
+            _update_alert_exec(ev_id, "failed", code, price)
+            triggers.append(
+                f"🔁 {r['stock_name']}({r['stock_code']}) {direction.upper()} 直调被拒[{code}]"
+                f"（{n}/{SUSPEND_AFTER_FAILS}）: 现价¥{price:.2f} [{action}] → 下一拍重试")
+    elif code in ("no_position", "already_fulfilled"):
+        _archive_condition(r["id"], cond_uid, f"exec失败归档（{code}）")
+        _update_alert_exec(ev_id, "done", code, price, status="done")
+        _reset_cond_exec_fail(cond_uid)
+        triggers.append(
+            f"📦 {r['stock_name']}({r['stock_code']}) {direction.upper()} 直调[{code}] → "
+            f"条件归档（事件#{ev_id} exec.result=done）")
+    else:  # error
+        _restore_active(r["id"], cond_uid, "exec失败恢复（error，重试）")
+        if n > ERROR_ESCALATE_AFTER:
+            _update_alert_exec(ev_id, "failed", code, price, status="failed")
+            triggers.append(
+                f"🚨 {r['stock_name']}({r['stock_code']}) {direction.upper()} 重试 {n} 次仍 error"
+                f" → 升级（事件#{ev_id}，需人工核查）")
+        else:
+            _update_alert_exec(ev_id, "failed", code, price)
+            triggers.append(
+                f"🔁 {r['stock_name']}({r['stock_code']}) {direction.upper()} 直调异常[{code}]"
+                f"（重试 {n}/{ERROR_ESCALATE_AFTER}）: 现价¥{price:.2f} [{action}] → 下一拍重试")
+
+
+def _restore_active(cond_id: int, cond_uid: str, reason: str) -> None:
+    """C1：直调失败（可重试/资金类）→ 撤销触发即失效标记，恢复条件 active + 留痕。"""
+    if not os.path.exists(POOL_DB) or not cond_id or cond_id <= 0:
+        return
+    conn = sqlite3.connect(POOL_DB)
+    try:
+        now = datetime.now().isoformat()
+        conn.execute("UPDATE conditions SET status='active', modified_at=? WHERE id=?",
+                     (now, cond_id))
+        conn.execute(
+            "INSERT INTO condition_history (condition_id, old_price, new_price, reason, "
+            "timestamp, level, override_triggers) "
+            "SELECT id, price, price, ?, ?, 'auto', '[]' FROM conditions WHERE id=?",
+            (reason, now, cond_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _suspend_condition(cond_id: int, cond_uid: str, reason: str) -> None:
+    """C1：资金类连续失败 ≥3 → 条件置 suspended + 升级（留痕）。"""
+    if not os.path.exists(POOL_DB) or not cond_id or cond_id <= 0:
+        return
+    conn = sqlite3.connect(POOL_DB)
+    try:
+        now = datetime.now().isoformat()
+        conn.execute("UPDATE conditions SET status='suspended', modified_at=? WHERE id=?",
+                     (now, cond_id))
+        conn.execute(
+            "INSERT INTO condition_history (condition_id, old_price, new_price, reason, "
+            "timestamp, level, override_triggers) "
+            "SELECT id, price, price, ?, ?, 'auto', '[]' FROM conditions WHERE id=?",
+            (reason, now, cond_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _archive_condition(cond_id: int, cond_uid: str, reason: str) -> None:
+    """C1：no_position/already_fulfilled → 条件归档（archived，义务已履行）。"""
+    if not os.path.exists(POOL_DB) or not cond_id or cond_id <= 0:
+        return
+    conn = sqlite3.connect(POOL_DB)
+    try:
+        now = datetime.now().isoformat()
+        conn.execute("UPDATE conditions SET status='archived', modified_at=? WHERE id=?",
+                     (now, cond_id))
+        conn.execute(
+            "INSERT INTO condition_history (condition_id, old_price, new_price, reason, "
+            "timestamp, level, override_triggers) "
+            "SELECT id, price, price, ?, ?, 'auto', '[]' FROM conditions WHERE id=?",
+            (reason, now, cond_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def audit_inconsistencies() -> list[str]:
@@ -1440,29 +1847,37 @@ def _parse_order_ttl(ts) -> "datetime | None":
 
 
 def check_price_orders() -> list[str]:
-    """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测。
+    """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测（C3/WP7，2026-09-10）。
 
-    每拍扫 event_slots status='pending_order'（**不是** legacy 的
-    fill_status='pending' AND status IN ('open','partial')——那是旧 sleeve-fill 的），
-    对每槽 fetch_price_any 取现价（首成员 code，_slot_member_code）：
-    - 价 ∈ [band_min,band_max] → 触带行（消费方 sleeve-order-fill --price 检测价）
-    - 价 < band_min → 破带行（sleeve-order-expire --reason band_break）
-    - now > order_ttl → 过期行（--reason expired；TTL 优先于价格——挂单已死）
-    - 取价失败 → 明确失败行（不静默：不成交不弃单，下一拍重试）
-    现价 > band_max：未触带未破带（挂单等回落）→ 无动作不输出（防每拍空唤醒，
-    TTL 到期自然走 expired）；band 缺失（异常态）→ fail-closed 行不动作。
-    本函数只输出触发行不执行——fill/expire CLI 是执行与最终防线（带内判定、
-    TTL fail-closed、E3 行情防线、E9 band_break 核价都在那边复验）。
-    持久输出语义同 [SLEEVE] 行：动作完成前每拍重复 → monitor 持续唤醒直到闭环。
+    band 语义按 v3 §2 等待型/立即型改造（band 不是限价，是"可执行价格窗口"）：
+    - TTL → 过期行（--reason expired，不变，消费方执行）；
+    - 等待型（placed_px ∉ band）：仍在创建价同侧 → 等（TTL 到期 expired）；
+      **跨到另一侧**（整带穿越未成交）→ 同拍直调 `sleeve-order-expire
+      --reason band_skipped`（发起方核价：调用前自查现价确在另一侧，CLI 层不再核价——
+      A 批 expire 白名单已含两码）；
+    - 立即型（placed_px ∈ band）按生产现状语义（2026-09-10 用户裁决回退：带本身是
+      容忍度缓冲，边界抖动不值得建状态，band_left/band_out_count 计数机制已撤销，
+      列保留不用）：
+      · 价 ∈ [band_min,band_max] → 触带行（sleeve-order-fill --price 检测价，不变）；
+      · 价 < band_min → 同拍直调 `--reason band_break`（生产现状，原样保留）；
+      · 价 > band_max → **无动作不输出**（挂单等回落，TTL 到期自然走 expired）；
+    - 取价失败 → 明确失败行（不静默，下一拍重试）。
+    弃单直调（打桩可断言），成交 fill 仍只出行（E3/E9 防线在 CLI，agent 消费）。
     """
     if not os.path.exists(POOL_DB) or not in_price_scan_window():
         return []
     conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        slots = conn.execute(
-            "SELECT event_key, band_min, band_max, order_ttl FROM event_slots "
-            "WHERE status='pending_order' ORDER BY event_key").fetchall()
+        try:
+            slots = conn.execute(
+                "SELECT event_key, band_min, band_max, order_ttl, placed_px "
+                "FROM event_slots WHERE status='pending_order' ORDER BY event_key").fetchall()
+        except sqlite3.OperationalError:  # 旧库缺 placed_px 列
+            slots = conn.execute(
+                "SELECT event_key, band_min, band_max, order_ttl, "
+                "anchor_price AS placed_px "
+                "FROM event_slots WHERE status='pending_order' ORDER BY event_key").fetchall()
     finally:
         conn.close()
     now = datetime.now()
@@ -1484,15 +1899,47 @@ def check_price_orders() -> list[str]:
             out.append(f"[PRICE-ORDER] {event_key} 取价失败（code={code or '无成员段'}）"
                        f"→ 本轮跳过，不成交不弃单（fail-closed，下一拍重试）")
             continue
+        placed = s["placed_px"]
         if s["band_min"] <= px <= s["band_max"]:
             out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} ∈ 带"
                        f"[¥{s['band_min']:.2f},¥{s['band_max']:.2f}] → 跑 ptrade2 "
                        f"sleeve-order-fill {event_key} --price {px:.2f}")
-        elif px < s["band_min"]:
-            out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} < "
-                       f"band_min¥{s['band_min']:.2f} → 跑 ptrade2 "
-                       f"sleeve-order-expire {event_key} --reason band_break")
+            continue
+        if placed is not None and not (s["band_min"] <= placed <= s["band_max"]):
+            # ---- 等待型（创建价 ∉ band）：跨带判定（生产现状不动：下穿即弃单，
+            # 上穿无动作——等待型跨带只对"创建价在下、现价到上"的情形成立）----
+            placed_below = placed < s["band_min"]
+            px_below = px < s["band_min"]
+            if (placed_below and not px_below) or (not placed_below and px_below):
+                # 跨到另一侧（发起方核价：px 确在另一侧）→ 同拍直调 band_skipped
+                if _expire_order_direct(event_key, "band_skipped"):
+                    out.append(f"[PRICE-ORDER] {event_key} 等待型挂单整带穿越未成交"
+                               f"（创建价¥{placed:.2f} 现价¥{px:.2f} 跨带）→ 同拍直调 "
+                               f"sleeve-order-expire {event_key} --reason band_skipped")
+                else:
+                    out.append(f"[PRICE-ORDER] {event_key} band_skipped 弃单被拒"
+                               f"（CLI fail-closed，下一拍重试）")
+            # 同侧 → 继续等（无输出不唤醒，TTL 到期自然 expired）
+            continue
+        # ---- 立即型（创建价 ∈ band）：生产现状语义 ----
+        if px < s["band_min"]:
+            # 下穿 → 同拍直调 band_break（生产现状原样，发起方已核价 px<band_min）
+            if _expire_order_direct(event_key, "band_break"):
+                out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} < "
+                           f"band_min¥{s['band_min']:.2f} → 同拍直调 sleeve-order-expire "
+                           f"{event_key} --reason band_break")
+            else:
+                out.append(f"[PRICE-ORDER] {event_key} band_break 弃单被拒"
+                           f"（CLI fail-closed，下一拍重试）")
+        # px > band_max：无动作不输出（挂单等回落，TTL 到期自然走 expired——生产现状）
     return out
+
+
+def _expire_order_direct(event_key: str, reason: str) -> bool:
+    """C3：同拍直调 sleeve-order-expire（band_break/band_skipped，A 批 expire 白名单已含，
+    CLI 层不再核价——发起方=本函数已完成下穿/跨带判定）。成功 → True。"""
+    out = ptrade2("sleeve-order-expire", event_key, "--reason", reason, timeout=90)
+    return bool(out) and ("✅" in out or "已弃单" in out or "已过期" in out)
 
 
 def check_orphan_slots() -> list[str]:
@@ -1630,31 +2077,140 @@ def run_price_scope() -> int:
 
 
 def check_watch_points() -> list[str]:
-    """价格点检测：现价 ≤ 价格点 → WATCH_ALERT + 移除价格点（触发即失效）。
+    """价格点检测（C5/WP5，2026-09-10 改读 watch_points 表）：命中 → 消费 + WATCH_ALERT。
 
-    价格点由组合审查/分析 agent 用 taskbus watchpoint add 写入 kv_store('watch_points')。
+    数据源：watch_points **表**（B 批迁移真源，wp_id/created_by/status 列）；表不存在
+    （旧库）→ 回退 kv_store('watch_points') 旧路径（行为不劣化）。
     - mode=eval（技术组 L2 待命复检点）→ WATCH_ALERT(mode=eval) 唤醒分析 agent 复检
-      （升 L1 挂 conditions / 继续观察 / 移除——原"评估升级"语义，L3 已并 L2）
     - mode=buy（技术组 L2 建仓点）→ WATCH_ALERT(mode=buy, budget=金额) 唤醒核验 → allocate → buy
-    - mode=sell（卖出点，2026-09-04 加，ROTATION_EXIT 退役后轮换出池/主动止盈挂点）→
-      WATCH_ALERT(mode=sell, direction=sell) 唤醒 C1 执行卖仓/减仓
+    - mode=sell（卖出点）→ WATCH_ALERT(mode=sell, direction=sell) 唤醒 C1 执行卖仓/减仓
 
-    触发方向按 mode 分流（2026-09-04 sell 加入）：
-    - buy/eval（买/复检点）：单值 现价 ≤ price；配 min 则区间 现价 ∈ [min, price]
-      （min=区间下沿，price=上沿——越跌越接近触发，price 是上限）。
-    - sell（卖出点，方向相反）：单值 现价 ≥ price 触发（涨到/回到目标价才卖）；
-      配 min 则区间 现价 ∈ [price, min] 且要求 price < min——此时 price=**下沿**触发价、
-      min=**上沿**封顶价（语义复用现字段：add 校验保证 0 < price < min）。
-      即 sell 区间 = 现价落在 [触发下沿, 上沿封顶] 内才卖（如 12.0~12.5 带内限价卖），
-      越涨越接近触发，price 是下限——与 buy/eval 的 [min, price] 镜像对称。
+    触发方向按 mode 分流：
+    - buy/eval：单值 现价 ≤ price；配 min 则区间 现价 ∈ [min, price]（price=上沿）。
+    - sell：单值 现价 ≥ price；配 min 则区间 现价 ∈ [price, min]（price=下沿、min=上沿）。
+
+    新增失效判据（§2 B6）与消费语义（A3）：
+    - buy 区间价**跌穿 min** / sell 区间价**冲过 min（上沿）** → `expired:range_break`
+      （不触发消费，行状态落库，tech-watch 决定重挂/放弃）；
+    - 触发时 `|现价−挂点价|/挂点价 > 5%`（跳空脱靶）→ **不执行**，`price_drifted`；
+    - 正常触发消费：写 `consumed_at` + `trigger_event_id` + `status='consumed'`
+      （**不得删除行**——A3：只打标记回滚旧代码会再触发一次，状态列防复发）；
+    - 事件 payload 带 `creator`（表行 created_by；空 → payload.creator=''，fail-closed 由消费方）。
+    kv 兼容期同步维护（add 双写，消费/失效同步 pop，防旧 kv 读方复发）。
     """
     if not in_trade_hours() or not os.path.exists(TASKS_DB):
         return []
-    points = _kv_get("watch_points")
-    if not points:
-        return []
     pool = {name: code for name, code in pool_stocks()}
     alerts = []
+    rows = _wp_table_rows()                                  # 表优先（B 批真源）
+    if rows is not None:
+        return _consume_watch_points(rows, pool, alerts)
+    return _consume_watch_points_kv(pool, alerts)
+
+
+def _wp_table_rows() -> list[dict] | None:
+    """C5：读 watch_points 表 active 行（wp_id/created_by/status）；表不存在 → None（回退 kv）。"""
+    if not os.path.exists(TASKS_DB):
+        return None
+    conn = sqlite3.connect(TASKS_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='watch_points'").fetchone()
+        if not exists:
+            return None
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM watch_points WHERE status='active' ORDER BY entity, added_at, wp_id")]
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _consume_watch_points(rows: list[dict], pool: dict, alerts: list[str]) -> list[str]:
+    """C5 表路径消费：命中 → 写事件（creator/ref/snapshot）+ 行置 consumed（不删行）。
+
+    失效判据：range_break（buy 跌穿 min / sell 冲过 min）与 price_drifted（>5%）→
+    行状态落库（expired:range_break / price_drifted），不消费不写事件。
+    """
+    changed_kv = False
+    kv_points = _kv_get("watch_points") or {}
+    for row in rows:
+        entity, code = row["entity"], row.get("code")
+        code = code or pool.get(entity)
+        if not code:
+            continue  # 无 code（未入池且未传 --code），跳过
+        price = fetch_price(code)
+        if price is None:
+            continue
+        wp_id = row["wp_id"]
+        mode = row.get("mode") or "eval"
+        note = row.get("note") or ""
+        pt_price, min_price = row["price"], row.get("min")
+        # ---- 失效判据（先于命中）----
+        if mode == "buy" and min_price is not None and price < min_price:
+            _wp_set_status(wp_id, "expired:range_break")
+            alerts.append(f"⚠️ {entity}({code}) buy 挂点区间失效: 现价¥{price} 跌穿 min¥{min_price} "
+                          f"→ expired:range_break（{wp_id}）")
+            _kv_pop_point(kv_points, entity, pt_price, mode)
+            changed_kv = True
+            continue
+        if mode == "sell" and min_price is not None and price > min_price:
+            _wp_set_status(wp_id, "expired:range_break")
+            alerts.append(f"⚠️ {entity}({code}) sell 挂点区间失效: 现价¥{price} 冲过上沿¥{min_price} "
+                          f"→ expired:range_break（{wp_id}）")
+            _kv_pop_point(kv_points, entity, pt_price, mode)
+            changed_kv = True
+            continue
+        # ---- 命中判定 ----
+        if mode == "sell":
+            hit = pt_price <= price <= min_price if min_price is not None else price >= pt_price
+        else:
+            hit = min_price <= price <= pt_price if min_price is not None else price <= pt_price
+        if not hit:
+            continue
+        # ---- 跳空脱靶判据：|现价−挂点价|/挂点价 > 5% → 不执行 ----
+        if pt_price and abs(price - pt_price) / pt_price > 0.05:
+            _wp_set_status(wp_id, "price_drifted")
+            alerts.append(f"⚠️ {entity}({code}) 挂点触发但跳空脱靶: 现价¥{price} 偏离挂点¥{pt_price} "
+                          f"> 5% → price_drifted（不执行，{wp_id}）")
+            _kv_pop_point(kv_points, entity, pt_price, mode)
+            changed_kv = True
+            continue
+        # ---- 触发消费：写事件 + 行置 consumed（不删行）----
+        cond_name = {"sell": f"卖出点-{note}" if note else "卖出点",
+                     "buy": f"建仓点-{note}" if note else "建仓点",
+                     "eval": f"L2复检-{note}" if note else "L2复检"}.get(mode, mode)
+        ok = _write_alert(entity, code, mode, 0, cond_name, pt_price, price,
+                          mode=mode, budget=row.get("amount"),
+                          ref_id=wp_id, creator=row.get("created_by") or "")
+        if not ok:
+            continue  # 去重命中（同事件已在场），不改行
+        _wp_consume(wp_id)
+        if mode == "sell":
+            range_txt = (f"（带内 ¥{pt_price}~{min_price}）" if min_price is not None else "")
+            alerts.append(f"💰 {entity}({code}) 卖出点触发: 现价¥{price} ≥ ¥{pt_price} "
+                          f"{range_txt}[{note}] → 唤醒 C1 执行卖仓/减仓（限价卖）")
+        elif mode == "buy":
+            budget = row.get("amount")
+            budget_txt = f" 预算¥{budget:,.0f}" if budget else "（⚠️无预算）"
+            alerts.append(f"🛒 {entity}({code}) L2建仓点触发: 现价¥{price} ≤ ¥{pt_price} "
+                          f"[{note}]{budget_txt} → 唤醒核验建仓")
+        else:
+            alerts.append(f"📌 {entity}({code}) L2待命复检点触发: 现价¥{price} ≤ ¥{pt_price} "
+                          f"[{note}] → 唤醒复检（升 L1/挂 conditions/移除）")
+        _kv_pop_point(kv_points, entity, pt_price, mode)
+        changed_kv = True
+    if changed_kv:
+        _kv_set("watch_points", kv_points)
+    return alerts
+
+
+def _consume_watch_points_kv(pool: dict, alerts: list[str]) -> list[str]:
+    """C5 kv 旧路径（表不存在时回退）：原逻辑原样（触发即 kv pop 硬删）。"""
+    points = _kv_get("watch_points")
+    if not points:
+        return alerts
     changed = False
     for entity, pts in list(points.items()):
         pts_code = next((p.get("code") for p in pts if p.get("code")), None)
@@ -1667,10 +2223,6 @@ def check_watch_points() -> list[str]:
         for p in pts:
             note = p.get("note", "")
             mode = p.get("mode", "eval")
-            # ---- sell 分支（2026-09-04，ROTATION_EXIT 退役后轮换出池卖单走此路）----
-            # 卖出点方向与 buy/eval 相反：现价 ≥ price 触发（涨到/回到目标价才卖）。
-            # 配 min 则区间触发：现价 ∈ [price, min]，add 校验保证 0 < price < min——
-            # price=下沿触发价（卖出下限），min=上沿封顶价（高于上沿不卖，防追价脱靶）。
             if mode == "sell":
                 min_price = p.get("min")
                 if min_price is not None:
@@ -1689,8 +2241,6 @@ def check_watch_points() -> list[str]:
                         changed = True
                         break  # 触发即处理完该实体（同 buy/eval 单点语义）
                 continue
-            # ---- buy/eval 分支（原逻辑不动）----
-            # 区间触发：配了 min 则现价 ∈ [min, price] 才触发；单值保持 现价 ≤ price
             min_price = p.get("min")
             if min_price is not None:
                 hit = min_price <= price <= p["price"]
@@ -1719,6 +2269,74 @@ def check_watch_points() -> list[str]:
     if changed:
         _kv_set("watch_points", points)
     return alerts
+
+
+WP_TABLE_DDL = """CREATE TABLE IF NOT EXISTS watch_points (
+    wp_id            TEXT PRIMARY KEY,
+    entity           TEXT NOT NULL,
+    code             TEXT,
+    price            REAL NOT NULL,
+    min              REAL,
+    mode             TEXT NOT NULL DEFAULT 'eval',
+    amount           REAL,
+    note             TEXT DEFAULT '',
+    created_by       TEXT DEFAULT '',
+    added_at         TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    consumed_at      TEXT,
+    trigger_event_id INTEGER
+)"""
+
+
+def _wp_set_status(wp_id: str, status: str) -> None:
+    """C5：行状态落库（expired:range_break / price_drifted），不删行。"""
+    if not os.path.exists(TASKS_DB):
+        return
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        conn.execute(WP_TABLE_DDL)  # 隔离/旧库兜底建表
+        conn.execute("UPDATE watch_points SET status=? WHERE wp_id=?", (status, wp_id))
+        conn.commit()
+    except sqlite3.Error:
+        pass  # 表不可写（旧库）→ 状态不落，消费继续
+    finally:
+        conn.close()
+
+
+def _wp_consume(wp_id: str) -> None:
+    """C5：触发消费 → consumed_at + trigger_event_id + status='consumed'（行不删）。
+
+    trigger_event_id=本实体最新 WATCH_ALERT 事件 id。"""
+    if not os.path.exists(TASKS_DB):
+        return
+    conn = sqlite3.connect(TASKS_DB)
+    try:
+        conn.execute(WP_TABLE_DDL)
+        row = conn.execute(
+            "SELECT id FROM task_events WHERE type='WATCH_ALERT' AND status IN ('pending','done') "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        ev_id = row[0] if row else None
+        conn.execute(
+            "UPDATE watch_points SET status='consumed', consumed_at=datetime('now','localtime'), "
+            "trigger_event_id=? WHERE wp_id=?", (ev_id, wp_id))
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+
+def _kv_pop_point(kv_points: dict, entity: str, pt_price: float, mode: str) -> bool:
+    """C5：kv 兼容期同步 pop（同实体同价同模式的点移除；整实体空了才删键）。"""
+    if entity not in kv_points:
+        return False
+    before = len(kv_points[entity])
+    kv_points[entity] = [p for p in kv_points[entity]
+                         if not (float(p.get("price") or 0) == float(pt_price)
+                                 and (p.get("mode") or "eval") == mode)]
+    if not kv_points[entity]:
+        kv_points.pop(entity, None)
+    return len(kv_points.get(entity, [])) < before or entity not in kv_points
 
 
 def cleanup_tabs_auto(max_keep: int = 4, trigger: int = 10):

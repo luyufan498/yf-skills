@@ -394,7 +394,7 @@ ptrade2 conditions "<股票名>" --action event-remove --event-id <event_id>
 - 买点必须落明确价位（现价 ≤ 触发价时触发），不要给模糊区间
 - soft 条件务必带 `--expiry-days 7`（过期自动失效，心跳不再检测）
 - 已触发/已调整的条件要及时 event-remove，避免下一 tick 重复触发
-- **技术组 L1 设 conditions**（正式运作范围，触发后直接交易）；**技术组 L2 待命用 `taskbus watchpoint add` 设价格点**（触发后写 mode=eval/buy 事件，不直接交易）；**消息组（NEWS）禁设价格点/禁 conditions**（CLI 能力矩阵闸门强制，建仓只走 sleeve-open→sleeve-fill）
+- **技术组 L1 设 conditions**（正式运作范围，触发后直接交易）；**技术组 L2 待命用 `taskbus watchpoint add` 设价格点（**必须带 --creator <发起job/agent名>**，否则 created_by 为空 → 消费 fail-closed 噪音）**（触发后写 mode=eval/buy 事件，不直接交易）；**消息组（NEWS）禁设价格点/禁 conditions**（CLI 能力矩阵闸门强制，建仓只走 sleeve-open→sleeve-fill）
 
 **⚠️ 设定前查重（防重复触发/重复入库，2026-08-13 修复）**：设新条件前，先检查是否存在同一股票的同价位/同类型 active 条件，以及 taskbus 是否已有同向 pending 事件，避免同一买点被重复设定/重复触发：
 1. **查现有条件**：`ptrade2 conditions "<股票名>" --action event-list` + `--template all`，若已存在同价位同动作的 active 条件 → **不重复设定**，改用 update 调整或直接沿用

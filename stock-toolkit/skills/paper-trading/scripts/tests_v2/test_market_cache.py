@@ -244,6 +244,7 @@ class TestFetchKlineCached:
             def fetch_batch(self, codes):
                 calls['n'] += 1
                 return {c: type('I', (), {'current_price': 9.9, 'pre_close': 9.0,
+                                          'open_price': 9.3,
                                           'date': '2026-09-04', 'time': '15:00:00',
                                           'name': 'X'})() for c in codes}
 
@@ -254,6 +255,8 @@ class TestFetchKlineCached:
         assert calls['n'] == 1, '批量实时价应只调一次'
         assert set(res) == {'sh688041'}
         assert res['sh688041']['today'] == 9.9 and res['sh688041']['pre_close'] == 9.0
+        # 2026-09-09 加：今开价（开盘跳空口径 (open−pre_close)/pre_close 用）
+        assert res['sh688041']['open'] == 9.3
         assert len(res['sh688041']['closes']) == 4
 
     def test_fetch_klines_cached_batch(self, cache_env):

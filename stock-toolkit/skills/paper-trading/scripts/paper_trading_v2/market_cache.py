@@ -596,14 +596,16 @@ def fetch_closes_cached(codes: List[str], count: int = 15, *,
 
     Returns:
         {归一码: {'code','dates','closes','newest','refreshed',
-                  'today','pre_close','quote_date','quote_time','name'}}
+                  'today','pre_close','open','quote_date','quote_time','name'}}
         实时价缺失（接口失败/非法码）→ today 为 None，不抛错。
+        'open' = 当日今开价（2026-09-09 加，供开盘跳空口径 (今开−昨收)/昨收 使用；
+        盘中该值即为开盘价，收盘后仍是当日开盘价）。
     """
     norm = [normalize_code(c) for c in codes if (c or '').strip()]
     out = {}
     for code in norm:
         out[code] = read_closes_cached(code, count=count, db_path=db_path)
-        out[code].update({'today': None, 'pre_close': None,
+        out[code].update({'today': None, 'pre_close': None, 'open': None,
                           'quote_date': None, 'quote_time': None, 'name': None})
     if include_today and norm:
         try:
@@ -619,6 +621,7 @@ def fetch_closes_cached(codes: List[str], count: int = 15, *,
             out[key].update({
                 'today': info.current_price,
                 'pre_close': info.pre_close,
+                'open': info.open_price,
                 'quote_date': info.date,
                 'quote_time': info.time,
                 'name': info.name,

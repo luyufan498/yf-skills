@@ -1737,6 +1737,10 @@ def closes_cached_cmd(
             tail_txt = ' '.join(f"{c:.2f}" for c in show) or '—'
             price = f"{r['today']:.2f}" if r.get('today') is not None else 'N/A'
             pre = f"{r['pre_close']:.2f}" if r.get('pre_close') is not None else 'N/A'
+            op = f"{r['open']:.2f}" if r.get('open') is not None else 'N/A'
+            gap = 'N/A'
+            if r.get('open') is not None and r.get('pre_close'):
+                gap = f"{(r['open'] - r['pre_close']) / r['pre_close'] * 100:+.2f}%"
             flag = ' 🔄本次自愈' if r.get('refreshed') else ''
             if closes:
                 typer.echo(f"  {code}\t最新已收盘 {r.get('newest')}\t共 {len(closes)} 根\t"
@@ -1744,7 +1748,7 @@ def closes_cached_cmd(
             else:
                 typer.echo(f"  {code}\t无缓存 bar")
             typer.echo(f"    尾部{len(show)}根收盘（按时间排序）: {tail_txt}")
-            typer.echo(f"    最新价 {price}\t昨收 {pre}\t报价时间 "
+            typer.echo(f"    最新价 {price}\t昨收 {pre}\t今开 {op}\t跳空 {gap}\t报价时间 "
                        f"{r.get('quote_date') or '—'} {r.get('quote_time') or ''}{flag}")
 
     except typer.Exit:

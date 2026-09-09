@@ -197,6 +197,7 @@ def watchpoint_cmd(
                                 "analysis-watch/check-open/l3-scan/portfolio-review/atr-auto/user；"
                                 "缺省=当前会话写入方，落表 created_by 列）"),
     list_all: bool = typer.Option(False, "--all", help="list 时含 removed/triggered（默认只列 active）"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="migrate 时只统计不写入（生产窗口先过目）"),
 ):
     """价格事件点管理（watch_points 表 + 兼容期双写 kv_store('watch_points')）。
 
@@ -311,8 +312,16 @@ def watchpoint_cmd(
             if rec["only_kv"]:
                 typer.echo(f"   仅 kv: {rec['only_kv']}", err=True)
             raise typer.Exit(1)
+    elif action == "migrate":
+        # 审计补丁（2026-09-10）：迁移需可显式触发（生产窗口先 --dry-run 过目）
+        n = db.migrate_watch_points(dry_run=dry_run)
+        if dry_run:
+            typer.echo(f"🔎 dry-run：将导入 {n} 点（零写入、不写迁移标记）")
+        else:
+            typer.echo(f"✅ 迁移完成：导入 {n} 点；标记 watch_points_migrated_at="
+                       f"{db.kv_get('watch_points_migrated_at') or '(未写)'}")
     else:
-        typer.echo("❌ action 应为 add / list / remove / reconcile", err=True)
+        typer.echo("❌ action 应为 add / list / remove / reconcile / migrate", err=True)
         raise typer.Exit(1)
 
 

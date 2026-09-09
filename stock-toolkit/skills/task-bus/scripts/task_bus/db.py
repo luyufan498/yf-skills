@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime
 
 ENV = "STOCK_TASKS_DB"
@@ -442,15 +443,15 @@ def _wp_row_from_kv(entity: str, p: dict) -> dict:
     }
 
 
-def migrate_watch_points(creator: str = WP_BACKFILL_CREATOR) -> int:
+def migrate_watch_points(creator: str = WP_BACKFILL_CREATOR, dry_run: bool = False) -> int:
     """kv_store('watch_points') → watch_points 表（幂等，可重入）。
 
     - wp_id 按 wp:<entity>:<added_at epoch 秒> 生成（同输入稳定）；
     - 插入前按（entity, price, mode, added_at）查重，已存在则跳过 → 连跑两次行数不变；
     - 同秒同实体多点 wp_id 冲突时递增后缀 -2/-3…（保持稳定可重入）；
-    - 全部处理完后写 kv 标记 watch_points_migrated_at（ISO 时间）。
-    返回本次新导入行数。
-    """
+    - 全部处理完后写 kv 标记 watch_points_migrated_at（ISO 时间）；dry_run=True 时
+      只统计不写入、也不写标记（审计补丁 2026-09-10：生产窗口先 --dry-run 过目）。
+    返回本次新导入行数。"""
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -490,16 +491,20 @@ def migrate_watch_points(creator: str = WP_BACKFILL_CREATOR) -> int:
                                    (wp_id,)).fetchone():
                     wp_id = f"{base_id}-{suffix}"
                     suffix += 1
-                conn.execute(
-                    "INSERT INTO watch_points (wp_id, entity, code, price, min, mode, "
-                    "amount, note, created_by, added_at, status) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (wp_id, item["entity"], item["code"], item["price"], item["min"],
-                     item["mode"], item["amount"], item["note"], creator,
-                     item["added_at"], "active"),
-                )
+                if not dry_run:
+                    conn.execute(
+                        "INSERT INTO watch_points (wp_id, entity, code, price, min, mode, "
+                        "amount, note, created_by, added_at, status) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (wp_id, item["entity"], item["code"], item["price"], item["min"],
+                         item["mode"], item["amount"], item["note"], creator,
+                         item["added_at"], "active"),
+                    )
                 existing[key] = wp_id
                 imported += 1
+        if dry_run:
+            conn.rollback()          # 审计补丁：dry-run 零写入、不写标记
+            return imported
         conn.execute(
             "INSERT INTO kv_store (key, value) VALUES ('watch_points_migrated_at', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
@@ -553,8 +558,26 @@ def wp_insert(entity: str, price: float, mode: str = "eval", code: str | None = 
         conn.close()
 
 
+def _wp_ensure_migrated() -> None:
+    """审计补丁（2026-09-10 主代理 R1.5）：迁移必须有生产触发点。
+
+    原缺陷：migrate_watch_points() 只有单测调用 → 存量 kv 点永不进表，
+    C 批切读表后全部挂点静默失效。修复：任何读路径（wp_list）在迁移标记缺失时
+    自动补迁一次（幂等）；失败只告警不崩读路径。
+    """
+    try:
+        if kv_get("watch_points_migrated_at"):
+            return
+        n = migrate_watch_points()
+        if n:
+            sys.stderr.write(f"[watch_points] 自动迁移 kv → 表：导入 {n} 点\n")
+    except Exception as e:                      # noqa: BLE001 — 读路径不因迁移失败而崩
+        sys.stderr.write(f"⚠️ [watch_points] 自动迁移失败（读路径继续，表内容可能不全）: {e}\n")
+
+
 def wp_list(active_only: bool = True) -> list[dict]:
     """列出表行（默认只列 active；active_only=False 含 removed/triggered）。"""
+    _wp_ensure_migrated()
     conn = connect()
     try:
         sql = "SELECT * FROM watch_points"

@@ -300,6 +300,42 @@ def test_b4_reconcile(tmp_path):
     assert "仅表" in r2.output, r2.output
 
 
+# ---------- 审计补丁（2026-09-10 主代理 R1.5 抓到）：迁移必须有生产触发点 ----------
+# 缺陷：migrate_watch_points() 只有单测调用，生产路径（CLI list/add、init）都不触发
+# → 存量 48 点永不进表；C 批切读表后全部挂点静默失效。
+# 修复：wp_list() 在标记缺失时自动补迁一次（幂等），并补 CLI `watchpoint migrate`。
+
+def test_audit_wp_list_autotriggers_migration(tmp_path):
+    db = setup_db(tmp_path)
+    tdb.kv_set("watch_points", {
+        "工业富联": [{"code": "601138", "price": 55.0, "note": "x", "mode": "eval",
+                      "amount": None, "min": None, "added_at": "08-24 11:09"}],
+    })
+    assert wp_rows(db) == [], "前置：表应为空"
+    rows = tdb.wp_list()                       # 纯读路径
+    assert len(rows) == 1, "wp_list 应自动触发存量迁移（否则迁移函数是死代码）"
+    assert tdb.kv_get("watch_points_migrated_at")
+    assert len(tdb.wp_list()) == 1, "再次调用不得重复导入"
+
+
+def test_audit_cli_migrate_action(tmp_path):
+    db = setup_db(tmp_path)
+    tdb.kv_set("watch_points", {
+        "赛力斯": [{"code": "sh601127", "price": 24.5, "note": "y", "mode": "buy",
+                    "amount": 200000.0, "min": 23.0, "added_at": "08-25 10:00"}],
+    })
+    cli, app = runner()
+    r = cli.invoke(app, ["watchpoint", "migrate", "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "1" in r.output and wp_rows(db) == [], "dry-run 不得写入"
+    r2 = cli.invoke(app, ["watchpoint", "migrate"])
+    assert r2.exit_code == 0, r2.output
+    assert len(wp_rows(db)) == 1, "apply 应导入"
+    r3 = cli.invoke(app, ["watchpoint", "migrate"])
+    assert r3.exit_code == 0
+    assert len(wp_rows(db)) == 1, "重复 migrate 幂等"
+
+
 if __name__ == "__main__":
     import shutil
     import tempfile

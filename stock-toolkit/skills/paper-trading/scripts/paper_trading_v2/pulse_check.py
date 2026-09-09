@@ -171,9 +171,14 @@ def register(app):
 # ============================================================
 # T+5 论点失效扫描（msg-expiry-scan，2026-09-08 晚审 0c 步）
 # ============================================================
-# 消息组试探仓：买入满 5 交易日后若 ①无发酵(5日最高<买价×1.03)
+# 消息组试探仓：开槽满 5 交易日后若 ①无发酵(买后5日最高<买价×1.03)
 # ②回踩(现价≤买价) ③无新 imp≥4 事件(方向待核) → 论点失效候选（晚审核 C 腿后
-# 自动清退关槽）。水位因子：池紧 5 日即清，池松放宽 T+8/T+10。
+# 清退关槽）。水位因子：池紧 5 日即清，池松放宽 T+8/T+10。
+# 计时口径（2026-09-09 用户裁决）：**开槽日**起数已收盘 K（非事件日/非成交日）
+# ——一槽可并多事件（G3 归并）事件日有歧义，开槽时刻无歧义且段行自带
+# （position.opened_at == event_slots.opened_at，**UTC 存，需 +8 折本地**）；
+# 开槽比成交早约 1 天，多观察一天无成本。A/B 价格腿仍锚**买价**（成交价），
+# A 窗口仍取买后前 5 根 K；C 腿仍从成交日起数（"买后新催化→重置"语义不变）。
 # 历史校准（18 笔）：×1.03 抓用户点名 5 只全中，真发酵票(新易盛110%/
 # 源杰118%/东方盛虹107%)无一误伤；恒瑞(101.8%平盘)靠 B 腿放行。
 NO_FERMENT = 1.03   # A：5 日内最高 < 买价×1.03 = 无发酵
@@ -214,6 +219,15 @@ def expiry_scan():
             "WHERE strategy='NEWS' AND status='open'").fetchall()
         rows = []
         for seg in segs:
+            # 开槽日（UTC 存 → +8 折本地，2026-09-09 口径裁决）
+            open_date = None
+            if seg['opened_at']:
+                from datetime import datetime as _dt, timedelta as _td
+                try:
+                    open_date = (_dt.fromisoformat(str(seg['opened_at'])[:19])
+                                 + _td(hours=8)).strftime('%Y-%m-%d')
+                except ValueError:
+                    open_date = str(seg['opened_at'])[:10]
             # 首 buy（最早时间那笔的价）
             b = conn.execute("SELECT timestamp, price FROM trades WHERE account_id=? "
                              "AND operation='buy' ORDER BY timestamp, id LIMIT 1",
@@ -231,10 +245,14 @@ def expiry_scan():
                 rows.append({'stock': seg['stock'], 'status': 'no_code', 'note': '段无代码'})
                 continue
             # 读时刷新（2026-09-09）：走 fetch_kline_cached，避免陈旧缓存被当"最新"
-            ks = [dict(k) for k in fetch_kline_cached(seg['code'], count=60)
-                  if k['date'] > buy_date]
-            n_after = len(ks)          # 买入后交易日数（K 根数）
-            if n_after == 0:
+            kall = [dict(k) for k in fetch_kline_cached(seg['code'], count=60)]
+            # 计时基准=开槽日（口径裁决 2026-09-09）；开槽日缺失回退成交日
+            basis = open_date or buy_date
+            ks_open = [k for k in kall if k['date'] > basis]
+            n_after = len(ks_open)      # 开槽后交易日数（已收盘 K 根数）
+            # 价格腿窗口仍从成交日起（买价锚不变）
+            ks = [k for k in kall if k['date'] > buy_date]
+            if not ks or n_after == 0:
                 rows.append({'stock': seg['stock'], 'code': seg['code'],
                              'buy': buy_date, 'buy_px': buy_px, 'n': 0,
                              'status': '观察中', 'note': '买后无K'})

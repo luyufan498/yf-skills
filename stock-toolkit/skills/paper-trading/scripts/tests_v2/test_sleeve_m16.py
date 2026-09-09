@@ -361,6 +361,33 @@ def test_u75_reconcile_reports_identity(pools, env, capsys):
     assert "超差告警" in r2.output
 
 
+def test_reconcile_green_after_release_with_realized(pools, env):
+    """回归（2026-09-09 方案 A）：带 realized 的段清仓 release 后恒等式仍成立。
+
+    旧口径 realized 只统计 open 段（`cli.py` 恒等式带 `p.status='open'`）→ 关段后该项
+    掉出恒等式，drift 恒等于该段 realized（生产事故：中芯 −46,082.15 + 曙光 −2,225.00
+    = −48,307.15，靠人工 free 回补掩盖）。新口径 realized 全史 → 清仓不再产生 drift。
+    """
+    from paper_trading_v2.cli import app
+    from typer.testing import CliRunner
+    m = pools
+    m.allocate('亏票', 500_000, reason='建段', code='sh1')
+    with patch('paper_trading_v2.price_fetcher.StockPriceFetcher.get_realtime_price') as mp:
+        mp.return_value = _PI(10.0)
+        _trader(env).buy_stock('亏票', quantity=20_000, note='建仓')
+        mp.return_value = _PI(8.0)                                     # 跌 20%
+        _trader(env).sell_stock('亏票', sell_all=True, note='清仓')     # 亏 4 万 + 自动 release
+    conn = _conn(env)
+    row = conn.execute("SELECT status, realized_pnl FROM position WHERE stock='亏票'").fetchone()
+    conn.close()
+    assert row['status'] == 'closed'
+    assert row['realized_pnl'] < -30_000                               # 亏损确实落袋
+    r = CliRunner().invoke(app, ["reconcile"])
+    assert r.exit_code == 0
+    assert "超差告警" not in r.output
+    assert "drift ¥0.00" in r.output
+
+
 def test_v9_pool_ledger_check_free_nonnegative(env):
     """M17-D12 v9 窗口项：pool_ledger CHECK(free>=0)——负余额写入即崩（账本错账即崩）。"""
     db = env / 'master_pool.db'

@@ -293,12 +293,18 @@ ptrade2 check-triggers 股票
 # 历史迁移（一次性，已于 2026-08-10 完成；v9 起显式拒绝——账户层退役后无一股一户导入语义）
 ptrade2 migrate-existing
 
-# 资金恒等式对账（U7.5，只报不拦）：主池free+消息池free+Σopen段budget vs 总资金，
-# 容差=closed 段滞留现金+费税项；接心跳尾步与晨审（cron prompt 文案属 M2 窗口）
+# 资金恒等式对账（U7.5，只报不拦）：分池物理口径 free + Σopen段cash + Σ净持仓 − Σ已实现(全史) == total，
+# 容差=closed 段滞留现金+费税项；接心跳尾步与晨审
 ptrade2 reconcile [--detail]
 ```
 
-**closed 壳幽灵现金调平（9/2 沃森 -9,270.80 案例）**：reconcile drift 非零且来源=closed 段残留 cash 时——cp 备份 db → 钉 `STOCK_ANALYSIS_WORKSPACE` 直写生产库：`pool_ledger.free` 回补 + 壳 `cash=0` + audit 留痕 `action='reconcile_fix'`；**realized_pnl 绝不动**（真实亏损须留在盈亏报表口径，调的只是钱挂错位置）。调平后 drift/tolerance 恒=0，再非 0 = 新增未解释缺口须人工查。
+**drift 处置（2026-09-09 方案 A 后）**：恒等式 realized 已改**全史**（open+closed 段），`release()` 关段不再产生 drift——**禁止再用「free 回补 realized」**（历史人工补入 57,577.95 已回退：沃森 9,270.80 + 中芯 46,082.15 + 曙光 2,225.00；`realized_pnl` 一律不动）。剩余 drift 只有三类来源，先定性再动账：
+
+1. **分红未入池** → 已代码化（9/7 `ExRightHandler` → `credit_dividend`）；再现查 `exright_applied`（reason 含分红）+ audit 有无 `dividend` 行。
+2. **槽/段 budget 不同步**（超买虚增）→ 已 fail-closed（`sleeve_order.fill()` #7 校验 Σ成员段 budget == 槽 budget）。
+3. **真未入账资金流** → 逐项独立重算恒等式各项（free 直读 ledger / Σ段cash / Σ净持仓按 trades FIFO / Σ已实现），与 reconcile 报告项比对找差异段，**别信报告归因**。
+
+调平程序（**仅在定性为真缺口时**）：cp 备份 db → 先预演（SELECT 现项代入恒等式算出目标 free，确认段 cash/已实现已被吸收）→ `UPDATE <ledger> SET free=<目标>` + audit 留痕 `action='reconcile_fix'`（时间戳用**本地 ISO**：`date '+%Y-%m-%dT%H:%M:%S%z'`；曾混 UTC 致时间线错位）→ 复验双池 drift=0。调平后 drift 再非 0 = 新增未解释缺口，须人工查。
 
 **ptrade2 测试基线（tests_v2，9/2 实测）**：跑法 = 仓库 scripts 目录 `uv run pytest tests_v2/`（daily-stock-workspace venv 无 pytest）。存在**存量失败 7 例**（test_pool_layer L3 旧档位语义×5 + test_cli watchlist + test_cli_alignment operations）——旧三档语义重构遗留，与 sleeve 无关；改 sleeve 后全量若见这批红，**先 `git stash push <改动文件>` 重跑对照确认是存量再继续**，勿误判 self-broken；sleeve 专项须 `-k "sleeve or cap"` 全绿。改生产代码前确认 HEAD 干净（editable 安装，commit 即生产）。
 

@@ -220,12 +220,18 @@ def reconcile_cmd(
         tolerance = abs(closed_cash) + (odd_ops or 0.0)
 
         def pool_identity(name, table, seg_filter, realized_filter):
-            """单池物理恒等式：free + Σopen段cash + Σopen净成本 − Σopen已实现 == total。
+            """单池物理恒等式：free + Σopen段cash + Σopen净成本 − Σ已实现(全史) == total。
 
-            realized 限定 **open 段**：closed 段的历史已实现早已随 release/调平沉入
-            free 台账（如沃森 −9,270.80 经 reconcile_fix 回补）——再减=双重记账；
-            closed 段的滞留残值由容差（closed cash + closed |realized|）吸收，
-            兼容生产遗留未调平历史（与旧 W 门容差语义一致）。"""
+            2026-09-09 口径修正（方案 A）：realized 改 **全史**（open+closed 段）。
+            旧版只算 open 段，导致「任何带非零 realized 的段被清仓 release」必然超差
+            （release 把段 cash/fifo 清零、realized 留在段上不回补 free，drift 恒等于
+            该段 realized；中芯 −46,082.15 + 曙光 −2,225.00 = −48,307.15 即此）。
+            旧版的补偿手段是人工把 realized 塞进 free（audit reconcile_fix），
+            使 free 变成「现金 + closed 段已实现」，口径不自洽且不可逆——已回退
+            （主池 free −57,577.95 = 沃森 9,270.80 + 中芯 46,082.15 + 曙光 2,225.00）。
+            closed 段的滞留残值（死壳 cash）仍由容差吸收，兼容生产遗留未调平历史。
+            卖出现金流已在 pool_return 时落 free（proceeds），故 realized 必须全史计入
+            才能让 total（名义本金）恒为常量。"""
             led = ledger(table)
             cash = conn.execute(
                 f"SELECT COALESCE(SUM(cash),0) FROM position WHERE status='open' "
@@ -237,11 +243,11 @@ def reconcile_cmd(
             realized = conn.execute(
                 f"SELECT COALESCE(SUM(COALESCE(o.amount,0)-COALESCE(o.cost,0)),0) "
                 f"FROM operations o JOIN position p ON p.id=o.account_id "
-                f"WHERE o.type='sell' AND p.status='open' AND {realized_filter}").fetchone()[0]
+                f"WHERE o.type='sell' AND {realized_filter}").fetchone()[0]
             w = led['free'] + cash + fifo - realized
             drift = w - led['total']
             typer.echo(f"   {name}分池恒等式：free ¥{led['free']:,.2f} + Σ段cash ¥{cash:,.2f} "
-                       f"+ Σ净持仓 ¥{fifo:,.2f} − Σ已实现(open段) ¥{realized:,.2f} = ¥{w:,.2f} "
+                       f"+ Σ净持仓 ¥{fifo:,.2f} − Σ已实现(全史) ¥{realized:,.2f} = ¥{w:,.2f} "
                        f"｜ total ¥{led['total']:,.2f} ｜ drift ¥{drift:,.2f}")
             return abs(drift) > tolerance + 0.005, drift
 

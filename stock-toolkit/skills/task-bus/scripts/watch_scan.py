@@ -2291,6 +2291,14 @@ def check_price_orders() -> list[str]:
             out.append(f"[PRICE-ORDER] {event_key} 取价失败（code={code or '无成员段'}）"
                        f"→ 本轮跳过，不成交不弃单（fail-closed，下一拍重试）")
             continue
+        # 非正价闸门（2026-09-10 Phase 3 实测暴露）：兜底单几何是 band=[0, 线]、
+        # 买侧是 [0.95a, 1.05a]，若行情源给出 0/负值（占位值、解析失败、停牌兜底），
+        # `band_min <= px` 恒成立 → **全仓按 ¥0 卖出**（模拟实测：26 张保护单同时"命中"）。
+        # 非正价一律 fail-closed 跳过（不成交、不弃单、下拍重试）。
+        if isinstance(px, bool) or not isinstance(px, (int, float)) or px <= 0:
+            out.append(f"[PRICE-ORDER] {event_key} 取价异常（px={px!r} 非正价）"
+                       f"→ 本轮跳过（fail-closed：非正价可能让全部挂单同时误命中）")
+            continue
         placed = s["placed_px"]
         if s["band_min"] <= px <= s["band_max"]:
             if is_sell:

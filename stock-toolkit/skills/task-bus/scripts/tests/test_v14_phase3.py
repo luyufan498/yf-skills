@@ -185,3 +185,28 @@ def test_collect_price_scope_codes_includes_tp_legs(iso3):
     iso3.tp_slot(code=CODE, leg=2, price=15.0, qty=100)
     codes = watch_scan._collect_price_scope_codes()
     assert CODE in codes, f"止盈腿 code 未进预取：{sorted(codes)}"
+
+
+# ------------------------------------------------- 非正价闸门（2026-09-10 实测暴露）
+@pytest.mark.parametrize("bad", [0, 0.0, -1.5, "x", True])
+def test_non_positive_price_fail_closed_for_protect(iso3, bad):
+    """取价 0/负 → 兜底单不得"命中"。
+
+    band=[0, 线] 的几何下 `band_min <= px` 恒成立：行情源给 0（占位值/解析失败/停牌兜底）
+    会让**全部**保护单同时命中并按 ¥0 卖出（模拟实测：26 张同时触发）。
+    """
+    iso3.protect_slot(line=10.0, qty=300)     # 现价 0 会落在 band=[0,10] 内
+    calls = []
+    out = _scan(calls, {CODE: bad})
+    assert calls == [], f"非正价 {bad!r} 不得触发任何 ptrade2 调用"
+    assert not iso3.exec_lines(out), f"非正价不得出命中行：{out}"
+    assert [l for l in out if "取价异常" in l], f"应出行说明（可诊断）：{out}"
+
+
+@pytest.mark.parametrize("bad", [0, -3])
+def test_non_positive_price_fail_closed_for_tp(iso3, bad):
+    _cfg(iso3.ws, "orders", (STOCK,))
+    iso3.tp_slot(price=13.0, qty=100)
+    calls = []
+    out = _scan(calls, {CODE: bad})
+    assert calls == [] and not iso3.tp_lines(out)

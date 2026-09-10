@@ -14,13 +14,20 @@ ptrade2 全打桩（零触网、零真实下单）；⑤ 走真独立子进程�
   行数精确、wp_id 无重复。
 - ⑦ 节拍竞态：同刻并发命中同一条件只应 1 条事件 + 1 次 sell 直调；check_price_orders 三态并发成立。
 
-⚠️ 已知缺陷（⑦，本文件以 xfail 锁定）：
-   同槽同刻双跑去重非原子（_has_pending_event 只读检查 与 _write_alert 插入 不在同一事务，
-   _mark_triggered_family 亦在 INSERT 之后）→ 两侧都判"无 pending 事件"。
-   实测：进程内 20/20 轮写 2 条 WATCH_ALERT、2 次 sell 直调，其中 14/20 轮两条直调携带
-   **不同 event_id** → trades 层按 event_id 的幂等键拦不住 → 真双卖风险；真两进程复现 10/10。
-   最小复现：/tmp/f1_race_proc.py（真两进程）、/tmp/f1_race_probe.py 20（进程内，含逐轮 id）。
-   修复（如 INSERT ... ON CONFLICT / BEGIN IMMEDIATE 单事务去重）后本用例应转 XPASS，届时删 xfail。
+⚠️ 已知（潜在）缺陷（⑦，本文件以 xfail 锁定）：
+   去重非原子——_has_pending_event 只读检查 与 _write_alert 的 INSERT 不在同一事务
+   （_mark_triggered_family 亦在 INSERT 之后）→ 两侧都判"无 pending 事件"。
+   实测（两个并发调用 check_price_triggers）：真两进程忙等同刻起跑 **20/20 轮** 写 2 条
+   WATCH_ALERT + 2 次 sell 直调（其中 18/20 轮两条直调携带**不同 event_id** → trades 层按
+   event_id 的幂等键拦不住）；进程内两线程 **20/20 轮**双事件双直调（14/20 不同 id）。
+   最小复现：/tmp/f1_race_proc.py 20（真两进程，忙等同刻起跑）、/tmp/f1_race_probe.py 20。
+   **当前生产暴露面有限（潜在而非在燃）**：卖出链唯一消费者 = stock-price-watch 心跳
+   （watch_scan_price.py → watch_scan.check_price_triggers）；check-open 跑 tech_watch_scan.py
+   （不触卖出链）；同一 job 的重叠被 Hermes 调度器 try_register_running_job 短路；recover 只是
+   一条 in-band UPDATE（stale processing → pending，跑在调用者进程内），不是独立线程。
+   触发条件 = 出现**第二个并发调用者**（人工/agent 手跑 watch_scan_price.py、未来新增第二个
+   价格扫描 job、或绕过调度器守卫的重复实例）。
+   修复（INSERT ... ON CONFLICT 部分唯一索引 / BEGIN IMMEDIATE 单事务去重）后本用例转 XPASS，届时删 xfail。
 """
 import json
 import os
@@ -418,11 +425,12 @@ def test_check5_concurrent_writers_no_lock_and_no_loss(iso, tmp_path):
 
 # ------------------------------------------------------------- ⑦ 节拍竞态
 def test_check7_same_tick_dual_scan_single_event_single_sell(iso):
-    """⑦ 主检验：同一槽位同刻被两侧扫描命中 → 只应写 1 条事件、只应直调 1 次 sell。
+    """⑦ 主检验：同一条件被两个并发调用者同刻命中 → 只应写 1 条事件、只应直调 1 次 sell。
 
-    ⚠️ 当前为 **xfail（已复现缺陷）**：去重是 check-then-act，两侧都判"无 pending 事件"。
-    证据（本机实测）：进程内 20/20 轮 2 条事件 + 2 次 sell 直调，14/20 轮两条直调带**不同
-    event_id**（幂等键拦不住 → 真双卖风险）；真两进程 10/10 轮复现。
+    ⚠️ 当前为 **xfail（已复现，潜在缺陷）**：去重是 check-then-act，两侧都判"无 pending 事件"。
+    证据：真两进程忙等同刻起跑 20/20 轮双事件 + 双直调（18/20 轮不同 event_id）；
+    进程内两线程 20/20 轮（14/20 不同 id）。生产当前只有 price-watch 一个卖出消费者且同 job
+    重叠被调度器短路 → 触发需第二个并发调用者（见模块头注释）。
     """
     iso.seed_pool()
     watch_scan.POOL_DB, watch_scan.TASKS_DB = iso.pool, iso.tasks
@@ -462,8 +470,8 @@ def test_check7_same_tick_dual_scan_single_event_single_sell(iso):
 
 
 xfail_same_tick = pytest.mark.xfail(
-    reason="已复现缺陷：同槽同刻双跑去重非原子（进程内 20/20 双事件、14/20 双 event_id；"
-           "真两进程 10/10 双直调）→ /tmp/f1_race_proc.py、/tmp/f1_race_probe.py 复现",
+    reason="已复现（潜在）：两个并发调用同刻命中时去重非原子（真两进程 20/20 双事件+双直调，"
+           "18/20 双 event_id；进程内 20/20）→ /tmp/f1_race_proc.py 20、/tmp/f1_race_probe.py 20",
     strict=False)
 test_check7_same_tick_dual_scan_single_event_single_sell = xfail_same_tick(
     test_check7_same_tick_dual_scan_single_event_single_sell)

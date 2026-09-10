@@ -2098,6 +2098,30 @@ def _stock_name_by_code(code: str) -> str | None:
         conn.close()
 
 
+def _tp_mode(stock_name: str | None = None) -> str:
+    """该标的的**止盈挂单**口径（off/shadow/orders）——与 ``_protect_mode`` 同契约，
+    只读配置的 ``tp_orders`` 段（Phase 3，2026-09-10）。缺文件=off（零影响）。"""
+    cfg: dict = {}
+    try:
+        p = os.environ.get("PTRADE2_EXEC_LAYER_FILE") or os.path.join(WS, "exec_layer.json")
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        c = (d.get("tp_orders") if isinstance(d, dict) else None)
+        cfg = c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        cfg = {}
+    env = (os.environ.get("PTRADE2_TP_ORDERS") or "").strip().lower()
+    mode = env or str(cfg.get("mode") or "off").strip().lower()
+    if mode not in ("off", "shadow", "orders"):
+        mode = "off"
+    if mode != "orders" or not stock_name:
+        return mode
+    wl = cfg.get("exec_stocks")
+    wl = wl if isinstance(wl, (list, tuple)) else []
+    names = {str(x).strip() for x in wl if str(x).strip()}
+    return "orders" if stock_name in names else "shadow"
+
+
 def _protect_trace(kind: str, key: str, payload: dict) -> None:
     """影子留痕（pool DB shadow_log）——只记不执行；任何失败静默（不得影响扫描）。"""
     try:
@@ -2114,24 +2138,32 @@ def _protect_trace(kind: str, key: str, payload: dict) -> None:
         pass
 
 
-def _protect_hit_lines(event_key: str, code: str, px: float, slot_row) -> list[str]:
-    """兜底单命中（现价 ≤ 保护线）处置：影子期只留痕；执行期同拍直调。
+def _protect_hit_lines(event_key: str, code: str, px: float, slot_row,
+                       domain: str = "protect") -> list[str]:
+    """系统挂单命中处置：影子期只留痕；执行期同拍直调。
+
+    ``domain='protect'``（兜底单，跌破卖，线=带上沿）/ ``'tp'``（止盈腿，涨破卖，价=带下沿）。
 
     - ``mode != orders``（off/shadow，或 orders 但该票不在白名单）→ **零 ptrade2 调用**，
-      只出行留痕 + shadow_log(kind='protect_hit')——影子期绝不产生任何真实卖出；
+      只出行留痕 + shadow_log(kind='*_hit')——影子期绝不产生任何真实卖出；
     - ``mode = orders`` → 同拍直调 `ptrade2 sell <名> --qty N --price P --event-id <槽键>`
-      （与保护链 WP1 同款直调语义），成交/失败原因码一律 shadow_log(kind='protect_exec')。
+      （与保护链 WP1 同款直调语义），成交/失败原因码一律 shadow_log(kind='*_exec')。
     - 标的名/qty 不可判定 → 执行被拒（fail-closed，宁可不卖不卖错）。
     """
     name = _stock_name_by_code(code)
     qty = slot_row["qty"] if "qty" in slot_row.keys() else None
-    # 跌破卖几何：保护线 = 带上沿（band=[0, 线]）
-    line = float(slot_row["band_max"])
-    mode = _protect_mode(name)
-    head = (f"[PROTECT-ORDER] {event_key} {name or '?'}({code}) 兜底单命中："
-            f"现价¥{px:.2f} ≤ 保护线¥{line:.2f}")
-    _protect_trace("protect_hit", event_key,
-                   {"stock": name, "code": code, "px": px, "line": line,
+    is_tp = domain == "tp"
+    # 几何：兜底单跌破卖（线=带上沿）/ 止盈腿涨破卖（价=带下沿）
+    line = float(slot_row["band_min"] if is_tp else slot_row["band_max"])
+    mode = _tp_mode(name) if is_tp else _protect_mode(name)
+    tag = "TP-ORDER" if is_tp else "PROTECT-ORDER"
+    k_hit = "tp_hit" if is_tp else "protect_hit"
+    k_exec = "tp_exec" if is_tp else "protect_exec"
+    head = (f"[{tag}] {event_key} {name or '?'}({code}) "
+            + (f"止盈腿命中：现价¥{px:.2f} ≥ 止盈价¥{line:.2f}" if is_tp
+               else f"兜底单命中：现价¥{px:.2f} ≤ 保护线¥{line:.2f}"))
+    _protect_trace(k_hit, event_key,
+                   {"stock": name, "code": code, "px": px, "line": line, "domain": domain,
                     "qty": qty, "mode": mode,
                     "batch_id": slot_row["batch_id"] if "batch_id" in slot_row.keys() else None})
     if mode != "orders":
@@ -2143,9 +2175,9 @@ def _protect_hit_lines(event_key: str, code: str, px: float, slot_row) -> list[s
     out = ptrade2("sell", name, "--qty", str(int(qty)), "--price", f"{px:.2f}",
                   "--event-id", event_key, timeout=90)
     ok = bool(out) and "✅" in out
-    _protect_trace("protect_exec", event_key,
-                   {"stock": name, "code": code, "px": px, "line": line, "qty": int(qty),
-                    "ok": ok, "out_tail": (out or "")[-200:]})
+    _protect_trace(k_exec, event_key,
+                   {"stock": name, "code": code, "px": px, "line": line, "domain": domain,
+                    "qty": int(qty), "ok": ok, "out_tail": (out or "")[-200:]})
     if ok:
         return [head + f" → 同拍直调 ptrade2 sell {name} --qty {int(qty)} "
                        f"--price {px:.2f} --event-id {event_key}（成交）"]
@@ -2248,10 +2280,12 @@ def check_price_orders() -> list[str]:
             out.append(f"[PRICE-ORDER] {event_key} 挂单已过期 ttl={s['order_ttl']} "
                        f"→ 跑 ptrade2 sleeve-order-expire {event_key} --reason expired")
             continue
+        is_sys = event_key.startswith("protect:") or event_key.startswith("tp:")
         is_protect = event_key.startswith("protect:")
-        # 系统兜底单自带槽（无成员段）→ code 从槽键取（'protect:<code>'）；
+        # 系统挂单自带槽（无成员段）→ code 从槽键取（'protect:<code>' / 'tp:<code>#<leg>'）；
         # 普通挂单槽仍取首成员 code（_slot_member_code）。
-        code = event_key.split(":", 1)[1] if is_protect else _slot_member_code(event_key)
+        code = (event_key.split(":", 1)[1].split("#")[0] if is_sys
+                else _slot_member_code(event_key))
         px = fetch_price_any(code) if code else None
         if px is None:
             out.append(f"[PRICE-ORDER] {event_key} 取价失败（code={code or '无成员段'}）"
@@ -2260,11 +2294,12 @@ def check_price_orders() -> list[str]:
         placed = s["placed_px"]
         if s["band_min"] <= px <= s["band_max"]:
             if is_sell:
-                if is_protect:
-                    # Phase 2 系统兜底单命中：影子期只留痕；执行期（逐票白名单）
+                if is_sys:
+                    # Phase 2/3 系统挂单命中：影子期只留痕；执行期（逐票白名单）
                     # 同拍直调。不走 _arbitrate_sell_hits——那是消息槽卖单的
-                    # 段持仓裁决口径，系统兜底单按自身 qty + CLI 持仓校验。
-                    out.extend(_protect_hit_lines(event_key, code or "", px, s))
+                    # 段持仓裁决口径，系统单按自身 qty + CLI 持仓校验。
+                    out.extend(_protect_hit_lines(event_key, code or "", px, s,
+                                                  domain="protect" if is_protect else "tp"))
                     continue
                 # 卖单进带 → 收集候选（统一种排序 + 持仓裁决后出行，见 _arbitrate_sell_hits）
                 sell_hits.append({"event_key": event_key, "px": px, "code": code,
@@ -2383,11 +2418,11 @@ def _collect_price_scope_codes() -> set[str]:
         try:
             for r in conn.execute(
                     "SELECT event_key FROM event_slots WHERE status='pending_order'").fetchall():
-                if str(r[0]).startswith("protect:"):
-                    # 系统兜底单自带槽（无成员段）→ code 直接取槽键后缀。
-                    # 2026-09-10 补：不收集会让兜底单每拍"取价失败"（幽灵唤醒）
+                if str(r[0]).startswith("protect:") or str(r[0]).startswith("tp:"):
+                    # 系统挂单自带槽（无成员段）→ code 直接取槽键后缀（'tp:<code>#<leg>' 去腿号）。
+                    # 2026-09-10 补：不收集会让系统单每拍"取价失败"（幽灵唤醒）
                     # 且**永不触发**（fail-closed 保护失效）——实测 26 只全落到这条。
-                    codes.add(str(r[0]).split(":", 1)[1])
+                    codes.add(str(r[0]).split(":", 1)[1].split("#")[0])
                     continue
                 c = _slot_member_code(r[0])
                 if c:

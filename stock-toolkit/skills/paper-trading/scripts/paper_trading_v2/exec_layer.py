@@ -55,14 +55,10 @@ def load_config() -> dict:
         return {}
 
 
-def protect_mode(stock_name: str | None = None) -> str:
-    """返回该标的的兜底单口径：``off`` / ``shadow`` / ``orders``。
-
-    ``mode=orders`` 且给了 stock_name 时，只有白名单内 → ``orders``，否则降级 ``shadow``
-    （名单外只留痕）——这是"逐票切换、禁止全局翻转"的落地点。
-    """
-    env = (os.environ.get('PTRADE2_PROTECT_ORDERS') or '').strip().lower()
-    cfg = load_config().get('protect_orders')
+def _mode_for(key: str, stock_name: str | None = None, env_var: str | None = None) -> str:
+    """通用口径读取（v14/Phase 3 抽出）：env 逃生阀 > 配置 > off，逐票白名单降级 shadow。"""
+    env = (os.environ.get(env_var) or '').strip().lower() if env_var else ''
+    cfg = load_config().get(key)
     cfg = cfg if isinstance(cfg, dict) else {}
     mode = env or str(cfg.get('mode') or DEFAULT_MODE).strip().lower()
     if mode not in VALID_MODES:
@@ -73,3 +69,22 @@ def protect_mode(stock_name: str | None = None) -> str:
     wl = wl if isinstance(wl, (list, tuple)) else []
     names = {str(x).strip() for x in wl if str(x).strip()}
     return 'orders' if stock_name in names else 'shadow'
+
+
+def protect_mode(stock_name: str | None = None) -> str:
+    """返回该标的的兜底单口径：``off`` / ``shadow`` / ``orders``。
+
+    ``mode=orders`` 且给了 stock_name 时，只有白名单内 → ``orders``，否则降级 ``shadow``
+    （名单外只留痕）——这是"逐票切换、禁止全局翻转"的落地点。
+    """
+    return _mode_for('protect_orders', stock_name, 'PTRADE2_PROTECT_ORDERS')
+
+
+def tp_mode(stock_name: str | None = None) -> str:
+    """返回该标的的**止盈挂单**口径：``off`` / ``shadow`` / ``orders``（Phase 3，2026-09-10）。
+
+    与 ``protect_mode`` 完全同契约，只是读 ``tp_orders`` 段（env 逃生阀
+    ``PTRADE2_TP_ORDERS``）。止盈与兜底单**分开开关**的理由：两者风险不同向——
+    兜底单错触发=少赚/早卖（机会成本），保护单漏触发=多亏本金；分开才能分别切、分别回滚。
+    """
+    return _mode_for('tp_orders', stock_name, 'PTRADE2_TP_ORDERS')

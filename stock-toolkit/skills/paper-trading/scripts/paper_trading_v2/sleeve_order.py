@@ -44,7 +44,8 @@ ORDER_STATES = ('pending_order', 'pending_rejudge')
 BAND_LO_SENTINEL = 0.0            # ≤X 的下沿（永不触及）
 BAND_HI_SENTINEL = 9.9e9          # ≥X 的上沿（永不触及）
 
-EXPIRE_REASONS = ('expired', 'band_break', 'band_left', 'band_skipped', 'group_closed')
+EXPIRE_REASONS = ('expired', 'band_break', 'band_left', 'band_skipped', 'group_closed',
+                  'superseded')   # superseded=覆盖式重挂撤旧槽（Phase 3，2026-09-10）
 
 # v12-patch 补洞轮（双模型对抗审计节，2026-09-03）：
 SESSION_CLOSES = ((11, 30), (15, 0))   # E5 交易节收盘（裁决 3：11:30/15:00 取先到）
@@ -410,6 +411,110 @@ class SleeveOrder:
                               "reason": reason})
             return {"event_key": event_key, "action": action, "line": line, "qty": qty,
                     "band_min": band_lo, "band_max": band_hi, "batch_id": batch,
+                    "order_ttl": None, "status": "pending_order"}
+        finally:
+            conn.close()
+
+    def place_take_profit(self, code, leg, price, qty, reason='', batch_id=None):
+        """止盈挂单落库（2026-09-10 Phase 3）——止盈阶梯从 conditions 迁到挂单。
+
+        与 `place_protect` 的差异：
+
+        1. **几何=涨破卖**：``band=[触发价, BAND_HI_SENTINEL]``（进带 = 现价 ≥ 触发价），
+           与兜底单（跌破卖 ``[0, 线]``）镜像。**不可写反**：写反会让止盈在下跌时卖出。
+        2. **两腿成组**：``event_key='tp:<code>#<leg>'``（leg=1/2，对应 +30%/+50% 各卖 1/3），
+           ``group_key='<code>:tp'``——覆盖式重挂以组为单位比对/撤换。
+        3. **不复活已成交腿**（A1 红线）：槽 ``fill_status='filled'`` → 返回
+           ``action='skip_filled'`` 不重挂；只有显式给**新批次**（batch_id ≠ 库内）才 re-arm
+           = 新一轮阶梯（重建仓/成本基重建后由调用方给新批次）。
+        4. **无 TTL**：生产者是 ``ptrade2 tp-orders-sync``（每日 atr-sync 后按当前成本基
+           覆写），配 TTL 会在"下一交易节收盘"打出止盈空洞（与兜底单同理）。
+
+        qty = 生成期算好的股数（比例语义——"1/3"——在生成期数字化，本层只照做）。
+        """
+        code = (code or '').strip().lower()
+        if not code:
+            raise ValueError("止盈挂单必须给标的代码")
+        try:
+            leg = int(leg)
+        except (TypeError, ValueError):
+            raise ValueError(f"leg 必须是 1/2，收到 {leg!r}")
+        if leg not in (1, 2):
+            raise ValueError(f"leg 必须是 1/2（+30%/+50% 两档），收到 {leg!r}")
+        try:
+            line = float(price)
+        except (TypeError, ValueError):
+            raise ValueError(f"止盈触发价非法：{price!r}")
+        if not line > 0:
+            raise ValueError(f"止盈触发价必须为正价格，收到 {price!r}")
+        if isinstance(qty, bool):
+            raise ValueError(f"qty 必须是正整数股数，收到 {qty!r}")
+        _q = str(qty).strip().lstrip('+') if qty is not None else ''
+        if qty is None or not _q.isdigit() or int(_q) <= 0:
+            raise ValueError(f"qty 必须是正整数股数（1/3 语义在生成期算成数字），收到 {qty!r}")
+        qty = int(_q)
+        event_key = f"tp:{code}#{leg}"
+        # 涨破卖几何：进带即"现价 ≥ 止盈触发价"
+        band_lo, band_hi = round(line, 4), BAND_HI_SENTINEL
+        now = now_iso()
+        batch = int(batch_id) if batch_id is not None else int(datetime.now().strftime("%Y%m%d"))
+        group_key = f"{code}:tp"
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT status, fill_status, batch_id FROM event_slots "
+                               "WHERE event_key=?", (event_key,)).fetchone()
+            if row is None:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO event_slots (event_key, status, opened_at, side, qty, "
+                        "group_key, batch_id, band_min, band_max, anchor_price, placed_px, "
+                        "order_ttl, order_id, fill_status, created_by, note) "
+                        "VALUES (?, 'pending_order', ?, 'sell', ?, ?, ?, ?, ?, ?, ?, NULL, ?, "
+                        "'pending', 'atr-auto', ?)",
+                        (event_key, now, qty, group_key, batch, band_lo, band_hi, line, line,
+                         f"tp:{code}:{leg}:{int(time.time())}",
+                         f" [止盈腿#{leg} 触发价={line} qty={qty} batch={batch} {reason}]"))
+                action = 'placed'
+            elif (row['status'] or '') == 'pending_order':
+                # 同批次刷新（成本基重算/加仓后目标价变）→ 只改价与量，不产事件
+                with conn:
+                    conn.execute(
+                        "UPDATE event_slots SET band_min=?, band_max=?, anchor_price=?, "
+                        "placed_px=?, qty=?, note=COALESCE(note,'')||? "
+                        "WHERE event_key=? AND status='pending_order'",
+                        (band_lo, band_hi, line, line, qty,
+                         f" [刷新 legs#{leg} 触发价={line} qty={qty}]", event_key))
+                action = 'raised'
+            elif (row['fill_status'] or '') == 'filled':
+                # A1 红线：已兑现的腿永不重挂——除非调用方明确给出**新批次**（新一轮阶梯）
+                if batch_id is None or int(batch_id) == int(row['batch_id'] or 0):
+                    return {"event_key": event_key, "action": "skip_filled", "line": line,
+                            "qty": qty, "band_min": band_lo, "band_max": band_hi,
+                            "batch_id": row['batch_id'], "order_ttl": None,
+                            "status": "filled"}
+                with conn:
+                    conn.execute(
+                        "UPDATE event_slots SET status='pending_order', fill_status='pending', "
+                        "band_min=?, band_max=?, anchor_price=?, placed_px=?, qty=?, batch_id=? "
+                        "WHERE event_key=?",
+                        (band_lo, band_hi, line, line, qty, batch, event_key))
+                action = 'rearmed'
+            else:
+                with conn:
+                    conn.execute(
+                        "UPDATE event_slots SET status='pending_order', fill_status='pending', "
+                        "band_min=?, band_max=?, anchor_price=?, placed_px=?, qty=?, batch_id=?, "
+                        "note=COALESCE(note,'')||? WHERE event_key=?",
+                        (band_lo, band_hi, line, line, qty, batch,
+                         f" [re-arm 腿#{leg} 价={line} qty={qty} batch={batch}]", event_key))
+                action = 'rearmed'
+            with conn:
+                shadow_write(conn, 'tp_' + action, event_key,
+                             {"code": code, "leg": leg, "line": line, "qty": qty,
+                              "band": [band_lo, band_hi], "batch_id": batch, "ts": now,
+                              "reason": reason})
+            return {"event_key": event_key, "action": action, "leg": leg, "line": line,
+                    "qty": qty, "band_min": band_lo, "band_max": band_hi, "batch_id": batch,
                     "order_ttl": None, "status": "pending_order"}
         finally:
             conn.close()

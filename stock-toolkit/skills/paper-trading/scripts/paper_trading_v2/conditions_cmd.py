@@ -137,6 +137,107 @@ def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry,
                                        reason=f'atr-sync {stock_name} mode={mode}')
 
 
+def _slot_row(key):
+    """查系统挂单槽的 (pending?, band_min, qty, fill_status, batch_id)；库不可读 → None。"""
+    try:
+        from paper_trading_v2.config import get_workspace_config
+        from paper_trading_v2.db import get_connection
+        db = get_connection(get_workspace_config()['db_path'])
+        try:
+            r = db.execute("SELECT status, band_min, qty, fill_status, batch_id "
+                           "FROM event_slots WHERE event_key=?", (key,)).fetchone()
+        finally:
+            db.close()
+    except Exception:
+        return None
+    if not r:
+        return None
+    st = (r['status'] if hasattr(r, 'keys') else r[0]) or ''
+    band = (r['band_min'] if hasattr(r, 'keys') else r[1])
+    qty = (r['qty'] if hasattr(r, 'keys') else r[2])
+    fs = (r['fill_status'] if hasattr(r, 'keys') else r[3])
+    bid = (r['batch_id'] if hasattr(r, 'keys') else r[4])
+    return {'pending': st == 'pending_order', 'status': st,
+            'band_min': float(band) if band is not None else None,
+            'qty': int(qty) if qty is not None else None,
+            'fill_status': fs, 'batch_id': bid}
+
+
+def _tp_legs(avg_cost):
+    """止盈两档目标价：+30%（腿1）/ +50%（腿2）× FIFO 剩余均价。"""
+    from paper_trading_v2.atr import TP1_TRIGGER, TP2_TRIGGER
+    return [(1, round(avg_cost * (1 + TP1_TRIGGER), 2)),
+            (2, round(avg_cost * (1 + TP2_TRIGGER), 2))]
+
+
+def _tp_qty(held_qty):
+    """止盈腿数量 = 剩余仓位 1/3（比例语义在生成期数字化，机械层只认股数）。
+
+    <3 股 → None（fail-closed：1/3 取整为 0，宁可不挂也不挂 0 股单）。
+    """
+    try:
+        q = int(held_qty) // 3
+    except (TypeError, ValueError):
+        return None
+    return q if q > 0 else None
+
+
+def _ensure_tp_orders(stock_name, code, held_qty, avg_cost, entry, dry_run=False,
+                      batch_id=None):
+    """止盈挂单生成 / **覆盖式重挂**（Phase 3，2026-09-10）。
+
+    覆盖式语义（方案 D2）：
+
+    - 目标 = 当前**剩余仓位 FIFO 均价** × (1+30%) / (1+50%)，qty = 剩余 // 3（两腿各 1/3）；
+    - 已有 pending 槽且 (价, 量) 一致 → **no-op**（'unchanged'：不写库、不产事件）；
+    - 已有 pending 槽但价/量变了（加仓、成本基重算、除权） → 先
+      `expire(reason='superseded')` 撤旧槽、再挂新槽——**撤+挂成对**，防同组两条腿同时可执行；
+    - 已成交腿（``fill_status='filled'``） → **不复活**（A1 红线）；只有调用方显式给新批次
+      （重建仓后）才 re-arm；
+    - 开关 `exec_layer.json → tp_orders.mode`（缺省 off = 什么都不做）。
+    """
+    from paper_trading_v2.exec_layer import tp_mode
+    from paper_trading_v2.sleeve_order import SleeveOrder, BAND_HI_SENTINEL
+    mode = tp_mode(stock_name)
+    if mode == 'off':
+        return None
+    try:
+        avg_cost = float(avg_cost or 0)
+    except (TypeError, ValueError):
+        avg_cost = 0.0
+    if avg_cost <= 0:
+        entry['tp_skipped'] = 'FIFO 剩余均价不可用（fail-closed 不生成）'
+        return None
+    qty = _tp_qty(held_qty)
+    if not qty:
+        entry['tp_skipped'] = f'剩余仓位 {held_qty} 股 → 1/3 不足 1 股（fail-closed）'
+        return None
+    so = SleeveOrder()
+    results = []
+    for leg, price in _tp_legs(avg_cost):
+        key = f'tp:{code}#{leg}'
+        if dry_run:
+            results.append({'event_key': key, 'action': 'dry-run（未写入）', 'leg': leg,
+                            'line': price, 'qty': qty, 'band_min': price,
+                            'band_max': BAND_HI_SENTINEL, 'order_ttl': None})
+            continue
+        cur = _slot_row(key)
+        if cur and cur['pending'] and cur['qty'] == qty \
+                and cur['band_min'] is not None and abs(cur['band_min'] - price) < 1e-6:
+            results.append({'event_key': key, 'action': 'unchanged', 'leg': leg,
+                            'line': price, 'qty': qty, 'band_min': price,
+                            'band_max': BAND_HI_SENTINEL, 'order_ttl': None})
+            continue
+        if cur and cur['pending']:
+            # 覆盖式重挂：撤旧槽（superseded）再挂新槽——两步同命令内连续完成
+            so.expire(key, reason='superseded', source='atr-auto')
+        results.append(so.place_take_profit(
+            code, leg, price, qty,
+            reason=f'tp-orders-sync {stock_name} mode={mode}', batch_id=batch_id))
+    entry['tp_orders'] = results
+    return results
+
+
 def register(app):
     """注册风险控制命令组到共享 app（cli.py 末尾显式调用）。"""
 
@@ -856,6 +957,215 @@ def register(app):
                            f"ttl={po['order_ttl']}（mode={r.get('mode')}）")
             else:
                 typer.echo(f"  • {r['stock']}: 未生成（{r.get('protect_skipped')}）")
+
+    @app.command("tp-orders-sync")
+    def tp_orders_sync(
+        stock_name: Optional[str] = typer.Argument(None, help="股票名称；省略则遍历所有持仓账户"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="只算不写"),
+        batch_id: Optional[int] = typer.Option(None, "--batch-id",
+                                               help="显式新批次（重建仓后允许复活已成交腿）"),
+        format: str = typer.Option("pretty", "--format", "-f", help="输出格式 pretty/json"),
+    ):
+        """止盈挂单生成 / **覆盖式重挂**（Phase 3，2026-09-10）。
+
+        与 `conditions take_profit_*` 的分工：止盈阶梯的**执行**从 conditions 迁到挂单
+        （`tp:<code>#1|#2`，涨破卖几何，qty=剩余/3，group_key=`<code>:tp`）。本命令按当前
+        剩余仓位 FIFO 均价重算两档目标价并覆盖式重挂：价/量没变就 no-op，变了就
+        「撤旧槽(superseded) + 挂新槽」，已成交腿不复活。
+
+        开关：`exec_layer.json → tp_orders.mode`（缺省 off）。迁移期先跑 `--dry-run` 对账。
+        """
+        trader = PaperTrader()
+        targets = [normalize_stock_name(stock_name)] if stock_name else trader.storage.list_accounts()
+        results = []
+        for name in targets:
+            entry = {"stock": name}
+            try:
+                account = trader.storage.load_account(name)
+                if not account or not account.stock_code:
+                    entry.update({"status": "skip", "reason": "账户/代码缺失"})
+                    results.append(entry)
+                    continue
+                total_qty, total_cost = trader.get_remaining_position(account)
+                if total_qty <= 0:
+                    entry.update({"status": "skip", "reason": "空仓"})
+                    results.append(entry)
+                    continue
+                from paper_trading_v2.exec_layer import tp_mode
+                mode = tp_mode(name)
+                entry["mode"] = mode
+                if mode == 'off':
+                    entry.update({"status": "skip", "reason": "开关 off"})
+                    results.append(entry)
+                    continue
+                avg = (total_cost / total_qty) if total_qty else 0
+                entry["avg_cost"] = round(avg, 4)
+                got = _ensure_tp_orders(name, account.stock_code, total_qty, avg, entry,
+                                        dry_run=dry_run, batch_id=batch_id)
+                entry["status"] = "ok"
+                if not got:
+                    pass
+            except Exception as e:                        # 单票失败不影响其余
+                entry.update({"status": "error", "reason": str(e)})
+            results.append(entry)
+
+        if format == "json":
+            import json as _json
+            typer.echo(_json.dumps({"results": results}, ensure_ascii=False,
+                                   indent=2, default=str))
+            return
+        ok = [r for r in results if r.get("status") == "ok"]
+        typer.echo(f"🎯 止盈挂单同步（{'dry-run，' if dry_run else ''}持仓 {len(ok)} 只）")
+        for r in results:
+            if r.get("status") != "ok":
+                typer.echo(f"  • {r['stock']}: 跳过（{r.get('reason')}）")
+                continue
+            legs = r.get("tp_orders")
+            if not legs:
+                typer.echo(f"  • {r['stock']}: 未生成（{r.get('tp_skipped')}）")
+                continue
+            txt = "；".join(f"腿{l['leg']} {l['action']} ¥{l['line']} qty={l['qty']}"
+                            for l in legs)
+            typer.echo(f"  • {r['stock']}（均价¥{r.get('avg_cost')}，mode={r.get('mode')}）: {txt}")
+
+    @app.command("exec-switch")
+    def exec_switch(
+        stock_name: str = typer.Argument(..., help="股票名称"),
+        domain: str = typer.Option(..., "--domain", help="领域：protect|tp"),
+        to: str = typer.Option(..., "--to", help="切到 orders（挂单执行+停 conditions 腿）| shadow（回退+恢复 conditions 腿）"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="只算不写"),
+    ):
+        """执行层逐票切换（2026-09-10：把"停 conditions 腿"从人工 UPDATE 变成显式开关）。
+
+        **为什么必须原子**：只切白名单而不停 conditions 腿 = 同一破线被**卖两次**
+        （双卖；清仓单可能形成负持仓）。本命令把「改挂单白名单」与「停/恢复对应
+        conditions 腿」绑成一个动作，并把动过的行 id 写进 `exec_layer.json.switched`
+        （审计 + 回滚依据）。
+
+        - `--domain protect`：conditions 侧 = cost_protection/trailing_stop，开关段 protect_orders
+        - `--domain tp`：conditions 侧 = take_profit_1/take_profit_2，开关段 tp_orders
+        - `--to orders`：白名单加该票 + 停对应 conditions 腿
+        - `--to shadow`：白名单移出该票 + 只恢复「本次切换前是 active」的行
+        """
+        import json as _json
+        import os as _os
+        from datetime import datetime
+        from paper_trading_v2.config import get_workspace_config
+        from paper_trading_v2.db import get_connection
+        from paper_trading_v2.exec_layer import config_path
+
+        domain = (domain or '').strip().lower()
+        to = (to or '').strip().lower()
+        if domain not in ('protect', 'tp'):
+            typer.echo("❌ --domain 必须是 protect|tp", err=True)
+            raise typer.Exit(1)
+        if to not in ('orders', 'shadow'):
+            typer.echo("❌ --to 必须是 orders|shadow", err=True)
+            raise typer.Exit(1)
+        name = normalize_stock_name(stock_name)
+        key = 'protect_orders' if domain == 'protect' else 'tp_orders'
+        types = ('cost_protection', 'trailing_stop') if domain == 'protect' \
+            else ('take_profit_1', 'take_profit_2')
+
+        cfg_path = config_path()
+        try:
+            with open(cfg_path, encoding='utf-8') as f:
+                cfg = _json.load(f)
+            cfg = cfg if isinstance(cfg, dict) else {}
+        except (OSError, ValueError):
+            cfg = {}
+        sec = cfg.get(key)
+        sec = dict(sec) if isinstance(sec, dict) else {}
+        wl = [str(x) for x in (sec.get('exec_stocks') or [])]
+        switched = dict(cfg.get('switched') or {})
+
+        db = get_connection(get_workspace_config()['db_path'])
+        try:
+            rows = db.execute(
+                "SELECT cn.id, cn.status FROM conditions cn JOIN position a "
+                "ON cn.account_id=a.id WHERE a.stock=? AND cn.type IN (%s)"
+                % ",".join("?" * len(types)), (name, *types)).fetchall()
+            rows = [(r[0] if not hasattr(r, 'keys') else r['id'],
+                     (r[1] if not hasattr(r, 'keys') else r['status'])) for r in rows]
+            if to == 'orders':
+                if name not in wl:
+                    wl.append(name)
+                sec['mode'] = 'orders'
+                sec['exec_stocks'] = wl
+                stop = [rid for rid, st in rows if st == 'active']
+                rec = dict(switched.get(name) or {})
+                ids = dict(rec.get(domain) or {})
+                for rid in stop:
+                    ids[str(rid)] = 'active'
+                for rid, st in rows:
+                    if st == 'suspended' and str(rid) not in ids:
+                        ids[str(rid)] = 'suspended'    # 本次切换前就已停 → 回退时不擅自放开
+                rec[domain] = ids
+                rec.setdefault('ts', datetime.now().isoformat())
+                switched[name] = rec
+                if not dry_run:
+                    if stop:
+                        db.executemany("UPDATE conditions SET status='suspended' WHERE id=? "
+                                       "AND status='active'", [(r,) for r in stop])
+                    db.commit()
+            else:
+                if name in wl:
+                    wl.remove(name)
+                sec['exec_stocks'] = wl
+                sec['mode'] = 'orders' if wl else 'shadow'
+                rec = dict(switched.get(name) or {})
+                ids = dict(rec.get(domain) or {})
+                back = [int(rid) for rid, prev in ids.items() if prev == 'active']
+                if not dry_run:
+                    if back:
+                        db.executemany("UPDATE conditions SET status='active' WHERE id=? "
+                                       "AND status='suspended'", [(r,) for r in back])
+                    db.commit()
+                rec.pop(domain, None)
+                if rec:
+                    switched[name] = rec
+                else:
+                    switched.pop(name, None)
+            if not dry_run:
+                try:
+                    with db:
+                        db.execute("INSERT INTO shadow_log (kind,key,payload,created_at) "
+                                   "VALUES ('exec_switch',?,?,?)",
+                                   (name, _json.dumps({'domain': domain, 'to': to,
+                                                       'rows': rows[:60]},
+                                                      ensure_ascii=False, default=str),
+                                    datetime.now().isoformat(timespec='seconds')))
+                except Exception:
+                    pass
+                # 槽式状态汇总（回读核对用）
+                after = db.execute(
+                    "SELECT cn.status, COUNT(*) FROM conditions cn JOIN position a "
+                    "ON cn.account_id=a.id WHERE a.stock=? AND cn.type IN (%s) "
+                    "GROUP BY cn.status" % ",".join("?" * len(types)),
+                    (name, *types)).fetchall()
+                after = {((r[0] if not hasattr(r, 'keys') else r['status'])): 
+                         (r[1] if not hasattr(r, 'keys') else r[1]) for r in after}
+            else:
+                after = {'（dry-run 未改）': 0}
+        finally:
+            db.close()
+
+        if not dry_run:
+            cfg[key] = sec
+            if switched:
+                cfg['switched'] = switched
+            tmp = cfg_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                _json.dump(cfg, f, ensure_ascii=False, indent=2)
+            _os.replace(tmp, cfg_path)
+
+        typer.echo(f"{'（dry-run）' if dry_run else '✅'} exec-switch {name}: "
+                   f"domain={domain} → {to}")
+        typer.echo(f"   白名单（{key}.exec_stocks）= {sec.get('exec_stocks')}")
+        typer.echo(f"   conditions 腿（{'/'.join(types)}）状态 = {after}")
+        if to == 'orders':
+            typer.echo("   ⚠️ 该票 conditions 腿已停（不删，可 --to shadow 回退）；"
+                       "恢复前勿手动放开，否则双卖")
 
     @app.command("check-triggers")
     def check_triggers_command(

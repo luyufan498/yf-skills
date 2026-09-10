@@ -504,12 +504,18 @@ def test_check7_sequential_replay_after_first_beat_no_extra_sell(iso):
 
 def test_check7_price_orders_three_states_under_race(iso):
     """⑦ 附加：挂单三态在并发下成立——带内 → fill 行；上穿 → 无动作；
-    下穿 → band_break 弃单（条件 UPDATE 守卫：并发双跑只一方生效，状态不越界）。"""
+    下穿 → band_break 弃单（条件 UPDATE 守卫：并发双跑**只准一方真弃单**，状态不越界）。
+
+    断言口径（2026-09-10 修正）：断言"每拍都出一行 band_break"是错的——第二拍若在翻转后才
+    读库（槽已 pending_rejudge）就不该再出行，那才是守卫生效；原写法据此偶发假红（flaky，
+    纯净版同样复现，非 v14 引入），且稳定 [1,1] 也证明不了"只弃一次"。改为断言契约本身：
+    两拍合计**恰好 1 次**直调 + 恰好 1 次真弃单（条件 UPDATE 命中）+ 终态正确。
+    """
     iso.seed_pool(conds=(), slot_mode=True)
     watch_scan.POOL_DB = iso.pool
     code_map = {"ND#in": "sh600000", "ND#above": "sh600001", "ND#below": "sh600002"}
     px_map = {"sh600000": 10.5, "sh600001": 11.8, "sh600002": 9.5}
-    calls, lock = [], threading.Lock()
+    calls, expired_ok, lock = [], [], threading.Lock()
 
     def stub(*a, **k):
         with lock:
@@ -521,6 +527,9 @@ def test_check7_price_orders_three_states_under_race(iso):
             n = cur.rowcount
             c.commit()
             c.close()
+            if n:                      # 条件 UPDATE 命中 = 真弃单；双跑只允许 1 次
+                with lock:
+                    expired_ok.append(a[1])
             return "✅ 已弃单" if n else "已处理"
         return "✅ 已挂单"
 
@@ -547,7 +556,14 @@ def test_check7_price_orders_three_states_under_race(iso):
     breaks = [len([ln for ln in o if "band_break" in ln]) for o in outs]
     assert fills == [1, 1], f"每拍应各出 1 条 fill 行，实得 {fills}：{outs}"
     assert above == [0, 0], f"上穿槽不得产生任何行，实得 {above}"
-    assert all(b >= 1 for b in breaks), f"下穿槽每拍都应有 band_break 行，实得 {breaks}"
+    # 守卫契约（2026-09-10 修正）：断言"每拍都出一行 band_break"是错的——第二拍若在翻转后
+    # 才读库（槽已 pending_rejudge）就不该再出行，那才是守卫生效；原写法据此偶发假红
+    # （flaky，纯净版同样复现，非 v14 引入），且稳定 [1,1] 也证明不了"只弃一次"。
+    # 真正与交错顺序无关的不变量：
+    #   ① 真弃单（条件 UPDATE 命中）**恰好 1 次** —— 即"并发双跑只一方生效"；
+    #   ② 直调次数 ∈ [1,2]：两拍都先读到槽 → 各出一行；晚读的那拍查不到槽 → 不出行。
+    assert 1 <= sum(breaks) <= 2, f"band_break 直调次数应在 1~2，实得 {breaks}：{outs}"
+    assert len(expired_ok) == 1, f"真弃单（条件 UPDATE 命中）应恰好 1 次，实得 {expired_ok}"
     c = sqlite3.connect(iso.pool)
     st = dict(c.execute("SELECT event_key, status FROM event_slots").fetchall())
     c.close()

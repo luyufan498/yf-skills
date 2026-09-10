@@ -20,7 +20,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DEFAULT_WS = Path('/home/catmouse/Github_Project/daily-stock-workspace')
+DEFAULT_WS = Path('/home/catmouse/Github_Project/daily-stock-workspace/.paper-trading')
 
 
 def _db_path(ws_root: Path) -> Path:
@@ -66,7 +66,8 @@ def main():
     ws = Path(args.workspace or os.environ.get('STOCK_ANALYSIS_WORKSPACE')
               or str(DEFAULT_WS))
     db = _db_path(ws)
-    if not db.exists():
+    created_new = not db.exists()
+    if created_new:
         # 测试/副本场景：数据库可能尚未建——直接建（migrate 走 paper_trading_v2），
         # 不触网。仅在 --dry-run 也允许（零写入指业务数据，建库结构不算回填写入）。
         try:
@@ -123,6 +124,16 @@ def main():
             "SELECT COUNT(*) FROM conditions WHERE COALESCE(created_by,'')=''").fetchone()[0]
         print(f"  复核剩余空行: event_slots {left_slots}, conditions {left_conds}")
         print("APPLY 完成（幂等：二跑零行）")
+        # 审计补丁（2026-09-10 主代理 R1.5）：目标库不存在时上面会"新建空库"，
+        # 结果看起来成功实则零业务数据 → 路径指错（生产库在 <workspace>/.paper-trading/
+        # master_pool.db）。显式非零退出，防"回填 0 行"被当成完成。
+        if created_new:
+            total = sum(n for rows in stats.values() for _, n in rows)
+            print(f"❌ 目标库不存在，已新建空库：{db}（回填 {total} 行）——"
+                  f"若这不是测试场景，说明 --workspace/STOCK_ANALYSIS_WORKSPACE 指错了："
+                  f"生产库路径应为 <workspace>/.paper-trading/master_pool.db",
+                  file=sys.stderr)
+            sys.exit(2)
     finally:
         conn.close()
 

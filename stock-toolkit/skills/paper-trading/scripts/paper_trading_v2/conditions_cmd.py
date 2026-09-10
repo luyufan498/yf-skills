@@ -21,13 +21,38 @@ from paper_trading_v2.exright_handler import ExRightHandler
 from paper_trading_v2.portfolio import PortfolioManager
 
 
+# 显式数量映射（2026-09-10 用户裁定："可以手动补一轮旧数据，方便迁移"）——
+# 只列**已确认语义**的写法；不在表内 → 仍 fail-closed 不生成（绝不猜）。
+# 取值：'all'=全部持仓；小数=该比例。**全部映射都按"清仓"取值**，与 conditions 腿现状
+# （`check_price_triggers` 对卖方向一律 `ptrade2 sell --all`）**逐字一致** → 迁移不改语义；
+# 若某线真实意图是减半/分批，须把 action 写成 `减仓50%` 这类可解析写法（生成期才敢按比例取）。
+PROTECT_QTY_EXPLICIT = (
+    (r'^执行$', 'all'),                        # 历史脏文字："按线执行"（=清仓）
+    (r'成本保护\(成本-2ATR', 'all'),            # ATR 成本保护（深套恢复期棘轮）
+    (r'成本保护-T\+10反转确认后恢复正式仓语义', 'all'),
+    (r'价值反转仓成本保护', 'all'),
+    (r'价值反转宽保护', 'all'),
+    (r'消息仓成本保护', 'all'),
+    (r'成本保护', 'all'),                       # 其余成本保护写法（-5%/-12% 的 % 是价格不是数量）
+    (r'移动止损', 'all'),
+    (r'恢复期线', 'all'),
+    (r'亏损清仓', 'all'),
+    (r'亏损止损', 'all'),
+    (r'亏损预警', 'all'),
+    (r'减仓', 'all'),                           # 未写百分比的"减仓"（写成 `减仓50%` 才会按比例）
+)
+
+
 def _protect_qty(action: str, held_qty: int):
     """把条件行的**比例语义在生成期算成数字**（D3：机械层只认数字）。
 
     只认显式写法，其余一律 None（fail-closed → 不生成兜底单，绝不猜数量）：
     - ``减仓50%`` / ``卖出 1/3`` 类 → 百分比（向下取整，宁少不多）；
     - ``清仓`` / ``全部`` / ``100%`` → 全部持仓；
-    - 其它（如 ``执行``、``价值反转仓成本保护-12%``——那里的 % 是价格不是数量）→ None。
+    - **显式映射表**（``PROTECT_QTY_EXPLICIT``，2026-09-10 用户裁定"可以手动补一轮旧数据
+      方便迁移"）：历史脏文字/未写数量的保护线按表取值（多数=清仓，与 conditions 腿
+      现状 `--all` 同口径）；
+    - 其它（如 ``价值反转仓成本保护-12%`` 之类**未列入表**的写法）→ None。
 
     注意：``成本保护-5%`` 这类文字里的百分比是**价格偏移**不是数量，故百分比只在
     带"减仓/卖出/减/卖"动词时才当数量解析（否则会把 -12% 当成只卖 12%）。
@@ -44,10 +69,20 @@ def _protect_qty(action: str, held_qty: int):
         return int(held_qty * pct / 100.0)
     if re.search(r'清仓|全部|全清|清空', a) or re.search(r'100\s*%', a):
         return int(held_qty)
+    for pat, how in PROTECT_QTY_EXPLICIT:
+        if re.search(pat, a):
+            if how == 'all':
+                return int(held_qty)
+            try:
+                frac = float(how)
+            except (TypeError, ValueError):
+                return None
+            return int(held_qty * frac) if 0 < frac <= 1 else None
     return None
 
 
-def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry):
+def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry,
+                          dry_run=False):
     """Phase 2 兜底单生成（在生成期做三件事，机械层只认结果）。
 
     - **D5 消解"用高者"**：跌破型卖单——线越高越紧，两条线只落更紧的那张；
@@ -75,6 +110,10 @@ def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry):
     if not qty:
         entry['protect_skipped'] = f'action 无法机械判定数量（fail-closed 不生成）：{action!r}'
         return None
+    if dry_run:
+        return {'event_key': f'protect:{code}', 'action': 'dry-run（未写入）', 'kind': kind,
+                'line': line, 'qty': qty, 'band_min': 0.0, 'band_max': round(line, 4),
+                'order_ttl': None, 'status': 'pending_order'}
     return SleeveOrder().place_protect(code, line, qty, kind,
                                        reason=f'atr-sync {stock_name} mode={mode}')
 
@@ -722,6 +761,82 @@ def register(app):
                 else:
                     typer.echo(f"  • {name}: 报错（{r['reason']}）❌")
             typer.echo(f"汇总: {ok} 只同步, {skip} 只跳过" + ("（dry-run 未写入）" if dry_run else ""))
+
+    @app.command("protect-orders-sync")
+    def protect_orders_sync(
+        stock_name: Optional[str] = typer.Argument(None, help="股票名称；省略则遍历所有持仓账户"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="只算不写"),
+        format: str = typer.Option("pretty", "--format", "-f", help="输出格式 pretty/json"),
+    ):
+        """**只生成/刷新系统兜底单，不重算保护线**（Phase 2，2026-09-10）。
+
+        与 `atr-sync` 的分工：`atr-sync` 负责"算保护线"（每天首个交易 tick 一次，频率不动）；
+        本命令只把**当前库里的保护线**落成/刷新挂单（`place_protect` 幂等：首挂/抬升/re-arm），
+        用于 ①手动补一轮（迁移前把兜底单补齐）②逐票切换后立即生效 ③排障复核。
+
+        开关：`exec_layer.json → protect_orders.mode`（缺省 off = 什么都不做）。
+        数量语义与 `atr-sync` 完全一致（同一个 `_protect_qty` + `_ensure_protect_order`）。
+        """
+        from paper_trading_v2.conditions import ConditionType
+        from paper_trading_v2.exec_layer import protect_mode
+
+        trader = PaperTrader()
+        cond_mgr = ConditionsManager(trader.storage)
+        targets = [normalize_stock_name(stock_name)] if stock_name else trader.storage.list_accounts()
+        results = []
+        for name in targets:
+            entry = {"stock": name}
+            try:
+                account = trader.storage.load_account(name)
+                if not account or not account.stock_code:
+                    entry.update({"status": "skip", "reason": "账户/代码缺失"})
+                    results.append(entry)
+                    continue
+                total_qty, total_cost = trader.get_remaining_position(account)
+                if total_qty <= 0:
+                    entry.update({"status": "skip", "reason": "空仓"})
+                    results.append(entry)
+                    continue
+                mode = protect_mode(name)
+                entry["mode"] = mode
+                if mode == 'off':
+                    entry.update({"status": "skip", "reason": "开关 off"})
+                    results.append(entry)
+                    continue
+                rec = cond_mgr.load_conditions(name)
+                cp = rec.get(ConditionType.COST_PROTECTION) if rec else None
+                ts = rec.get(ConditionType.TRAILING_STOP) if rec else None
+                if not dry_run:
+                    got = _ensure_protect_order(name, account.stock_code, total_qty,
+                                                cp, ts, entry)
+                else:
+                    got = _ensure_protect_order(name, account.stock_code, total_qty,
+                                                cp, ts, entry, dry_run=True)
+                if got:
+                    entry["protect_order"] = got
+                entry["status"] = "ok"
+            except Exception as e:                       # 单票失败不影响其余（同 atr-sync）
+                entry.update({"status": "error", "reason": str(e)})
+            results.append(entry)
+
+        if format == "json":
+            import json as _json
+            typer.echo(_json.dumps({"results": results}, ensure_ascii=False,
+                                   indent=2, default=str))
+            return
+        ok = [r for r in results if r.get("status") == "ok"]
+        typer.echo(f"🛡️ 兜底单同步（{'dry-run，' if dry_run else ''}持仓 {len(ok)} 只）")
+        for r in results:
+            if r.get("status") != "ok":
+                typer.echo(f"  • {r['stock']}: 跳过（{r.get('reason')}）")
+                continue
+            po = r.get("protect_order")
+            if po:
+                typer.echo(f"  • {r['stock']}: {po['action']} 线¥{po['line']} "
+                           f"qty={po['qty']} band=[{po['band_min']},{po['band_max']}] "
+                           f"ttl={po['order_ttl']}（mode={r.get('mode')}）")
+            else:
+                typer.echo(f"  • {r['stock']}: 未生成（{r.get('protect_skipped')}）")
 
     @app.command("check-triggers")
     def check_triggers_command(

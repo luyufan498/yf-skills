@@ -261,6 +261,11 @@ ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
 ⚠️ **双卖红线**：切换某票到 `orders` 前，必须先让该票的 `conditions` 腿失效（`suspended`，不删）
 并观察 ≥2 个交易日；两腿同时活跃 = 同一破线被卖两次（清仓单 → 可能形成负持仓）。
 
+**运维**：`ptrade2 protect-orders-sync [股票名] [--dry-run]` = 只生成/刷新兜底单、**不重算保护线**
+（`atr-sync` 算线、每交易日一次；本命令用于补一轮/切换后即时生效/排障）。`--dry-run` 会真算并打印
+"会挂什么"（不写库）。**`protect:` 槽的 code 必须进拍首批量预取**（`_collect_price_scope_codes`
+按槽键后缀收集）——否则每拍"取价失败"（幽灵唤醒）且**永不触发**（保护失效），2026-09-10 已修。
+
 ## CLI 命令
 
 ```bash

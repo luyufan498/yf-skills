@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE TABLE IF NOT EXISTS shadow_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, key TEXT, payload TEXT,
     payoff REAL, created_at TEXT, filled_at TEXT);
+CREATE TABLE IF NOT EXISTS conditions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, cond_key TEXT, is_event INTEGER,
+    type TEXT, name TEXT, price REAL, action TEXT, category TEXT, expiry_date TEXT,
+    status TEXT, auto_link_cost INTEGER);
+CREATE TABLE IF NOT EXISTS pool_stocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, stock TEXT, code TEXT, event_key TEXT);
+CREATE TABLE IF NOT EXISTS pool (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, stock TEXT, code TEXT, event_key TEXT,
+    pool_status TEXT, strategy TEXT);
 """
 
 
@@ -115,9 +124,15 @@ def iso(tmp_path):
     os.environ["STOCK_ANALYSIS_WORKSPACE"] = it.ws
     os.environ["STOCK_TASKS_DB"] = it.tasks
     os.environ.pop("PTRADE2_PROTECT_ORDERS", None)
+    # 隔离兜底单配置：WS 是模块常量（指向生产），必须用 env 逃生阀把它指到 tmp
+    # ——否则会读到**生产**的 exec_layer.json（2026-09-10 已建：mode=shadow）→ 用例串味。
+    os.environ["PTRADE2_EXEC_LAYER_FILE"] = os.path.join(it.ws, "exec_layer.json")
+    saved_ws = watch_scan.WS
+    watch_scan.WS = it.ws
     watch_scan.POOL_DB, watch_scan.TASKS_DB = it.pool, it.tasks
     watch_scan._PRICE_CACHE.clear()
     yield it
+    watch_scan.WS = saved_ws
     for k, v in saved_env.items():
         if v is None:
             os.environ.pop(k, None)
@@ -288,3 +303,14 @@ def test_protect_freshness_silent_when_switch_off(iso, monkeypatch):
     monkeypatch.setattr(watch_scan, "is_trading_day", lambda d=None: True)
     watch_scan.save_state({"last_atr_date": "2020-01-01"})
     assert watch_scan.check_protect_freshness() == []
+
+
+def test_collect_price_scope_codes_includes_protect_slots(iso):
+    """兜底单自带槽无成员段 → 必须把 code 收进拍首批量预取。
+
+    不收集的后果（2026-09-10 生产实测暴露）：兜底单每拍"取价失败"（幽灵唤醒 monitor），
+    且因取不到价**永不触发**（fail-closed 变成保护失效）。
+    """
+    iso.protect_slot(code=CODE, line=10.0)
+    codes = watch_scan._collect_price_scope_codes()
+    assert CODE in codes, f"protect 槽的 code 未被预取：{sorted(codes)[:8]}…"

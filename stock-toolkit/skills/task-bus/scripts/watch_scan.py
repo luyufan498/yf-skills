@@ -2383,6 +2383,12 @@ def _collect_price_scope_codes() -> set[str]:
         try:
             for r in conn.execute(
                     "SELECT event_key FROM event_slots WHERE status='pending_order'").fetchall():
+                if str(r[0]).startswith("protect:"):
+                    # 系统兜底单自带槽（无成员段）→ code 直接取槽键后缀。
+                    # 2026-09-10 补：不收集会让兜底单每拍"取价失败"（幽灵唤醒）
+                    # 且**永不触发**（fail-closed 保护失效）——实测 26 只全落到这条。
+                    codes.add(str(r[0]).split(":", 1)[1])
+                    continue
                 c = _slot_member_code(r[0])
                 if c:
                     codes.add(c)

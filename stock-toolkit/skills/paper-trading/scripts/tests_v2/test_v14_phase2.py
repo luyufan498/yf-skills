@@ -64,16 +64,48 @@ def test_protect_qty_partial():
 def test_protect_qty_price_percent_is_not_quantity():
     """`成本保护-12%` 里的 12% 是价格偏移——不得被当成"只卖 12%"。"""
     from paper_trading_v2.conditions_cmd import _protect_qty
-    assert _protect_qty('价值反转仓成本保护-12%', 3000) is None
-    assert _protect_qty('消息仓成本保护-5%', 3000) is None
+    # 显式映射表按"清仓"取值（与 conditions 腿 --all 同口径），**不是** 12%/5% 的比例
+    assert _protect_qty('价值反转仓成本保护-12%', 3000) == 3000
+    assert _protect_qty('消息仓成本保护-5%', 3000) == 3000
+    assert _protect_qty('消息仓成本保护-5%', 3000) != int(3000 * 0.05)
 
 
 def test_protect_qty_unparseable_is_fail_closed():
     from paper_trading_v2.conditions_cmd import _protect_qty
-    assert _protect_qty('执行', 3000) is None
-    assert _protect_qty('移动止损-2.5ATR', 3000) is None
     assert _protect_qty('', 3000) is None
     assert _protect_qty('清仓', 0) is None
+
+
+def test_protect_qty_explicit_mapping_matches_conditions_leg():
+    """显式映射（PROTECT_QTY_EXPLICIT）：历史脏文字/未写数量的保护线 → 清仓。
+
+    取值与 conditions 腿现状（卖方向一律 `--all`）逐字一致 ⇒ 迁移不改语义。
+    """
+    from paper_trading_v2.conditions_cmd import _protect_qty
+    for act in ('执行',
+                '成本保护(成本-2ATR,深套恢复期棘轮)',
+                '成本保护-T+10反转确认后恢复正式仓语义(解除宽保护-12%)',
+                '价值反转仓成本保护-12%',
+                '价值反转宽保护-12%',
+                '消息仓成本保护-5%',
+                '消息仓成本保护-5%(取严者)',
+                '移动止损-2.5ATR',
+                '恢复期线(现价4.86×0.95)：再破=清仓剩余3018股',
+                '未写百分比的减仓'):
+        got = _protect_qty(act, 3000)
+        assert got is not None, f"显式映射未命中：{act!r}"
+        assert got == 3000, f"{act!r} 应映射为清仓（与 conditions 腿 --all 同口径），实得 {got}"
+    # 写了比例的按比例取（**与 conditions 腿--all 有意不同**：忠实 action 文字的策略意图，
+    # 例：亏损止损-减仓50% → 卖一半，而不是全清）——影子对账时会显示这一差异，属预期。
+    assert _protect_qty('亏损止损-减仓50%', 3000) == 1500
+    assert _protect_qty('移动止损(9/4破位减仓50%后重建,现价×94,余186股)', 3000) == 1500
+
+
+def test_protect_qty_unknown_still_fail_closed():
+    """表外写法仍不生成（绝不猜数量）。"""
+    from paper_trading_v2.conditions_cmd import _protect_qty
+    assert _protect_qty('随便写点什么', 3000) is None
+    assert _protect_qty('加仓 3 成', 3000) is None
 
 
 # ------------------------------------------------------------ place_protect
@@ -181,7 +213,7 @@ def test_ensure_protect_order_skips_unparseable_action(ws, monkeypatch):
     monkeypatch.setattr(exec_layer, 'protect_mode', lambda name=None: 'shadow')
     entry = {}
     assert _ensure_protect_order('测试票', 'sh600000', 3000,
-                                 _cond(10.0, '执行'), None, entry) is None
+                                 _cond(10.0, '加仓 3 成'), None, entry) is None
     assert _slot(ws, 'protect:sh600000') is None
     assert 'fail-closed' in entry['protect_skipped']
 

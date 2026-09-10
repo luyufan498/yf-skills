@@ -102,6 +102,25 @@ def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry,
         if c is not None and getattr(c, 'price', None) \
                 and getattr(c, 'status', 'active') == 'active':
             cands.append((kind, float(c.price), getattr(c, 'action', '')))
+    # 2026-09-10 补：库里同一票可能有多条 active 保护线（宽保护/取严者/恢复期线并存），
+    # 而 ConditionsRecord 每类型只回一条 → 只用它会挑到**更松**的线（切换守卫实测抓到
+    # 凯莱英 ¥149.29<¥154.73、天孚 ¥233.60<¥238.07）。故再扫一遍库，取全局更紧者。
+    try:
+        from paper_trading_v2.config import get_workspace_config
+        from paper_trading_v2.db import get_connection
+        db = get_connection(get_workspace_config()['db_path'])
+        try:
+            for r in db.execute(
+                    "SELECT cn.type, cn.price, cn.action FROM conditions cn "
+                    "JOIN position a ON cn.account_id=a.id "
+                    "WHERE a.code=? AND cn.status='active' AND cn.price IS NOT NULL "
+                    "AND cn.type IN ('cost_protection','trailing_stop')", (code,)):
+                cands.append(('cost' if r[0] == 'cost_protection' else 'trail',
+                              float(r[1]), r[2] or ''))
+        finally:
+            db.close()
+    except Exception:
+        pass          # 库不可读（如单测环境无 conditions 表）→ 只用传入的两条线
     if not cands:
         entry['protect_skipped'] = '无 active 保护线'
         return None

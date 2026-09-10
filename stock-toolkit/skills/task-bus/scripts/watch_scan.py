@@ -1882,8 +1882,158 @@ def _parse_order_ttl(ts) -> "datetime | None":
         return None
 
 
+def _segment_live_qty(code):
+    """段实时持仓量（v9 起"段即账户"）：trades 汇总 buy−sell，与 storage.py 口径一致。
+
+    v14/A：卖单 clamp 依赖它（累计卖出 ≤ 真实持仓）。取不到（无 open 段/库缺/异常）
+    → None（fail-closed：调用方不得凭空假设持仓）。
+    """
+    if not code or not os.path.exists(POOL_DB):
+        return None
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id FROM position WHERE code=? AND status='open' "
+            "ORDER BY id DESC LIMIT 1", (code,)).fetchone()
+        if not row:
+            return None
+        live = 0
+        for r in conn.execute("SELECT operation, quantity FROM trades "
+                              "WHERE account_id=? ORDER BY seq", (row["id"],)):
+            q = r["quantity"] or 0
+            live += q if (r["operation"] or "") == "buy" else (
+                -q if (r["operation"] or "") == "sell" else 0)
+        return live
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _slot_first_member_stock(event_key):
+    """槽首成员股票名（卖单出行要写 ptrade2 sell <名称>）。"""
+    if not os.path.exists(POOL_DB):
+        return None
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    try:
+        row = conn.execute("SELECT stock FROM event_slot_members WHERE event_key=? "
+                           "ORDER BY joined_at LIMIT 1", (event_key,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _arbitrate_sell_hits(hits):
+    """v14/A 卖单同刻仲裁 + 总量裁决（方案 D4）。
+
+    - 排序：按"价格需走过的距离"由近到远（顺序触发时会先成交的先执行）；同段串行逐张扣减；
+    - 裁决：累计 ≤ 段实时持仓（trades 汇总）；超限 clamp 并留痕；qty/持仓不可判定 → fail-closed；
+    - 留痕：同拍成交 ≥2 档时输出一行"同拍成交 N 档"（区分跳空一次成交与分拍成交）。
+    Phase 1 边界：机械层只出行（成交仍由 CLI/agent 消费）。
+    """
+    if not hits:
+        return []
+    def _key(h):
+        """排序：价格路径上先被触发的档先执行（clamp 截断时才起作用）。
+
+        基准 = 挂单时价格 placed（价格从哪里走过来的）；缺 placed 时退化为按触发价单调
+        （涨破型：低触发价先；跌破型：高触发价先）——等价于把基准设成 ±∞。
+        注意：**不是**"离现价的距离"——跳空时会误把最高档排到最前（与阶梯语义相反）。
+        """
+        rise = h["band_max"] >= 9.9e9            # ≥X 型：触发价 = band_min
+        trig = h["band_min"] if rise else h["band_max"]
+        ref = h.get("placed")
+        if ref is None:
+            ref = -1e18 if rise else 1e18
+        return (abs(trig - ref), h["event_key"])
+
+    ordered = sorted(hits, key=_key)
+    out, avail = [], {}
+    for h in ordered:
+        code = h["code"]
+        if code not in avail:
+            q = _segment_live_qty(code)
+            avail[code] = q if isinstance(q, int) and q >= 0 else None
+        left = avail[code]
+        qty = h["qty"]
+        stock = _slot_first_member_stock(h["event_key"]) or h["event_key"]
+        if not isinstance(qty, int) or qty <= 0 or left is None:
+            out.append(f"[PRICE-ORDER] {h['event_key']} 卖单命中 现价¥{h['px']:.2f} ∈ "
+                       f"带[¥{h['band_min']:.2f},¥{h['band_max']:.2f}] 但 qty/段持仓不可判定"
+                       f"（qty={qty} 段持仓={left}）→ fail-closed 出行，本轮不执行")
+            continue
+        take = min(qty, left)
+        avail[code] = left - take
+        if take <= 0:
+            out.append(f"[PRICE-ORDER] {h['event_key']} 卖单命中但段持仓已耗尽"
+                       f"（qty={qty}，剩余 {left}）→ 本轮不执行；同组剩余单应失效")
+            continue
+        note = "" if take == qty else f" ⚠clamp {qty}→{take}（段持仓不足/同拍先成交档）"
+        out.append(f"[PRICE-ORDER] {h['event_key']} 现价¥{h['px']:.2f} ∈ "
+                   f"带[¥{h['band_min']:.2f},¥{h['band_max']:.2f}] → 跑 ptrade2 sell "
+                   f"{stock} --qty {take} --price {h['px']:.2f} "
+                   f"--event-id {h['event_key']}{note}")
+    if len(ordered) > 1:
+        out.append(f"[PRICE-ORDER] 同拍成交 {len(ordered)} 档（卖单并列命中 → 全部兑现，"
+                   f"按距离近→远：{', '.join(h['event_key'] for h in ordered)}）")
+    return out
+
+
+def sync_order_groups() -> list[str]:
+    """v14/A 组内联动失效（方案 D10）：同组已有成交且该段实时持仓已耗尽 → 其余挂单应失效。
+
+    机械层只"检测 + 出行"（状态翻转仍由 CLI 守卫：仅 pending_order 可 expire + group_closed
+    要求 group_key → 重复调用被拒 = 幂等）。只作用于 batch_id ≤ 已成交单批次的挂单，
+    豁免刚重挂的新批次。段仓位未耗尽不动（阶梯各档独立，不互相失效）。
+    """
+    if not os.path.exists(POOL_DB):
+        return []
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT event_key, group_key, batch_id, status, fill_status FROM event_slots "
+            "WHERE group_key IS NOT NULL AND (status='pending_order' OR fill_status='filled') "
+            "ORDER BY group_key, COALESCE(batch_id,0), event_key").fetchall()
+    except sqlite3.OperationalError:      # 旧库无 group_key 列（未迁移）
+        rows = []
+    finally:
+        conn.close()
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["group_key"], []).append(r)
+    out = []
+    for gk, rs in sorted(groups.items()):
+        filled = [r for r in rs if (r["fill_status"] or "") == "filled"]
+        pending = [r for r in rs if r["status"] == "pending_order"]
+        if not filled or not pending:
+            continue
+        code = (_slot_member_code(pending[0]["event_key"])
+                or _slot_member_code(filled[0]["event_key"]))
+        live = _segment_live_qty(code) if code else None
+        if live != 0:                     # 未耗尽（None=取不到 → 不动，绝不禁忌误弃）
+            continue
+        top = max((r["batch_id"] or 0) for r in filled)
+        for r in pending:
+            if (r["batch_id"] or 0) > top:       # 豁免刚重挂的新批次
+                continue
+            out.append(f"[PRICE-ORDER] {r['event_key']} 组[{gk}] 段持仓已耗尽"
+                       f"（同组已有成交 + 持仓 0）→ 跑 ptrade2 sleeve-order-expire "
+                       f"{r['event_key']} --reason group_closed")
+    return out
+
+
 def check_price_orders() -> list[str]:
     """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测（C3/WP7，2026-09-10）。
+
+    v14/A（执行层 Phase 1）：**几何=时机轴、side=动作轴**。
+    - side='buy'（缺省）：下面 v3 §2 的四态**原样保留**（旧槽行为逐字节不变）；
+    - side='sell'（卖出挂单，单边带 + qty）：三出口——进带 → `ptrade2 sell --qty` 出行
+      （并入同刻仲裁 + 总量裁决）；TTL → expired 出行；取价失败 → 跳过。**卖单永不弃单**
+      （单边带另一端是哨兵极值，"整带穿越"不可能发生；下限保护是"反向走远"，由短 TTL 承担）。
 
     band 语义按 v3 §2 等待型/立即型改造（band 不是限价，是"可执行价格窗口"）：
     - TTL → 过期行（--reason expired，不变，消费方执行）；
@@ -1907,19 +2057,24 @@ def check_price_orders() -> list[str]:
     try:
         try:
             slots = conn.execute(
-                "SELECT event_key, band_min, band_max, order_ttl, placed_px "
+                "SELECT event_key, band_min, band_max, order_ttl, placed_px, "
+                "side, qty, group_key, batch_id "
                 "FROM event_slots WHERE status='pending_order' ORDER BY event_key").fetchall()
-        except sqlite3.OperationalError:  # 旧库缺 placed_px 列
+        except sqlite3.OperationalError:  # 旧库缺 v14 列 / placed_px 列
             slots = conn.execute(
                 "SELECT event_key, band_min, band_max, order_ttl, "
-                "anchor_price AS placed_px "
+                "anchor_price AS placed_px, "
+                "NULL AS side, NULL AS qty, NULL AS group_key, NULL AS batch_id "
                 "FROM event_slots WHERE status='pending_order' ORDER BY event_key").fetchall()
     finally:
         conn.close()
     now = datetime.now()
     out = []
+    sell_hits = []          # v14/A：卖单命中候选（收集后统一仲裁 + 总量裁决）
     for s in slots:
         event_key = s["event_key"]
+        side = (s["side"] or "buy") if "side" in s.keys() else "buy"
+        is_sell = side == "sell"
         if s["band_min"] is None or s["band_max"] is None:
             out.append(f"[PRICE-ORDER] {event_key} 挂单带缺失（band_min/max=NULL，异常态）"
                        f"→ fail-closed 本轮跳过（不成交不弃单）")
@@ -1937,9 +2092,20 @@ def check_price_orders() -> list[str]:
             continue
         placed = s["placed_px"]
         if s["band_min"] <= px <= s["band_max"]:
+            if is_sell:
+                # 卖单进带 → 收集候选（统一种排序 + 持仓裁决后出行，见 _arbitrate_sell_hits）
+                sell_hits.append({"event_key": event_key, "px": px, "code": code,
+                                  "qty": s["qty"] if "qty" in s.keys() else None,
+                                  "band_min": s["band_min"], "band_max": s["band_max"],
+                                  "placed": placed})
+                continue
             out.append(f"[PRICE-ORDER] {event_key} 现价¥{px:.2f} ∈ 带"
                        f"[¥{s['band_min']:.2f},¥{s['band_max']:.2f}] → 跑 ptrade2 "
                        f"sleeve-order-fill {event_key} --price {px:.2f}")
+            continue
+        if is_sell:
+            # v14/A 三出口：进带→成交（上面已收集）、TTL→返回（上面）、取价失败→跳过（上面）。
+            # 单边带另一端是哨兵极值，"整带穿越"不可能发生 → 卖单只等，**永不弃单**。
             continue
         if placed is not None and not (s["band_min"] <= placed <= s["band_max"]):
             # ---- 等待型（创建价 ∉ band）：跨带判定（生产现状不动：下穿即弃单，
@@ -1968,6 +2134,7 @@ def check_price_orders() -> list[str]:
                 out.append(f"[PRICE-ORDER] {event_key} band_break 弃单被拒"
                            f"（CLI fail-closed，下一拍重试）")
         # px > band_max：无动作不输出（挂单等回落，TTL 到期自然走 expired——生产现状）
+    out.extend(_arbitrate_sell_hits(sell_hits))     # v14/A：卖单同刻仲裁 + 总量裁决
     return out
 
 
@@ -2091,6 +2258,7 @@ def run_price_scope() -> int:
     lines = []
     lines.extend(check_price_orders())      # E1：挂单槽触带/破带/过期/取价失败
     lines.extend(check_orphan_slots())      # E1b：孤儿槽（开槽未挂单，v12 断链兜底）
+    lines.extend(sync_order_groups())       # v14/A：组内联动失效（同组已成交 + 段仓位耗尽）
     lines.extend(check_price_triggers())    # E6：保护链（全账户含 NEWS 段）
     lines.extend(check_watch_points())      # E7：技术组 watchpoint buy/eval/sell 触发（2026-09-04
                                             #   C1 吸收 legacy——C1=唯一股价盯盘心跳，脚本前置触发

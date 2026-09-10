@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 13  # 与 migrate_db 实际最高版同步（v13: 任务书A 2026-09-10——trades.event_id + 创建者列 + placed_px/band_out_count）
+SCHEMA_VERSION = 14  # 与 migrate_db 实际最高版同步（v14: 执行层 Phase 1——event_slots.side/qty/group_key/batch_id；v13: 任务书A 2026-09-10——trades.event_id + 创建者列 + placed_px/band_out_count）
 
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -201,6 +201,8 @@ CREATE TABLE IF NOT EXISTS event_slots (
     fill_status TEXT DEFAULT 'pending',    -- 待成交单：pending/filled/cancelled
     fill_at TEXT,
     band_min REAL,                         -- v12 挂单带下沿（0.95×anchor；NULL=未挂单）
+                                           -- v14：单边语义用哨兵极值（≥X=[X,9.9e9]；≤X=[0,X]），
+                                           --      NULL 仍只表示"未挂单"（断链哨兵，勿改语义）
     band_max REAL,                         -- v12 挂单带上沿（1.05×anchor）
     anchor_price REAL,                     -- v12 锚=事件入库时刻价快照（watch_scan payload）
     order_ttl TEXT,                        -- v12 挂单到期（ISO；=挂单时刻后第一个交易节收盘）
@@ -209,6 +211,10 @@ CREATE TABLE IF NOT EXISTS event_slots (
     created_by TEXT DEFAULT '',            -- v13/A4 对象创建者（msg-watch/analysis-watch/atr-auto/user…失败路由依据）
     placed_px REAL,                        -- v13/A5 挂单时刻价（anchor_price=事件入库价，两者都留）
     band_out_count INTEGER DEFAULT 0,      -- v13/A5 连续出带计数（供消费侧用）
+    side TEXT DEFAULT 'buy',               -- v14/A 动作轴：buy/sell（缺省 buy=旧槽行为不变；sell=卖出挂单）
+    qty INTEGER,                           -- v14/A 卖出数量（股；LLM 出单时算好的数字，机械层只照做）
+    group_key TEXT,                        -- v14/A 组键（标的+策略域）：供"仓位耗尽→失效同组"
+    batch_id INTEGER,                      -- v14/A 重挂批次：联动只作用于 <= 本批次（豁免刚重挂的新单）
     note TEXT
 );
 
@@ -624,6 +630,27 @@ def migrate_db(conn: sqlite3.Connection):
                         if 'duplicate column' not in str(e).lower():
                             raise
         conn.execute("UPDATE schema_meta SET version=13")
+        conn.commit()
+    if current < 14:
+        # v14: 执行层 Phase 1（plans/2026-09-10_110047-execution-layer-orders-decoupling 附录A）——
+        #   一根表承载买卖两侧：side 是动作轴（buy/sell），几何（band_min/max + placed_px）
+        #   是时机轴；单边语义用哨兵极值（≥X=[X,9.9e9] / ≤X=[0,X]），**不用 NULL**
+        #   （band_* IS NULL 已被"未挂单/断链"占用，见 check_orphan_slots）。
+        #   qty：卖出数量（数字；比例语义全在 LLM 出单时算完，机械层只照做）。
+        #   group_key/batch_id：按组联动失效（仓位耗尽 → 失效同组），batch_id 豁免新重挂批次。
+        # 只加列零行改写；存量行 side='buy'、其余 NULL（全部旧槽行为不变）。
+        # SCHEMA_DDL 同步新库建表；此处 ALTER 覆盖存量库（duplicate column 幂等）。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(event_slots)").fetchall()]
+        if cols:  # 合成 schema 容错：无 event_slots 表（最小库）→ 无处加列，只推版本号
+            for col, decl in (('side', "TEXT DEFAULT 'buy'"), ('qty', 'INTEGER'),
+                              ('group_key', 'TEXT'), ('batch_id', 'INTEGER')):
+                if col not in cols:
+                    try:
+                        conn.execute(f"ALTER TABLE event_slots ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError as e:
+                        if 'duplicate column' not in str(e).lower():
+                            raise
+        conn.execute("UPDATE schema_meta SET version=14")
         conn.commit()
 
 

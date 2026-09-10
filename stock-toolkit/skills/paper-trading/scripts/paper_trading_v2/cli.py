@@ -915,15 +915,44 @@ def sleeve_order_place(
     source: str = typer.Option("agent", "--source"),
     placed_px: Optional[float] = typer.Option(None, "--placed-px",
                                               help="v13/A5 挂单时刻价（anchor_price=事件入库价，两者都留）"),
+    side: str = typer.Option("buy", "--side", help="v14/A 动作轴：buy（缺省）/ sell（卖出挂单）"),
+    qty: Optional[int] = typer.Option(None, "--qty", help="v14/A 卖出数量（股；比例语义由 LLM 出单时算好）"),
+    rel: Optional[str] = typer.Option(None, "--rel",
+                                      help="v14/A 单边语义：ge=大于(≥target) / le=小于(≤target)"),
+    target: Optional[float] = typer.Option(None, "--target",
+                                           help="v14/A 单边阈值（配 --rel；落库转哨兵极值，不写 NULL）"),
+    band_min: Optional[float] = typer.Option(None, "--band-min", help="v14/A 显式带下沿（覆盖默认 ±5%）"),
+    band_max: Optional[float] = typer.Option(None, "--band-max", help="v14/A 显式带上沿"),
+    group_key: Optional[str] = typer.Option(None, "--group-key",
+                                            help="v14/A 组键（标的+策略域）：供「仓位耗尽→失效同组」"),
+    batch_id: Optional[int] = typer.Option(None, "--batch-id", help="v14/A 重挂批次（联动失效豁免新批次）"),
 ):
     """挂单（开槽后）：band=[0.95,1.05]×anchor，槽 open → pending_order，资金零挪动
-    （专用心跳消费 MSG_CANDIDATE → sleeve-open → 本命令）"""
+    （专用心跳消费 MSG_CANDIDATE → sleeve-open → 本命令）
+
+    v14/A：`--rel ge|le --target X` 表达单边阈值（≥X / ≤X，落库写哨兵极值）；
+    `--side sell --qty N` 挂卖出单（几何=时机、side=动作、qty=数量）。"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:
+        if rel is not None:
+            if rel not in ('ge', 'le'):
+                raise ValueError(f"--rel 必须是 ge/le，收到 {rel!r}")
+            if target is None or target <= 0:
+                raise ValueError("--rel 必须配 --target（正价格）")
+            if rel == 'ge':
+                band_min, band_max = float(target), None
+            else:
+                band_min, band_max = None, float(target)
         r = SleeveOrder().place(event_key, anchor, ttl, source=source, reason=reason,
-                                placed_px=placed_px)
-        typer.echo(f"✅ 挂单 {r['order_id']}：带 [{r['band_min']}, {r['band_max']}]"
+                                placed_px=placed_px, side=side, qty=qty,
+                                band_min=band_min, band_max=band_max,
+                                group_key=group_key, batch_id=batch_id)
+        band_txt = (f"≥{r['band_min']:.4g}" if r['band_max'] >= 9.9e9 else
+                    f"≤{r['band_max']:.4g}" if r['band_min'] <= 0 else
+                    f"[{r['band_min']}, {r['band_max']}]")
+        typer.echo(f"✅ 挂单 {r['order_id']}：带 {band_txt}"
                    f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order"
+                   + (f"，side={r['side']} qty={r['qty']}" if r.get('side') == 'sell' else "")
                    + (f"，placed_px={r['placed_px']}" if r.get('placed_px') is not None else ""))
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

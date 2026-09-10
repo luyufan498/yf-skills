@@ -145,6 +145,36 @@ ptrade2 sleeve-show                       # 消息池+事件槽清单（只读�
 兜底单，不重算保护线**（与 `atr-sync` 分工：后者算线、每天首个交易 tick 一次；本命令用于手动补一轮、
 逐票切换后立即生效、排障复核）。数量语义与 atr-sync 完全一致（同一个 `_protect_qty`）。
 
+### 止盈挂单 `place_take_profit()`（Phase 3，2026-09-10；开关 `tp_orders` 缺省 off）
+
+止盈阶梯的**执行**从 conditions 迁到挂单：`tp:<code>#1|#2`（腿1=+30%、腿2=+50%，各卖剩余 1/3）。
+
+- **几何=涨破卖** `band=[触发价, 9.9e9]`（与兜底单跌破卖镜像；**写反=下跌时卖出**）；
+- **无 TTL**（生产者 `tp-orders-sync` 每交易日按剩余仓位 FIFO 均价覆写；配 TTL 会打出止盈空洞）；
+- **已成交腿不复活**（A1 红线）：槽 `fill_status='filled'` → `skip_filled`；只有显式给新批次才 re-arm；
+- **覆盖式重挂（D2）**：价/量没变 → `unchanged`（零写入）；变了 → 旧槽 `expire(reason='superseded')`
+  + 挂新槽（撤+挂成对，同组不留可执行的旧腿）。
+
+**运维命令**：`ptrade2 tp-orders-sync [股票名] [--dry-run] [--batch-id N] [--format json]`
+= 按当前剩余仓位重算两档价并覆盖式重挂（**不重算成本基**）。迁移期先 `--dry-run` 逐腿对账。
+
+### 逐票切换命令 `exec-switch`（2026-09-10：前置债 → 显式开关）
+
+`ptrade2 exec-switch <股票名> --domain protect|tp --to orders|shadow [--dry-run]`
+
+**原子动作** = 改挂单白名单 **+** 停/恢复对应 conditions 腿（protect → cost_protection/trailing_stop；
+tp → take_profit_1/2），动过的行 id 记进 `exec_layer.json.switched` + `shadow_log(kind='exec_switch')`。
+只切白名单而不停 conditions 腿 = **同一破线被卖两次**（双卖；清仓单可能形成负持仓）→ 必须用本命令，
+不要手改配置。`--to shadow` 只恢复「本次切换前是 active」的行。
+
+### conditions = 追踪器（Phase 4，2026-09-10）
+
+`watch_scan` 的 conditions **卖出口径**缺省 `tracker`：穿越只写事件 + 出行，**不直调卖出**（卖出只由
+挂单承载 protect/tp）。回滚 = `exec_layer.json → conditions_sell.mode='executor'` 或
+env `PTRADE2_COND_SELL=executor`；**买入类条件不受影响**（仍走 executor）。
+⚠️ 配置不对称：挂单缺 key = `off`（只留痕），conditions 缺同一份 key = `tracker` → 配置丢失时两边都不卖；
+`[PROTECT-CONFIG]` 行就是为此报警（库内有 pending 系统挂单却读到 off）。
+
 ## 🏛️ 宪法：永久禁止名单（方案 2.6，全文）
 
 imp 排序/配权；簇内选代表（含换名）；技术面入场门（甜点/回踩/确认/触发价/许可线）用于消息组；

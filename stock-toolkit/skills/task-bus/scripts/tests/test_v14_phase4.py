@@ -23,11 +23,12 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from test_v14_phase2 import CODE, STOCK, Iso, iso  # noqa: E402,F401
+from test_v14_phase3 import Iso3  # noqa: E402  （止盈腿槽构造器 tp_slot 在 Iso3）
 
 import watch_scan  # noqa: E402
 
 
-class Iso4(Iso):
+class Iso4(Iso3):
     def __init__(self, root):
         super().__init__(root)
         # 生产 task_events 的列比 phase2 夹具多，且 status 需默认 'pending'
@@ -154,3 +155,22 @@ def test_config_file_controls_mode(iso4):
     with open(os.path.join(iso4.ws, "exec_layer.json"), "w", encoding="utf-8") as f:
         json.dump({"conditions_sell": {"mode": "垃圾值"}}, f)
     assert watch_scan._conditions_sell_mode() == "tracker", "非法值必须回落 fail-closed 追踪器"
+
+
+# ------------------------------------- 配置丢失的静默保护失效（Phase 4 补）
+def test_missing_config_with_pending_slots_alarms(iso4):
+    """exec_layer.json 读不到（mode=off）但库里有待命系统挂单 → 必须出声。
+
+    不对称陷阱：挂单缺 key = off（只留痕不执行），conditions 侧缺同一份 key = tracker
+    （也不直调）→ 两边都不卖，且旧实现 `mode=='off' → return []` 让这条链路完全静默。
+    """
+    iso4.protect_slot()
+    iso4.tp_slot()
+    with patch.object(watch_scan, "in_trade_hours", lambda: True):
+        out = watch_scan.check_protect_freshness()
+    assert any("PROTECT-CONFIG" in l for l in out), out
+
+
+def test_no_config_and_no_slots_is_silent(iso4):
+    with patch.object(watch_scan, "in_trade_hours", lambda: True):
+        assert watch_scan.check_protect_freshness() == []

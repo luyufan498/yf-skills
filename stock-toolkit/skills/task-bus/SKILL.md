@@ -266,6 +266,16 @@ ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
 "会挂什么"（不写库）。**`protect:` 槽的 code 必须进拍首批量预取**（`_collect_price_scope_codes`
 按槽键后缀收集）——否则每拍"取价失败"（幽灵唤醒）且**永不触发**（保护失效），2026-09-10 已修。
 
+**Phase 3/4（2026-09-10）**：①止盈腿 `tp:<code>#1|#2`——**涨破卖** `band=[价, 9.9e9]`、无 TTL、
+已成交腿不复活、覆盖式重挂撤旧槽 `reason='superseded'`（`tp-orders-sync` 维护）；②切换一律用
+**`ptrade2 exec-switch <票> --domain protect|tp --to orders|shadow`**（白名单 + conditions 腿原子切换，
+记录在 `exec_layer.json.switched`）；③conditions **卖出口径缺省 tracker**（只追踪不直调，
+`conditions_sell.mode` / `PTRADE2_COND_SELL=executor` 可回滚；买入类不受影响）。
+**新增失效模式（对账必查）**：条件穿越只留 `shadow_log(kind='cond_sell_trace')`——若该风险没有任何
+挂单覆盖 = **裸露**（Phase 4 后唯一的"什么都不做"路径）。另 `check_price_orders` 有**非正价闸门**
+（取价 0/负 → fail-closed 跳过）：`band=[0,线]` 几何下非正价会让全部保护单同时"命中"并按 ¥0 卖出
+（2026-09-10 打桩实测 26 张同时触发）。
+
 ## CLI 命令
 
 ```bash

@@ -2251,7 +2251,27 @@ def check_protect_freshness() -> list[str]:
     if not in_trade_hours() or not os.path.exists(POOL_DB):
         return []
     if _protect_mode(None) == "off":
-        return []                      # 开关关着 = 未启用该链路，不产生噪音
+        # ⚠️ 方向性风险（2026-09-10 Phase 4 补）：`off` 只在**确实没启用该链路**时算正常。
+        # 若库里已存在 pending 的系统挂单（protect:/tp:）而开关读到 off——配置文件丢失/
+        # 被清空/路径漂移——那就是**静默保护失效**：扫描侧对 mode!=orders 一律只留痕不执行，
+        # 而 conditions 侧在同一份配置缺失时又回落到 tracker（`conditions_sell` 缺 key =
+        # tracker，与挂单缺 key = off **不对称**）→ 两边都不卖。此时必须出声。
+        try:
+            conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+            try:
+                n = conn.execute(
+                    "SELECT COUNT(*) FROM event_slots WHERE status='pending_order' AND "
+                    "(event_key LIKE 'protect:%' OR event_key LIKE 'tp:%')").fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            n = 0
+        if n > 0:
+            return [f"[PROTECT-CONFIG] 执行层配置缺失：exec_layer.json 读不到（mode=off）"
+                    f"但库内仍有 {n} 张待命系统挂单（protect:/tp:）→ **保护与止盈双双不执行**"
+                    f"（挂单缺 key=off 只留痕；conditions 侧缺 key 回落 tracker 也不直调）。"
+                    f"请立即核验 {os.path.join(WS, 'exec_layer.json')} 是否存在/可读"]
+        return []                      # 开关关着且无系统挂单 = 未启用该链路，不产生噪音
     st = load_state()
     last = str(st.get("last_atr_date") or "")
     prev = _prev_trading_day(datetime.now())

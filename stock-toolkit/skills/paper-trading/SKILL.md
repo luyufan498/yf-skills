@@ -114,6 +114,33 @@ ptrade2 sleeve-show                       # 消息池+事件槽清单（只读�
 > 接线状态（2026-09-10）：机制已上线，**尚无 prompt 生产者**——"止盈阶梯变挂单"属 Phase 3；
 > `conditions` 与挂单并存期**两条路都能卖=双卖**，切换必须"搬一个、验一个、关一个"。
 
+### 系统兜底单 `place_protect()`（Phase 2，2026-09-10；开关缺省 off）
+
+`ptrade2 atr-sync` 每次跑完（每交易日首个交易 tick）**顺带**把该票的保护线落成挂单：
+
+```bash
+# 开关真源（缺文件=off，对现网零改变）—— <workspace>/.paper-trading/exec_layer.json
+{"protect_orders": {"mode": "off",            // off | shadow | orders
+                    "exec_stocks": ["中芯国际"]}}   // 仅 orders：逐票白名单，名单外只留痕
+```
+
+| 项 | 口径 | 理由 |
+|---|---|---|
+| 槽 | **自带** `protect:<code>`（不占消息槽、不建成员段、不动钱）；`side='sell'`、`created_by='atr-auto'`、`group_key='<code>:protect'` | 兜底单没有事件槽；单键单行 → 天然只有一张活跃保护单（D5） |
+| 几何 | `band=[0, 线]`（跌破卖） | 写成 `[线,9.9e9]` = 涨破卖几何 → 会**涨着卖**（测试已锁死） |
+| TTL | **NULL（无过期）** | 扫描侧 `ttl_dt is None` / fill 侧 `if slot['order_ttl']` 对 NULL 天然不过期；配 TTL 会打出 11:31~次日 09:31 的保护空洞 |
+| 数量 | `qty`=生成时刻**数字**（`清仓`=全部、`减仓50%`=一半；认不出 → 不生成） | D3：比例语义只在生成期算，机械层只认数字 |
+| 抬升 | 同键 UPDATE 只改价/量；batch 不变 | D6：连续震荡零事件 |
+| re-arm | 成交/弃单后同键重置（新 batch） | 轮界语义（≥50% 减仓 → 下次 atr-sync 按现价×0.95 重建） |
+
+**扫描侧**（`watch_scan.check_price_orders`）：`mode != orders` → **零 `ptrade2` 调用**（只留痕
++ `shadow_log(kind=protect_hit)`）；`orders` + 白名单 → 同拍直调 `ptrade2 sell <名> --qty N
+--price P --event-id protect:<code>`。**保鲜**：`[PROTECT-FRESH]` 行 = atr-sync 今天没跑 →
+**保留旧线继续兜底、绝不撤保护**（无 TTL 即无"到期清单"这个 fail-open 口子）。
+
+⚠️ 切票到 `orders` 前必须先 `suspended` 该票的 `conditions` 腿并观察 ≥2 交易日——两腿同时
+活跃 = 同一破线卖两次（双卖）。
+
 ## 🏛️ 宪法：永久禁止名单（方案 2.6，全文）
 
 imp 排序/配权；簇内选代表（含换名）；技术面入场门（甜点/回踩/确认/触发价/许可线）用于消息组；

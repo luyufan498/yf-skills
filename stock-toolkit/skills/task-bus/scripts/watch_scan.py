@@ -28,7 +28,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 TASKS_DB = os.environ.get("STOCK_TASKS_DB") or os.path.join(os.getcwd(), "data", "tasks", "tasks.db")
 WS = os.environ.get("STOCK_ANALYSIS_WORKSPACE", os.path.join(os.getcwd(), ".paper-trading"))
@@ -2152,6 +2152,44 @@ def _protect_hit_lines(event_key: str, code: str, px: float, slot_row) -> list[s
     return [head + f" → 同拍直调被拒（{_parse_exec_fail_code(out)}）：{(out or '')[-120:]}"]
 
 
+def _prev_trading_day(ref: datetime) -> str | None:
+    """ref 之前最近的交易日（ISO 日期串）；交易日历不可用则 None。"""
+    d = ref - timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(d):
+            return d.strftime("%Y-%m-%d")
+        d -= timedelta(days=1)
+    return None
+
+
+def check_protect_freshness() -> list[str]:
+    """Phase 2 兜底单**保鲜**告警（替代 TTL 的健康信号，2026-09-10 用户口径）。
+
+    用户原话：「atr 检查如果没更新[，就]基于[旧线继续]，还是以兜底为主」——即
+    **保留旧线继续保护**（无 TTL，永不自行撤保护），只在"线确实没刷新"时告警叫醒 agent。
+
+    判据：``atr_sync_daily`` 每个交易日首个交易 tick 打卡 ``last_atr_date``（kv_state）。
+    该日期 **早于上一交易日** = 今天这个交易日至今没成功跑过 atr-sync → 保护线整体没刷新。
+
+    输出必须是**字节稳定**的（monitor 按输出变化唤醒 agent）：只含日期，不含时刻。
+    只告警，**绝不撤销/改动任何槽**（不做"到期清单"——那正是 TTL 的 fail-open 方向）。
+    """
+    if not in_trade_hours() or not os.path.exists(POOL_DB):
+        return []
+    if _protect_mode(None) == "off":
+        return []                      # 开关关着 = 未启用该链路，不产生噪音
+    st = load_state()
+    last = str(st.get("last_atr_date") or "")
+    prev = _prev_trading_day(datetime.now())
+    if not prev:
+        return []
+    if last >= prev:
+        return []
+    return [f"[PROTECT-FRESH] 保护线未刷新：atr-sync 最近成功日={last or '（无记录）'} "
+            f"< 上一交易日 {prev} → **保留旧线继续兜底**（兜底单无 TTL，不撤保护）；"
+            f"请核验心跳/atr-sync 是否在跑"]
+
+
 def check_price_orders() -> list[str]:
     """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测（C3/WP7，2026-09-10）。
 
@@ -2402,6 +2440,8 @@ def run_price_scope() -> int:
     lines.extend(atr_sync_daily())          # E9：每日首次交易 tick 止损位同步（2026-09-04 随
                                             #   ATR 归价格域从 legacy 迁入——纯脚本，成功静默
                                             #   失败告警唤醒 C1；止损位=保护链数据）
+    lines.extend(check_protect_freshness())  # L2：兜底单保鲜告警（Phase 2）——保留旧线继续兜底，
+                                            #   只在"atr-sync 今天没跑"时叫醒 agent（不撤保护）
     lines.extend(scan_moves())              # E10：池内个股动量甜点/追高/单日异动（2026-09-04
                                             #   从 legacy 迁入——纯价格扫描，状态机滞回防反复
                                             #   唤醒；检出→C1 agent 初过滤原因）

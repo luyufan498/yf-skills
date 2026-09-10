@@ -248,3 +248,43 @@ def test_protect_mode_helper_contract(iso, tmp_path):
     assert watch_scan._protect_mode(STOCK2) == "shadow"
     os.environ["PTRADE2_PROTECT_ORDERS"] = "off"
     assert watch_scan._protect_mode(STOCK) == "off"
+
+
+# ---------------------------------------------------- 保鲜告警（替代 TTL 的健康信号）
+def test_protect_freshness_alerts_only_when_atr_never_ran(iso, tmp_path, monkeypatch):
+    """atr-sync 今天没跑 → 告警；已跑 → 静默；**任何情况下都不撤保护**（无 TTL）。"""
+    from datetime import datetime, timedelta
+    cfg = tmp_path / "exec_layer.json"
+    cfg.write_text(json.dumps({"protect_orders": {"mode": "shadow"}}), encoding="utf-8")
+    monkeypatch.setenv("PTRADE2_EXEC_LAYER_FILE", str(cfg))
+    monkeypatch.setattr(watch_scan, "in_trade_hours", lambda: True)
+    monkeypatch.setattr(watch_scan, "is_trading_day", lambda d=None: True)
+    iso.protect_slot(line=10.0)
+
+    stale = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    watch_scan.save_state({"last_atr_date": stale})
+    out = watch_scan.check_protect_freshness()
+    assert len(out) == 1 and "PROTECT-FRESH" in out[0], out
+    assert "保留旧线继续兜底" in out[0] and "不撤保护" in out[0]
+    # 字节稳定：同一状态连跑两次输出一致（monitor 才不会反复唤醒）
+    assert watch_scan.check_protect_freshness() == out
+
+    # 今日已跑 → 静默
+    watch_scan.save_state({"last_atr_date": datetime.now().strftime("%Y-%m-%d")})
+    assert watch_scan.check_protect_freshness() == []
+
+    # 告警不得改动槽：仍是 pending_order + 无 TTL（"保留旧线"落地）
+    c = sqlite3.connect(iso.pool)
+    st, ttl = c.execute("SELECT status, order_ttl FROM event_slots "
+                        "WHERE event_key=?", (f"protect:{CODE}",)).fetchone()
+    c.close()
+    assert st == "pending_order" and ttl is None
+
+
+def test_protect_freshness_silent_when_switch_off(iso, monkeypatch):
+    """开关 off = 未启用该链路 → 不产生噪音（也不告警）。"""
+    monkeypatch.setenv("PTRADE2_PROTECT_ORDERS", "off")
+    monkeypatch.setattr(watch_scan, "in_trade_hours", lambda: True)
+    monkeypatch.setattr(watch_scan, "is_trading_day", lambda d=None: True)
+    watch_scan.save_state({"last_atr_date": "2020-01-01"})
+    assert watch_scan.check_protect_freshness() == []

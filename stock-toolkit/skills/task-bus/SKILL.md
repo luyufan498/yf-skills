@@ -231,6 +231,36 @@ ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
 
 > **接线状态（2026-09-10）**：机制已上线，但**尚无 prompt 使用**——止盈阶梯"变挂单"是 Phase 3 的活；`conditions` 与挂单并存期**两条路都能卖 = 双卖**，切换必须"搬一个、验一个、关一个"。买侧老用法（`--anchor/--ttl` 不带新参数）行为**逐字节不变**。
 
+## 🛡️ 系统兜底单（Phase 2，2026-09-10；开关缺省 **off**）
+
+成本保护 / ATR 移动止损**迁进挂单机制承载**（`source=created_by='atr-auto'`，自带槽
+`protect:<code>`，不占消息槽）。**开关真源**：`<workspace>/.paper-trading/exec_layer.json`
+（缺文件=off，对现网零改变）：
+
+```json
+{"protect_orders": {"mode": "off",             // off | shadow | orders
+                    "exec_stocks": ["中芯国际"]  // 仅 orders 生效：逐票白名单（名单外只留痕）
+}}
+```
+
+| 口径 | 值 | 为什么 |
+|---|---|---|
+| 几何 | `band=[0, 线]`（跌破卖） | 保护线是**止损**语义：进带=现价 ≤ 线。**写成 `[线,9.9e9]` 会变成"上涨时卖"**（已用测试锁死） |
+| TTL | **`order_ttl=NULL`（无 TTL）** | TTL 的语义是"过期=把决定权交还生产者"（服务 agent 单）；兜底单生产者是 atr-sync（每交易日首个 tick 自动重算），且"到期=撤保护"是 **fail-open 最坏方向**。配 TTL 会因"一天只刷一次"打出空洞：09:31 挂→11:30 过期→**11:31~次日 09:31 零保护单** |
+| 抬升（D6） | 同键 UPDATE 只改价/数量 | 不产事件、不动 `batch_id`（连续震荡 → 零事件） |
+| 用高者（D5） | **生成期**只落更紧的那条线 | 两条保护线不各挂一张，避免破线时两次卖 |
+| 数量 | 生成期算成**数字**（清仓=全部；`减仓50%`→一半） | `成本保护-12%` 里的 % 是**价格**不是数量；认不出 → **不生成**（fail-closed，绝不猜） |
+| 成交后 | 次日 `atr-sync` **re-arm 新批次**（轮界语义，现价×0.95 重建） | 当天盘内不重建（与 conditions 现状一致） |
+
+**扫描侧（`check_price_orders` 的 `[PROTECT-ORDER]` 分支）**：`mode != orders`（含缺省 off）
+→ **只留痕 + shadow_log，零 `ptrade2` 调用**（影子期铁律）；`mode=orders` **且该票在白名单**
+→ 同拍直调 `ptrade2 sell <名> --qty N --price P --event-id protect:<code>`；标的名/qty 不可判定
+→ 执行被拒（fail-closed）。**`[PROTECT-FRESH]` 行**=保鲜告警（atr-sync 今天没跑）：**保留旧线
+继续兜底、不撤保护**，agent 只需核验心跳，**不得改单**。
+
+⚠️ **双卖红线**：切换某票到 `orders` 前，必须先让该票的 `conditions` 腿失效（`suspended`，不删）
+并观察 ≥2 个交易日；两腿同时活跃 = 同一破线被卖两次（清仓单 → 可能形成负持仓）。
+
 ## CLI 命令
 
 ```bash

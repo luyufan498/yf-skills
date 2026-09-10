@@ -21,6 +21,64 @@ from paper_trading_v2.exright_handler import ExRightHandler
 from paper_trading_v2.portfolio import PortfolioManager
 
 
+def _protect_qty(action: str, held_qty: int):
+    """把条件行的**比例语义在生成期算成数字**（D3：机械层只认数字）。
+
+    只认显式写法，其余一律 None（fail-closed → 不生成兜底单，绝不猜数量）：
+    - ``减仓50%`` / ``卖出 1/3`` 类 → 百分比（向下取整，宁少不多）；
+    - ``清仓`` / ``全部`` / ``100%`` → 全部持仓；
+    - 其它（如 ``执行``、``价值反转仓成本保护-12%``——那里的 % 是价格不是数量）→ None。
+
+    注意：``成本保护-5%`` 这类文字里的百分比是**价格偏移**不是数量，故百分比只在
+    带"减仓/卖出/减/卖"动词时才当数量解析（否则会把 -12% 当成只卖 12%）。
+    """
+    import re
+    a = str(action or '')
+    if held_qty <= 0:
+        return None
+    m = re.search(r'(?:减仓|卖出|减|卖)\s*(\d+(?:\.\d+)?)\s*%', a)
+    if m:
+        pct = float(m.group(1))
+        if not (0 < pct <= 100):
+            return None
+        return int(held_qty * pct / 100.0)
+    if re.search(r'清仓|全部|全清|清空', a) or re.search(r'100\s*%', a):
+        return int(held_qty)
+    return None
+
+
+def _ensure_protect_order(stock_name, code, held_qty, cp_cond, ts_cond, entry):
+    """Phase 2 兜底单生成（在生成期做三件事，机械层只认结果）。
+
+    - **D5 消解"用高者"**：跌破型卖单——线越高越紧，两条线只落更紧的那张；
+    - **D3 数量数字**：由 `_protect_qty` 把 action 的比例语义算成股数，算不出则不生成；
+    - 开关：`exec_layer.json → protect_orders.mode`（缺省 off）→ off 直接返回 None。
+
+    返回 ``place_protect`` 结果（dict）或 None；不生成时写 ``entry["protect_skipped"]``。
+    D6 抬升（同键只改价）由 ``place_protect`` 内部按槽状态决定。
+    """
+    from paper_trading_v2.exec_layer import protect_mode
+    from paper_trading_v2.sleeve_order import SleeveOrder
+    mode = protect_mode(stock_name)
+    if mode == 'off':
+        return None
+    cands = []
+    for kind, c in (('cost', cp_cond), ('trail', ts_cond)):
+        if c is not None and getattr(c, 'price', None) \
+                and getattr(c, 'status', 'active') == 'active':
+            cands.append((kind, float(c.price), getattr(c, 'action', '')))
+    if not cands:
+        entry['protect_skipped'] = '无 active 保护线'
+        return None
+    kind, line, action = max(cands, key=lambda x: x[1])
+    qty = _protect_qty(action, int(held_qty))
+    if not qty:
+        entry['protect_skipped'] = f'action 无法机械判定数量（fail-closed 不生成）：{action!r}'
+        return None
+    return SleeveOrder().place_protect(code, line, qty, kind,
+                                       reason=f'atr-sync {stock_name} mode={mode}')
+
+
 def register(app):
     """注册风险控制命令组到共享 app（cli.py 末尾显式调用）。"""
 
@@ -628,6 +686,14 @@ def register(app):
                     if ts_after and ts_after.price is not None:
                         entry["trailing_stop_old"] = old_trail
                         entry["trailing_stop_new"] = ts_after.price
+
+                    # ---- Phase 2：系统兜底单（成本保护 / ATR 移动止损 → 挂单机制承载）----
+                    # D5 生成期消解"用高者" + D3 数量数字 + D6 抬升只改价；
+                    # 开关 exec_layer.json → protect_orders.mode（缺省 off，零影响）。
+                    _po = _ensure_protect_order(name, account.stock_code, total_qty,
+                                                cp_after, ts_after, entry)
+                    if _po:
+                        entry["protect_order"] = _po
             except Exception as e:
                 results.append({"stock": name, "status": "error", "reason": str(e)})
 

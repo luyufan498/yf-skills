@@ -316,6 +316,104 @@ class SleeveOrder:
         finally:
             conn.close()
 
+    # ---------- 系统兜底单（Phase 2：成本保护 / ATR 移动止损 → 挂单机制承载） ----------
+
+    def place_protect(self, code, line_price, qty, kind, reason='', batch_id=None):
+        """系统兜底单落库（2026-09-10 Phase 2，用户拍板口径）。
+
+        与 agent 挂单（place）的三点差异：
+        1. **无 TTL**（order_ttl=NULL）：生产者是 `ptrade2 atr-sync`（每交易日首个交易
+           tick 自动重算覆写），不存在"没人管我"的过期场景；配 TTL 反而打出保护空洞
+           （`_validate_ttl` 强制 ttl=下一交易节收盘，而 atr_sync_daily 每交易日只刷一次
+           → 11:31~次日 09:31 无保护单）。扫描侧（`watch_scan:2104` `ttl_dt is None`）与
+           fill 侧（`if slot['order_ttl']`）对 NULL 天然不判过期，零改动。
+        2. **自带槽**：系统单不占消息槽 —— event_key='protect:<code>'，槽不存在即创建
+           （不入消息池、不动钱、不建成员段）。
+        3. **抬升只改价不产事件**（D6）：同 code 已挂 → 只 UPDATE band/anchor/qty，
+           batch_id 与状态不变；成交/弃单后的**重新武装（re-arm）** = 同键重置为新批次
+           （新 batch_id，供组内联动豁免口径）。
+
+        几何：保护线一律**跌破卖**（止损语义）→ band=[BAND_LO_SENTINEL, line]（下沿哨兵 0、
+        上沿=保护线）——进带判据（band_min ≤ px ≤ band_max）即"现价 ≤ 保护线"= 命中。
+        **不可写成 [line, 9.9e9]**：那是"涨破卖"几何，会让保护单在**上涨**时成交
+        （卖在强势上，方向相反）。
+        qty = 生成时刻算好的股数（比例语义留在 atr-sync 侧，本层只照做）。
+
+        D5（用高者）在**生成期**消解：同标的只落更紧的一条线（调用方负责选线），
+        故本方法按 code 单键单行，天然不会出现两张活跃保护单。
+        """
+        code = (code or '').strip().lower()
+        if not code:
+            raise ValueError("系统兜底单必须给标的代码")
+        kind = (kind or '').strip().lower()
+        if kind not in ('cost', 'trail'):
+            raise ValueError(f"kind 必须是 cost/trail，收到 {kind!r}")
+        try:
+            line = float(line_price)
+        except (TypeError, ValueError):
+            raise ValueError(f"保护线价格非法：{line_price!r}")
+        if not line > 0:
+            raise ValueError(f"保护线必须为正价格，收到 {line_price!r}")
+        if isinstance(qty, bool):
+            raise ValueError(f"qty 必须是正整数股数，收到 {qty!r}")
+        # 与 place() 同款口径：先用字符串判"整数字面量"，防 int(1.5)→1 静默截断
+        _q = str(qty).strip().lstrip('+') if qty is not None else ''
+        if qty is None or not _q.isdigit() or int(_q) <= 0:
+            raise ValueError(f"qty 必须是正整数股数（比例语义在生成期算成数字），收到 {qty!r}")
+        qty = int(_q)
+        event_key = f"protect:{code}"
+        # 跌破卖几何：band=[哨兵下沿 0, 保护线]——进带即"现价 ≤ 保护线"
+        band_lo, band_hi = BAND_LO_SENTINEL, round(line, 4)
+        now = now_iso()
+        batch = int(batch_id) if batch_id is not None else int(datetime.now().strftime("%Y%m%d"))
+        group_key = f"{code}:protect"
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT status FROM event_slots WHERE event_key=?",
+                               (event_key,)).fetchone()
+            if row is None:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO event_slots (event_key, status, opened_at, side, qty, "
+                        "group_key, batch_id, band_min, band_max, anchor_price, placed_px, "
+                        "order_ttl, order_id, fill_status, created_by, note) "
+                        "VALUES (?, 'pending_order', ?, 'sell', ?, ?, ?, ?, ?, ?, ?, NULL, ?, "
+                        "'pending', 'atr-auto', ?)",
+                        (event_key, now, qty, group_key, batch, band_lo, band_hi, line, line,
+                         f"protect:{code}:{int(time.time())}",
+                         f" [兜底单 kind={kind} 线={line} qty={qty} batch={batch} {reason}]"))
+                action = 'placed'
+            elif (row['status'] or '') == 'pending_order':
+                # D6 抬升只改价：同批次同键 UPDATE，不产事件、不改 batch_id
+                with conn:
+                    conn.execute(
+                        "UPDATE event_slots SET band_min=?, band_max=?, anchor_price=?, "
+                        "placed_px=?, qty=?, note=COALESCE(note,'')||? "
+                        "WHERE event_key=? AND status='pending_order'",
+                        (band_lo, band_hi, line, line, qty,
+                         f" [抬升 kind={kind} 线={line} qty={qty}]", event_key))
+                action = 'raised'
+            else:
+                # re-arm：成交/弃单后重新武装（新批次；旧批次留痕不回溯）
+                with conn:
+                    conn.execute(
+                        "UPDATE event_slots SET status='pending_order', fill_status='pending', "
+                        "band_min=?, band_max=?, anchor_price=?, placed_px=?, qty=?, batch_id=?, "
+                        "note=COALESCE(note,'')||? WHERE event_key=?",
+                        (band_lo, band_hi, line, line, qty, batch,
+                         f" [re-arm kind={kind} 线={line} qty={qty} batch={batch}]", event_key))
+                action = 'rearmed'
+            with conn:      # shadow_write 不自带 commit（跟随调用方事务）——必须包在 with 内
+                shadow_write(conn, 'protect_' + action, event_key,
+                             {"code": code, "kind": kind, "line": line, "qty": qty,
+                              "band": [band_lo, band_hi], "batch_id": batch, "ts": now,
+                              "reason": reason})
+            return {"event_key": event_key, "action": action, "line": line, "qty": qty,
+                    "band_min": band_lo, "band_max": band_hi, "batch_id": batch,
+                    "order_ttl": None, "status": "pending_order"}
+        finally:
+            conn.close()
+
     # ---------- sleeve-order-fill ----------
 
     def fill(self, event_key, detected_price, atr=None, skip_conditions=False,

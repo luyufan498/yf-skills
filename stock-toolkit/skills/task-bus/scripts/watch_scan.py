@@ -2048,6 +2048,110 @@ def sync_order_groups() -> list[str]:
     return out
 
 
+# ======================================================================
+# Phase 2：系统兜底单（成本保护 / ATR 移动止损 → 挂单机制承载）
+# 契约与 paper_trading_v2/exec_layer.py 同源（读同一个 exec_layer.json）：
+#   off=不生成/不执行；shadow=生成+只留痕（影子期铁律：零 ptrade2 调用）；
+#   orders=生成；仅白名单标的同拍直调执行，名单外降级 shadow。
+# ======================================================================
+
+def _protect_mode(stock_name: str | None = None) -> str:
+    """该标的的兜底单口径（off/shadow/orders）——缺文件=off（零影响）。
+
+    与 ``paper_trading_v2.exec_layer.protect_mode`` 同契约；本脚本不 import 该包
+    （task-bus 与 paper-trading 是两个包，只共享这一个 JSON 配置）。
+    """
+    cfg: dict = {}
+    try:
+        p = os.environ.get("PTRADE2_EXEC_LAYER_FILE") or os.path.join(WS, "exec_layer.json")
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        c = (d.get("protect_orders") if isinstance(d, dict) else None)
+        cfg = c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        cfg = {}
+    env = (os.environ.get("PTRADE2_PROTECT_ORDERS") or "").strip().lower()
+    mode = env or str(cfg.get("mode") or "off").strip().lower()
+    if mode not in ("off", "shadow", "orders"):
+        mode = "off"
+    if mode != "orders" or not stock_name:
+        return mode
+    wl = cfg.get("exec_stocks")
+    wl = wl if isinstance(wl, (list, tuple)) else []
+    names = {str(x).strip() for x in wl if str(x).strip()}
+    return "orders" if stock_name in names else "shadow"
+
+
+def _stock_name_by_code(code: str) -> str | None:
+    """code → 持仓段名（open 段优先；取不到 None → 执行侧 fail-closed）。"""
+    if not code or not os.path.exists(POOL_DB):
+        return None
+    conn = sqlite3.connect(f"file:{POOL_DB}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT stock FROM position WHERE code=? AND status='open' "
+            "ORDER BY id DESC LIMIT 1", (code,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _protect_trace(kind: str, key: str, payload: dict) -> None:
+    """影子留痕（pool DB shadow_log）——只记不执行；任何失败静默（不得影响扫描）。"""
+    try:
+        conn = sqlite3.connect(POOL_DB, timeout=5)
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO shadow_log (kind,key,payload,created_at) VALUES (?,?,?,?)",
+                    (kind, key, json.dumps(payload, ensure_ascii=False, default=str),
+                     datetime.now().isoformat(timespec="seconds")))
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _protect_hit_lines(event_key: str, code: str, px: float, slot_row) -> list[str]:
+    """兜底单命中（现价 ≤ 保护线）处置：影子期只留痕；执行期同拍直调。
+
+    - ``mode != orders``（off/shadow，或 orders 但该票不在白名单）→ **零 ptrade2 调用**，
+      只出行留痕 + shadow_log(kind='protect_hit')——影子期绝不产生任何真实卖出；
+    - ``mode = orders`` → 同拍直调 `ptrade2 sell <名> --qty N --price P --event-id <槽键>`
+      （与保护链 WP1 同款直调语义），成交/失败原因码一律 shadow_log(kind='protect_exec')。
+    - 标的名/qty 不可判定 → 执行被拒（fail-closed，宁可不卖不卖错）。
+    """
+    name = _stock_name_by_code(code)
+    qty = slot_row["qty"] if "qty" in slot_row.keys() else None
+    # 跌破卖几何：保护线 = 带上沿（band=[0, 线]）
+    line = float(slot_row["band_max"])
+    mode = _protect_mode(name)
+    head = (f"[PROTECT-ORDER] {event_key} {name or '?'}({code}) 兜底单命中："
+            f"现价¥{px:.2f} ≤ 保护线¥{line:.2f}")
+    _protect_trace("protect_hit", event_key,
+                   {"stock": name, "code": code, "px": px, "line": line,
+                    "qty": qty, "mode": mode,
+                    "batch_id": slot_row["batch_id"] if "batch_id" in slot_row.keys() else None})
+    if mode != "orders":
+        return [head + f" → 影子期（mode={mode}）只记不执行（不调 ptrade2），"
+                       f"等 atr-sync 重算/人工核验"]
+    if not name or qty is None or int(qty) <= 0:
+        return [head + f" → 执行被拒（标的名/qty 不可判定：name={name!r} qty={qty!r}，"
+                       f"fail-closed 不卖）"]
+    out = ptrade2("sell", name, "--qty", str(int(qty)), "--price", f"{px:.2f}",
+                  "--event-id", event_key, timeout=90)
+    ok = bool(out) and "✅" in out
+    _protect_trace("protect_exec", event_key,
+                   {"stock": name, "code": code, "px": px, "line": line, "qty": int(qty),
+                    "ok": ok, "out_tail": (out or "")[-200:]})
+    if ok:
+        return [head + f" → 同拍直调 ptrade2 sell {name} --qty {int(qty)} "
+                       f"--price {px:.2f} --event-id {event_key}（成交）"]
+    return [head + f" → 同拍直调被拒（{_parse_exec_fail_code(out)}）：{(out or '')[-120:]}"]
+
+
 def check_price_orders() -> list[str]:
     """E1 挂单槽价格扫描（--scope price）：pending_order 槽四态检测（C3/WP7，2026-09-10）。
 
@@ -2106,7 +2210,10 @@ def check_price_orders() -> list[str]:
             out.append(f"[PRICE-ORDER] {event_key} 挂单已过期 ttl={s['order_ttl']} "
                        f"→ 跑 ptrade2 sleeve-order-expire {event_key} --reason expired")
             continue
-        code = _slot_member_code(event_key)
+        is_protect = event_key.startswith("protect:")
+        # 系统兜底单自带槽（无成员段）→ code 从槽键取（'protect:<code>'）；
+        # 普通挂单槽仍取首成员 code（_slot_member_code）。
+        code = event_key.split(":", 1)[1] if is_protect else _slot_member_code(event_key)
         px = fetch_price_any(code) if code else None
         if px is None:
             out.append(f"[PRICE-ORDER] {event_key} 取价失败（code={code or '无成员段'}）"
@@ -2115,6 +2222,12 @@ def check_price_orders() -> list[str]:
         placed = s["placed_px"]
         if s["band_min"] <= px <= s["band_max"]:
             if is_sell:
+                if is_protect:
+                    # Phase 2 系统兜底单命中：影子期只留痕；执行期（逐票白名单）
+                    # 同拍直调。不走 _arbitrate_sell_hits——那是消息槽卖单的
+                    # 段持仓裁决口径，系统兜底单按自身 qty + CLI 持仓校验。
+                    out.extend(_protect_hit_lines(event_key, code or "", px, s))
+                    continue
                 # 卖单进带 → 收集候选（统一种排序 + 持仓裁决后出行，见 _arbitrate_sell_hits）
                 sell_hits.append({"event_key": event_key, "px": px, "code": code,
                                   "qty": s["qty"] if "qty" in s.keys() else None,

@@ -153,10 +153,13 @@ class Iso:
 def iso(tmp_path):
     iso = Iso(tmp_path)
     saved_env = {k: os.environ.get(k) for k in
-                 ("STOCK_ANALYSIS_WORKSPACE", "STOCK_TASKS_DB")}
+                 ("STOCK_ANALYSIS_WORKSPACE", "STOCK_TASKS_DB", "PTRADE2_COND_SELL")}
     saved_glob = (watch_scan.POOL_DB, watch_scan.TASKS_DB, dict(watch_scan._PRICE_CACHE))
     os.environ["STOCK_ANALYSIS_WORKSPACE"] = iso.ws
     os.environ["STOCK_TASKS_DB"] = iso.tasks
+    # v14/Phase 4（2026-09-10）后 conditions 卖出口径缺省 = tracker（不直调）；
+    # 本文件测的是 C1/WP1 **executor 机制**（现为回滚路径）→ 显式打开开关保持原覆盖。
+    os.environ["PTRADE2_COND_SELL"] = "executor"
     watch_scan.POOL_DB = iso.pool
     watch_scan.TASKS_DB = iso.tasks
     watch_scan._PRICE_CACHE.clear()

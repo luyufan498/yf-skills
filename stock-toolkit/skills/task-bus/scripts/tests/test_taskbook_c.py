@@ -27,8 +27,19 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest  # noqa: E402
 import watch_scan  # noqa: E402
 import task_bus.db as tdb  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _legacy_executor(monkeypatch):
+    """v14/Phase 4（2026-09-10）后 conditions 卖出口径缺省 = tracker（只追踪不直调）。
+
+    本文件测的是 C1/WP1 的 **executor 机制**（现为回滚路径）→ 显式打开开关保持原覆盖；
+    tracker 口径的用例在 tests/test_v14_phase4.py。
+    """
+    monkeypatch.setenv('PTRADE2_COND_SELL', 'executor')
 
 PAPER_VENV = "/home/catmouse/Github_Project/yf-skills/stock-toolkit/skills/paper-trading/scripts/.venv/bin/python3"
 

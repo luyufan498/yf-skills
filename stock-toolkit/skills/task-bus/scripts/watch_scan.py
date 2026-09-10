@@ -909,6 +909,12 @@ def check_price_triggers() -> list[str]:
                     f"⚠️ {r['stock_name']}({r['stock_code']}) {direction.upper()} 重试被拒："
                     f"creator 为空（fail-closed，事件#{ev_id} 待晚审）")
                 continue
+            if direction == "sell" and _conditions_sell_mode() != "executor":
+                # Phase 4：追踪器口径下重试路径同样停用（卖出只由挂单承载）
+                triggers.append(
+                    f"🧭 {r['stock_name']}({r['stock_code']}) SELL 重试停用（追踪器口径）："
+                    f"事件#{ev_id} 保持待 agent 消费，本拍不直调")
+                continue
             out = ptrade2("sell" if direction == "sell" else "buy", r["stock_name"],
                           *(["--all"] if direction == "sell" else ["50000"]),
                           "--price", f"{price:.2f}", "--event-id", str(ev_id), timeout=90)
@@ -947,6 +953,20 @@ def check_price_triggers() -> list[str]:
             triggers.append(
                 f"⚠️ {r['stock_name']}({r['stock_code']}) {direction.upper()} 触发但 creator 为空"
                 f"（fail-closed，事件#{ev_id} 待晚审+通知，不直调执行）")
+            continue
+        if direction == "sell" and _conditions_sell_mode() != "executor":
+            # Phase 4（2026-09-10）：conditions 卖出口径收窄为**追踪器**——卖出只由挂单
+            # 承载（protect:*/tp:*），conditions 命中只写事件 + 出行，本拍不直调。
+            # 事件标 deferred_agent（沿用既有语义：交 agent 消费，不写 handled_at）。
+            _update_alert_exec(ev_id, "deferred_agent", "conditions_tracker", price)
+            _protect_trace("cond_sell_trace", cond_uid,
+                           {"stock": r["stock_name"], "code": r["stock_code"],
+                            "price": price, "cond_price": r["price"], "type": ctype,
+                            "action": action, "event_id": ev_id})
+            triggers.append(
+                f"🧭 {r['stock_name']}({r['stock_code']}) SELL 条件穿越（追踪器口径）："
+                f"现价¥{price:.2f} {arrow} 条件¥{r['price']:.2f} → 已写事件#{ev_id}，"
+                f"卖出由挂单承载（protect:*/tp:*），本拍不直调")
             continue
         if direction == "sell" and not _is_full_exit(action, cname):
             # 审计补丁（2026-09-10 主代理 R1.5）：数量语义非"清仓"（1/3、减半、模糊文本）
@@ -2120,6 +2140,28 @@ def _tp_mode(stock_name: str | None = None) -> str:
     wl = wl if isinstance(wl, (list, tuple)) else []
     names = {str(x).strip() for x in wl if str(x).strip()}
     return "orders" if stock_name in names else "shadow"
+
+
+def _conditions_sell_mode() -> str:
+    """conditions **卖出口径**：``tracker``（缺省，Phase 4）/ ``executor``（回滚用）。
+
+    Phase 4（2026-09-10）：卖出执行已全部迁到挂单（``protect:*``/``tp:*``），conditions
+    收窄为**追踪器**——穿越只写事件 + 出行给 agent，**不再同拍直调卖出**。
+    回滚/排障：``exec_layer.json → conditions_sell.mode = "executor"``
+    或 env ``PTRADE2_COND_SELL=executor``。买入类条件不受影响（仍走 executor 路径）。
+    """
+    env = (os.environ.get("PTRADE2_COND_SELL") or "").strip().lower()
+    if env in ("tracker", "executor"):
+        return env
+    try:
+        p = os.environ.get("PTRADE2_EXEC_LAYER_FILE") or os.path.join(WS, "exec_layer.json")
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        c = (d.get("conditions_sell") if isinstance(d, dict) else None)
+        m = str((c or {}).get("mode") or "tracker").strip().lower()
+        return m if m in ("tracker", "executor") else "tracker"
+    except (OSError, ValueError):
+        return "tracker"
 
 
 def _protect_trace(kind: str, key: str, payload: dict) -> None:

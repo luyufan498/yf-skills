@@ -554,3 +554,100 @@ def test_check7_price_orders_three_states_under_race(iso):
     assert st["ND#in"] == "pending_order", f"带内槽不得被弃单：{st}"
     assert st["ND#above"] == "pending_order", f"上穿槽不得被弃单：{st}"
     assert st["ND#below"] == "pending_rejudge", f"下穿槽应弃单到 pending_rejudge：{st}"
+
+
+# --------------------------------------------- ⑦ Phase 0：整拍互斥锁（真两进程）
+LOCK_CHILD = '''
+import json, os, sys, time
+sys.path.insert(0, "@@TB@@")
+os.environ["STOCK_ANALYSIS_WORKSPACE"] = "@@ISO@@"
+os.environ["STOCK_TASKS_DB"] = "@@TK@@"
+os.environ["WATCH_SCAN_LOCK_DIR"] = "@@ISO@@"
+from unittest.mock import patch
+import watch_scan
+watch_scan.TASKS_DB = "@@TK@@"
+watch_scan.POOL_DB = "@@MP@@"
+watch_scan._ensure_task_table()
+watch_scan._PRICE_CACHE.clear()
+start = float(sys.argv[1])
+while time.time() < start:      # 忙等同一绝对时刻，制造最强同刻竞态
+    pass
+if watch_scan.acquire_scan_lock("price") is None:
+    print(json.dumps({"role": "skipped"}))
+    sys.exit(0)
+calls = []
+def stub(*a, **k):
+    calls.append(list(a))
+    return "✅ 已卖出"
+with patch.object(watch_scan, "ptrade2", stub), \
+     patch.object(watch_scan, "in_trade_hours", lambda: True), \
+     patch.object(watch_scan, "fetch_price", lambda code: 8.80):
+    watch_scan.check_price_triggers()
+print(json.dumps({"role": "ran", "calls": calls}))
+'''
+
+HOLD_CHILD = '''
+import os, sys, time
+sys.path.insert(0, "@@TB@@")
+os.environ["WATCH_SCAN_LOCK_DIR"] = "@@LD@@"
+import watch_scan
+print("acquired" if watch_scan.acquire_scan_lock("price") else "denied", flush=True)
+time.sleep(float(sys.argv[1]))
+'''
+
+
+def test_check7_scan_lock_excludes_and_releases_on_kill(tmp_path):
+    """Phase 0 锁语义：同 scope 第二进程取不到；持锁进程被 SIGKILL 后自动释放（无锁泄露）。"""
+    import signal
+    ld = str(tmp_path / "locks")
+    hold = HOLD_CHILD.replace("@@TB@@", SCRIPTS_DIR).replace("@@LD@@", ld)
+    p1 = subprocess.Popen([VENV_PY, "-c", hold, "3"], stdout=subprocess.PIPE, text=True)
+    assert p1.stdout.readline().strip() == "acquired", "第一个进程应取到锁"
+    p2 = subprocess.run([VENV_PY, "-c", hold, "0"], capture_output=True, text=True,
+                        timeout=60)
+    assert p2.stdout.strip() == "denied", f"第二进程应被拒（实得 {p2.stdout.strip()!r}）"
+    os.kill(p1.pid, signal.SIGKILL)
+    p1.wait()
+    time.sleep(0.3)
+    p3 = subprocess.run([VENV_PY, "-c", hold, "0"], capture_output=True, text=True,
+                        timeout=60)
+    assert p3.stdout.strip() == "acquired", "持锁进程死亡后锁应已释放（内核回收）"
+
+
+def test_check7_two_processes_same_instant_single_sell(iso):
+    """⑦ Phase 0 真两进程验收：同刻只允许一拍执行 → 恰好 1 次 sell 直调、1 条新事件，
+    另一拍整体跳过（模拟生产 monitor 的 IDLE 拍）。"""
+    import shutil
+    iso.seed_pool()
+    tk = os.path.join(iso.root, "shared_tasks.db")
+    shutil.copy2(iso.tasks, tk)
+    import watch_scan as _ws
+    _ws.TASKS_DB = tk
+    _ws._ensure_task_table()
+    n0 = sqlite3.connect(tk).execute(
+        "SELECT COUNT(*) FROM task_events WHERE type='WATCH_ALERT'").fetchone()[0]
+    child = (LOCK_CHILD.replace("@@TB@@", SCRIPTS_DIR).replace("@@ISO@@", iso.root)
+             .replace("@@TK@@", tk).replace("@@MP@@", iso.pool))
+    env = dict(os.environ)
+    env.update({"STOCK_ANALYSIS_WORKSPACE": iso.root, "STOCK_TASKS_DB": tk,
+                "WATCH_SCAN_LOCK_DIR": iso.root})
+    start = time.time() + 2.5
+    procs = [subprocess.Popen([VENV_PY, "-c", child, repr(start)], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+             for _ in range(2)]
+    outs = []
+    for p in procs:
+        so, se = p.communicate(timeout=180)
+        d = None
+        for ln in (so or "").splitlines():
+            if ln.startswith("{"):
+                d = json.loads(ln)
+        assert d is not None, f"子进程无输出; stderr={se[-400:]}"
+        outs.append(d)
+    sells = [c for o in outs for c in o.get("calls", []) if c and c[0] == "sell"]
+    n1 = sqlite3.connect(tk).execute(
+        "SELECT COUNT(*) FROM task_events WHERE type='WATCH_ALERT'").fetchone()[0]
+    n_skip = len([o for o in outs if o["role"] == "skipped"])
+    assert len(sells) == 1, f"同刻只应直调 1 次 sell，实得 {len(sells)}"
+    assert n1 - n0 == 1, f"只应新增 1 条事件，实得 {n1 - n0}"
+    assert n_skip == 1, f"应恰好一拍跳过，实得 {n_skip}"

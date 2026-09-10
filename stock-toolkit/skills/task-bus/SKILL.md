@@ -204,6 +204,33 @@ pending ──claim──▶ processing ──done──▶ done
 - **legacy 心跳隔离**：`check_tasks` 的 NOT IN 清单已加这四类型——旧心跳连 `[EVENT]` 列表都看不到，配合 prompt 断根句双保险。MSG_EXPIRE 同时在 news scope 唤醒层 `news_pending_lines` 的 IN 清单（C2 monitor 持久可见防积压死锁）。
 - **`--scope` 分流**：`watch_scan.py --scope news`（专用心跳 monitor：只检 newsdb 新事件 + 列 `[NEWS]` 待办，**静默** SLEEVE_FILL/[SLEEVE] 与一切 legacy 检测）；缺省/`--scope legacy` = 旧全量逻辑原样（SLEEVE 链路保留可回滚）。
 
+### 🧾 挂单两侧：买/卖挂单与"三出口"（2026-09-10 v14 执行层 Phase 1）
+
+一根表（`event_slots`）承载买卖两侧，**几何定时机、`side` 定动作、`qty` 定数量**：
+
+| 轴 | 字段 | 说明 |
+|---|---|---|
+| 时机 | `band_min`/`band_max` + `placed_px` | 进带 `band_min ≤ px ≤ band_max` 才动作；**单边语义用哨兵极值**：`≥X` = `[X, 9.9e9]`、`≤X` = `[0, X]`。**不要用 NULL 表示无界**——两列都 NULL 是"未挂单/断链"哨兵（`check_orphan_slots` 靠它），单边带仍是**两列都有值** |
+| 动作 | `side`（`buy` 缺省 / `sell`） | 买侧走 `sleeve-order-fill`（建成员段）；**卖侧必须走 `ptrade2 sell --qty`**——`sleeve-order-fill` 已加守卫，`side='sell'` 的槽调用即拒（否则止盈单会被当买入建段=做成加仓） |
+| 数量 | `qty`（整数股数） | 比例语义（1/3、减半…）由 **LLM 出单时算成数字**，脚本只照做；`side='sell'` 缺 `qty` → 挂单直接拒 |
+| 组 | `group_key` / `batch_id` | 组键（标的+策略域）+ 重挂批次；供"段持仓归零 → 失效同组"，只作用于 `batch_id ≤ 已成交单批次`（豁免刚重挂的新批次） |
+
+**挂卖单**：
+```bash
+ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
+  --side sell --qty 333 --rel ge --target 15 \        # ≥15 触发卖 333 股（落库 [15, 9.9e9]）
+  --group-key "<标的>:tp" --batch-id 3
+# --rel le --target 8 → ≤8 触发（落库 [0, 8]）
+```
+
+**卖单只有三个出口**（`watch_scan.check_price_orders`）：① 进带 → 出行 `ptrade2 sell <名称> --qty N --price <检测价> --event-id <槽键>`；② TTL 到期 → `sleeve-order-expire --reason expired`；③ 取价失败 → 跳过（fail-closed）。**卖单永不 `band_break`/`band_skipped`**（单边带另一端是哨兵极值，跨带几何上不可能；"反向走远就放弃"由短 TTL 承担）。
+
+**跳空跨档 = 全部兑现**（不是只成交一张）：10→21 跨过 15/20 两档 → 两档都卖、成交价取检测价，并出一行 `同拍成交 N 档` 留痕。执行顺序按"价格路径上先被触发者先"，**只在累计超持仓被 clamp 截断时起作用**；行尾 `⚠clamp a→b` = 脚本已按段实时持仓（`trades` 汇总 buy−sell）收敛，照 b 执行勿补差额。
+
+**组内联动失效**（`watch_scan.sync_order_groups`）：同组已有成交且该段持仓归零 → 其余挂单出行 `ptrade2 sleeve-order-expire <槽> --reason group_closed`（CLI 守卫：槽须 `pending_order` 且带 `group_key`；重复执行被拒=幂等）。检测本身幂等；仓位未耗尽不动（阶梯各档独立，不互相失效）。
+
+> **接线状态（2026-09-10）**：机制已上线，但**尚无 prompt 使用**——止盈阶梯"变挂单"是 Phase 3 的活；`conditions` 与挂单并存期**两条路都能卖 = 双卖**，切换必须"搬一个、验一个、关一个"。买侧老用法（`--anchor/--ttl` 不带新参数）行为**逐字节不变**。
+
 ## CLI 命令
 
 ```bash

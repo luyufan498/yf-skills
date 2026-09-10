@@ -297,3 +297,53 @@ def test_legacy_buy_slot_path_unchanged(iso):
     out = _scan(9.0, lambda *a, **k: box.append(list(a)) or "✅ 已弃单")
     assert any("band_break" in str(c) for c in box), f"买侧下穿应直调 band_break，实得 {box}"
     assert any("band_break" in l for l in out)
+
+
+# ------------------------------------------------- v14 补丁：反例锁 / 口径锁 / 误判锁
+def test_sell_out_of_band_never_falls_into_buy_path(iso, calls):
+    """反例锁（v14 补丁）：卖单在带外**不得**落进买侧四态。
+
+    唯一能鉴别 `if is_sell: continue` 这一守卫的位置：placed_px 取**带内**（≥15 型槽取 16），
+    买侧判据下"立即型 + 现价 < band_min"会**同拍直调 band_break 弃单**（会调用 ptrade2）；
+    卖单则必须零动作零调用。原测试两处 placed 都在带外同侧，与买侧等待型语义重合 → 摘掉
+    守卫也全绿（假绿），故补此反例。
+    """
+    box, stub = calls
+    iso.slot("ND#sellout", 15.0, BIG, qty=333, placed_px=16.0)
+    out = _scan(12.0, stub)
+    assert out == [], f"卖单带外不得有任何动作（含弃单）：{out}"
+    assert box == [], f"卖单带外不得直调 ptrade2，实得 {box}"
+
+
+def test_gap_clamped_to_zero_counts_only_executed(iso):
+    """口径锁（v14 补丁）：同拍留痕按**兑现**计数，并按 A5 出一行汇总。
+
+    两档命中、段持仓只够一张 → 兑现 1 档：不得再报"同拍成交 2 档…全部兑现"（原实现按命中
+    数报，对账会误判为两档都成交）。
+    """
+    iso.trades([("buy", 300, 65.4)])
+    iso.slot("ND#L1", 15.0, BIG, qty=333, placed_px=10.0)
+    iso.slot("ND#L2", 20.0, BIG, qty=333, placed_px=10.0)
+    out = _scan(21.0)
+    sells = [l for l in out if "ptrade2 sell" in l]
+    assert len(sells) == 1 and "--qty 300" in sells[0], f"第一档应 clamp 到 300：{out}"
+    assert not any("同拍成交 2 档" in l for l in out), f"未兑现的档不得计入同拍成交：{out}"
+    assert any("卖单汇总：命中 2 单 → 兑现 1 / 未执行 1 / clamp 1" in l for l in out), out
+
+
+def test_segment_live_qty_zero_flow_is_not_exhausted(iso):
+    """误判锁（v14 补丁）：段存在但**零流水** = 不可判定，不得被判"持仓耗尽"联动弃单。
+
+    触发路径（实测踩到过）：同 code 出现两个 open 段时 `_segment_live_qty` 取 id 最大的
+    那段，如果它是新建空段 → 原先返回 0 → sync_order_groups 出行 group_closed 误弃有效挂单。
+    """
+    c = sqlite3.connect(iso.pool)
+    c.execute("INSERT INTO position (id, stock, code, strategy, status) "
+              "VALUES (9, ?, ?, 'NEWS', 'open')", (STOCK, CODE))
+    c.commit()
+    c.close()
+    iso.slot("ND#zf1", 15.0, BIG, qty=333, group_key="测试股:tp", batch_id=1,
+             fill_status="filled", status="open")
+    iso.slot("ND#zf2", 20.0, BIG, qty=333, group_key="测试股:tp", batch_id=1)
+    assert watch_scan._segment_live_qty(CODE) is None, "零流水应返回 None（不可判定）"
+    assert watch_scan.sync_order_groups() == [], "不可判定不得联动弃单（fail-closed 不动）"

@@ -249,10 +249,13 @@ class SleeveOrder:
         if side not in ('buy', 'sell'):
             raise ValueError(f"side 必须是 buy/sell，收到 {side!r}")
         if side == 'sell':
-            if qty is None or int(qty) <= 0:
-                raise ValueError(f"卖单必须给数量（qty>0 的股数；比例语义由 LLM 出单时算好），"
+            # v14 补丁：数量必须是"正整数股数"——布尔/浮点/其它脏类型一律拒
+            # （原先 int(qty) 会把 1.5 静默截成 1、True 变 1，属静默改正而非 fail-closed）。
+            _q = str(qty).strip().lstrip('+') if qty is not None else ''
+            if qty is None or isinstance(qty, bool) or not _q.isdigit() or int(_q) <= 0:
+                raise ValueError(f"卖单必须给数量（qty>0 的整数股数；比例语义由 LLM 出单时算好），"
                                  f"收到 qty={qty!r}")
-            qty = int(qty)
+            qty = int(_q)
         anchor = float(anchor)
         ttl_dt = _parse_iso(ttl, 'order_ttl')
         ttl = _validate_ttl(ttl, ttl_dt)          # E5：TTL 真源校验（fail-closed）
@@ -501,6 +504,18 @@ class SleeveOrder:
                     raise ValueError(f"挂单未到期（order_ttl={slot['order_ttl']} > now）——"
                                      f"expired 弃单被拒（fail-closed），到期前不得弃单")
             elif reason == 'band_break':
+                # v14 补丁：卖单不走 band_break——单边带另一端的"反向走远"由短 TTL 承担
+                # （与 watch_scan 卖单分支"永不弃单"口径一致；原先 CLI 层不设防，实测
+                #  ≥15 的涨破卖单在现价 ¥12 时也能被 band_break 弃掉）。
+                s_side = None
+                try:
+                    s_side = slot['side']
+                except (IndexError, KeyError):
+                    s_side = None
+                if (s_side or 'buy') == 'sell':
+                    raise ValueError(
+                        f"槽 {event_key} 是卖出挂单（side='sell'）——单边带不适用 band_break"
+                        f"（反向走远由短 TTL 承担：--reason expired 到期返回）")
                 # E9：band_break 必须带现价证据——价 < band_min 才有效
                 q = self._fetch_quote(self._first_member_code(conn, event_key))
                 if q is None or q.current_price is None:
@@ -526,6 +541,17 @@ class SleeveOrder:
                 if not gk:
                     raise ValueError(f"槽 {event_key} 无 group_key，group_closed 弃单被拒"
                                      f"（fail-closed）")
+                # v14 补丁（守卫过宽修复）：仅"有 group_key"不足以弃单——再核一条库内可验证的
+                # 硬证据：同组存在 fill_status='filled' 的槽。发起方判定的"段持仓归零"发生在
+                # 扫描拍上、且持仓口径在 task-bus 包内，本层不复算；但"组内确有成交"是库里
+                # 可查的事实，缺失即拒（fail-closed）——避免误弃有效挂单（含卖侧保护单）。
+                if not conn.execute(
+                        "SELECT 1 FROM event_slots WHERE group_key=? AND "
+                        "fill_status='filled' AND event_key<>? LIMIT 1",
+                        (gk, event_key)).fetchone():
+                    raise ValueError(
+                        f"槽 {event_key} 组[{gk}] 内无已成交槽，group_closed 弃单被拒"
+                        f"（fail-closed：联动失效须有成交证据）")
             # v13/A5：band_left / band_skipped——消费侧（check_price_orders，§2 判据）
             # 已完成出带/越带判定后发起弃单，证据在判定拍上，本层不再核价
             #（与 expired 同语义：发起方负责证据，TTL/破带两个旧码保留原核价防线）。
@@ -645,6 +671,12 @@ class SleeveOrder:
                 raise ValueError("重判 keep 拿不到当时现价（anchor 未注入且触网失败）——"
                                  "fail-closed 拒绝重挂，槽保持 pending_rejudge")
         anchor = float(anchor)
+        if anchor <= 0:
+            # v14 补丁：显式 --anchor 0/负数 也不许。原先 ≤0 校验只写在 `anchor is None`
+            # 分支里：买侧被 ±5% 漂移检查兜住（0/12=100% 必拒），但**卖单跳过漂移检查后
+            # 没有第二道关** → 实测可把 anchor_price 写成 0 / -5（脏锚落库）。
+            raise ValueError(f"重判 keep 新锚必须是正价格，收到 {anchor!r}"
+                             f"（fail-closed 拒绝重挂，槽保持 pending_rejudge）")
         # E4 漂移限制：新锚相对原锚漂移 >±5%（新带与原带无交集）→ 拒 keep 只能 close
         #（接刀器防线：跳水后以跳水价重挂 / 拉高后追价重挂都不许）
         orig = slot['anchor_price']

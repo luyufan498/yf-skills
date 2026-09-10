@@ -225,9 +225,9 @@ ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
 
 **卖单只有三个出口**（`watch_scan.check_price_orders`）：① 进带 → 出行 `ptrade2 sell <名称> --qty N --price <检测价> --event-id <槽键>`；② TTL 到期 → `sleeve-order-expire --reason expired`；③ 取价失败 → 跳过（fail-closed）。**卖单永不 `band_break`/`band_skipped`**（单边带另一端是哨兵极值，跨带几何上不可能；"反向走远就放弃"由短 TTL 承担）。
 
-**跳空跨档 = 全部兑现**（不是只成交一张）：10→21 跨过 15/20 两档 → 两档都卖、成交价取检测价，并出一行 `同拍成交 N 档` 留痕。执行顺序按"价格路径上先被触发者先"，**只在累计超持仓被 clamp 截断时起作用**；行尾 `⚠clamp a→b` = 脚本已按段实时持仓（`trades` 汇总 buy−sell）收敛，照 b 执行勿补差额。
+**跳空跨档 = 全部兑现**（不是只成交一张）：10→21 跨过 15/20 两档 → 两档都卖、成交价取检测价，并出一行 `同拍成交 N 档` 留痕（**N = 实际兑现档数**——被 clamp 到 0 / 未执行的档不计入）。执行顺序按"价格路径上先被触发者先"，**只在累计超持仓被 clamp 截断时起作用**；行尾 `⚠clamp a→b` = 脚本已按段实时持仓（`trades` 汇总 buy−sell）收敛，照 b 执行勿补差额。同拍多档时另出一行 `卖单汇总：命中 N 单 → 兑现 M / 未执行 K / clamp J`（对账复算以它为准）。
 
-**组内联动失效**（`watch_scan.sync_order_groups`）：同组已有成交且该段持仓归零 → 其余挂单出行 `ptrade2 sleeve-order-expire <槽> --reason group_closed`（CLI 守卫：槽须 `pending_order` 且带 `group_key`；重复执行被拒=幂等）。检测本身幂等；仓位未耗尽不动（阶梯各档独立，不互相失效）。
+**组内联动失效**（`watch_scan.sync_order_groups`）：同组已有成交且该段持仓归零 → 其余挂单出行 `ptrade2 sleeve-order-expire <槽> --reason group_closed`（CLI 守卫：槽须 `pending_order` + 带 `group_key` + **组内确有 `fill_status='filled'` 的槽**，缺成交证据即拒；重复执行被拒=幂等）。检测本身幂等；仓位未耗尽 / **持仓取不到（含"段存在但零流水"=不可判定）** → 一律不动（fail-closed，绝不禁忌误弃）；阶梯各档独立，不互相失效。
 
 > **接线状态（2026-09-10）**：机制已上线，但**尚无 prompt 使用**——止盈阶梯"变挂单"是 Phase 3 的活；`conditions` 与挂单并存期**两条路都能卖 = 双卖**，切换必须"搬一个、验一个、关一个"。买侧老用法（`--anchor/--ttl` 不带新参数）行为**逐字节不变**。
 

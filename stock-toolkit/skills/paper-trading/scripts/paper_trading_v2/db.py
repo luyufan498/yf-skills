@@ -211,11 +211,11 @@ CREATE TABLE IF NOT EXISTS event_slots (
     created_by TEXT DEFAULT '',            -- v13/A4 对象创建者（msg-watch/analysis-watch/atr-auto/user…失败路由依据）
     placed_px REAL,                        -- v13/A5 挂单时刻价（anchor_price=事件入库价，两者都留）
     band_out_count INTEGER DEFAULT 0,      -- v13/A5 连续出带计数（供消费侧用）
+    note TEXT,
     side TEXT DEFAULT 'buy',               -- v14/A 动作轴：buy/sell（缺省 buy=旧槽行为不变；sell=卖出挂单）
     qty INTEGER,                           -- v14/A 卖出数量（股；LLM 出单时算好的数字，机械层只照做）
     group_key TEXT,                        -- v14/A 组键（标的+策略域）：供"仓位耗尽→失效同组"
-    batch_id INTEGER,                      -- v14/A 重挂批次：联动只作用于 <= 本批次（豁免刚重挂的新单）
-    note TEXT
+    batch_id INTEGER                       -- v14/A 重挂批次：联动只作用于 <= 本批次（豁免刚重挂的新单）
 );
 
 CREATE TABLE IF NOT EXISTS event_slot_members (

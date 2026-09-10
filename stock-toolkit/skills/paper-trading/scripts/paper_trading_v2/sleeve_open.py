@@ -405,6 +405,25 @@ class SleeveOpener:
                 args.append(event_key)
             slots = conn.execute(q, args).fetchall()
             for slot in slots:
+                # v14 补丁（守卫下沉）：本函数=**买入建段**；卖单槽必须走 `ptrade2 sell`
+                # （否则止盈单被执行成加仓，方向相反）。原先 side 守卫只在
+                # SleeveOrder.fill 一层，直连本函数（statuses=('pending_order',),
+                # only_unordered=False）会把卖单槽当买入建段——实测仅被 R7 脏价防线侥幸拦下。
+                slot_side = None
+                try:
+                    slot_side = slot['side']
+                except (IndexError, KeyError):
+                    slot_side = None
+                if (slot_side or 'buy') == 'sell':
+                    shadow_write(conn, 'fill_blocked', slot['event_key'],
+                                 {"stock_scope": "slot",
+                                  "reason": "卖出挂单（side='sell'）不可走买入建仓路径"
+                                            "（fill_pending 层守卫，v14 补丁）",
+                                  "order_id": slot['order_id'], "ts": now})
+                    summary.append({"event_key": slot['event_key'], "filled": [],
+                                    "skipped": [("槽级", "卖出挂单 side='sell' 不可走买入建仓，"
+                                                          "请走 ptrade2 sell")]})
+                    continue
                 # R2/A1：槽级认领（条件 UPDATE）——并发 fill/cancel 同槽时抢不到=已被处理
                 cur = conn.execute(
                     "UPDATE event_slots SET fill_status='filled', fill_at=? "

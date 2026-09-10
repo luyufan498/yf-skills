@@ -86,6 +86,34 @@ ptrade2 sleeve-close-slot ND#293 --reason "全成员清零对账"      # 槽归�
 ptrade2 sleeve-show                       # 消息池+事件槽清单（只读）[M3 启用]
 ```
 
+## 🧾 挂单两侧：`side` / 单边带 / 卖出三出口（2026-09-10 v14 执行层 Phase 1）
+
+`event_slots` 一根表承载买卖两侧：**几何定时机、`side` 定动作、`qty` 定数量**。
+`band_min/band_max` 为 NULL 只表示"未挂单/断链"，**单边语义用哨兵极值、勿用 NULL**：
+
+| 意图 | 落库 band | 命令 |
+|---|---|---|
+| 涨破卖 `≥X` | `[X, 9.9e9]` | `sleeve-order-place <键> --anchor <锚> --ttl <下节收盘> --side sell --qty N --rel ge --target X [--group-key 标的:策略域] [--batch-id K]` |
+| 跌破卖 `≤X` | `[0, X]` | 同上，`--rel le --target X` |
+| 旧买侧（行为逐字节不变） | `[0.95,1.05]×anchor` | `sleeve-order-place <键> --anchor <锚> --ttl <下节收盘>`（不带新参数） |
+
+- 卖单 `--qty` 必填、必须**正整数**（比例语义由 LLM 出单时算成数字；缺失/0/负数/小数 → 拒）；
+  `--rel` 与 `--target` 必须成对（只给 `--target` → 拒），且与 `--band-min/--band-max` 互斥。
+- **卖单只有三个出口**：① 进带 → 心跳出行 `ptrade2 sell <名称> --qty N --price <检测价> --event-id <槽键>`；
+  ② TTL 到期 → `sleeve-order-expire --reason expired`；③ 取价失败 → 跳过。
+  **卖单不走 `band_break`**（CLI 已拒；反向走远由短 TTL 承担）；`sleeve-order-fill` 对 `side='sell'` 槽直接拒
+  （否则止盈单会被当买入建段），`fill_pending` 层同样有守卫。
+- **跳空跨档全部兑现**；累计卖出以段实时持仓（`trades` 汇总 buy−sell）封顶，超限 clamp 且行尾留痕
+  `⚠clamp a→b`；同拍多档另出一行 `卖单汇总：命中 N 单 → 兑现 M / 未执行 K / clamp J`（对账以它为准）。
+- **卖出成交会回写槽**：`ptrade2 sell … --event-id <槽键>` 成功后槽转 `fill_status='filled'`/`status='open'`
+  （幂等条件 UPDATE；非槽键 event_id 不动）——否则会每拍重复出行、TTL 到期还会把已成交单再送重判。
+- **组内联动失效**（`sync_order_groups`）：同组已有成交 + 段持仓归零 → 其余挂单出行 `--reason group_closed`；
+  CLI 守卫：槽须 `pending_order` + 带 `group_key` + **组内确有 `fill_status='filled'` 的槽**（缺证据即拒）。
+  段持仓"取不到 / 零流水"→ 不动作（fail-closed，绝不禁忌误弃）。
+
+> 接线状态（2026-09-10）：机制已上线，**尚无 prompt 生产者**——"止盈阶梯变挂单"属 Phase 3；
+> `conditions` 与挂单并存期**两条路都能卖=双卖**，切换必须"搬一个、验一个、关一个"。
+
 ## 🏛️ 宪法：永久禁止名单（方案 2.6，全文）
 
 imp 排序/配权；簇内选代表（含换名）；技术面入场门（甜点/回踩/确认/触发价/许可线）用于消息组；

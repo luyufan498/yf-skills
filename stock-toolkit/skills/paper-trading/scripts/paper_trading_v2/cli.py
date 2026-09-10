@@ -904,6 +904,19 @@ def sleeve_close_slot(
 
 # ============ v12 消息挂单命令组（sleeve-order-*，plans/v12-news-order-20260903） ============
 
+def _band_txt(band_min, band_max) -> str:
+    """带展示（v14）：哨兵极值美化回单边语义（≥X / ≤X），双侧带保持 [lo, hi]。
+
+    极值常量从 sleeve_order 取（原先 CLI 写死 9.9e9 字面量，改常量时会漂移）。
+    """
+    from paper_trading_v2.sleeve_order import BAND_HI_SENTINEL, BAND_LO_SENTINEL
+    if band_max is not None and band_max >= BAND_HI_SENTINEL:
+        return f"≥{band_min:.4g}"
+    if band_min is not None and band_min <= BAND_LO_SENTINEL:
+        return f"≤{band_max:.4g}"
+    return f"[{band_min}, {band_max}]"
+
+
 @app.command("sleeve-order-place")
 def sleeve_order_place(
     event_key: str = typer.Argument(..., help="已开槽的 G3 事件键（槽须 open 态）"),
@@ -934,11 +947,22 @@ def sleeve_order_place(
     `--side sell --qty N` 挂卖出单（几何=时机、side=动作、qty=数量）。"""
     from paper_trading_v2.sleeve_order import SleeveOrder
     try:
+        # v14 补丁（校验补口）：
+        # ① --target 必须配 --rel：原先只给 --target 会被**静默忽略**并按默认 ±5% 双边带
+        #    落库（实测 exit=0，band=[11.4,12.6]）——对卖单等于"任何锚价 ±5% 内都触发卖出"，
+        #    与"≥15 止盈"的意图相反，故 fail-closed 拒；
+        # ② --rel 与显式 --band-min/--band-max 互斥：混给时原先 rel 静默覆盖显式带。
+        if rel is None and target is not None:
+            raise ValueError("--target 必须配 --rel ge|le（只给 --target 会被忽略并挂出"
+                             "默认 ±5% 双边带）")
         if rel is not None:
             if rel not in ('ge', 'le'):
                 raise ValueError(f"--rel 必须是 ge/le，收到 {rel!r}")
             if target is None or target <= 0:
                 raise ValueError("--rel 必须配 --target（正价格）")
+            if band_min is not None or band_max is not None:
+                raise ValueError("--rel/--target 与 --band-min/--band-max 互斥"
+                                 "（单边语义用 --rel，自定义双侧带用 --band-*）")
             if rel == 'ge':
                 band_min, band_max = float(target), None
             else:
@@ -947,9 +971,7 @@ def sleeve_order_place(
                                 placed_px=placed_px, side=side, qty=qty,
                                 band_min=band_min, band_max=band_max,
                                 group_key=group_key, batch_id=batch_id)
-        band_txt = (f"≥{r['band_min']:.4g}" if r['band_max'] >= 9.9e9 else
-                    f"≤{r['band_max']:.4g}" if r['band_min'] <= 0 else
-                    f"[{r['band_min']}, {r['band_max']}]")
+        band_txt = _band_txt(r['band_min'], r['band_max'])
         typer.echo(f"✅ 挂单 {r['order_id']}：带 {band_txt}"
                    f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order"
                    + (f"，side={r['side']} qty={r['qty']}" if r.get('side') == 'sell' else "")
@@ -1047,7 +1069,7 @@ def sleeve_order_rejudge(
             typer.echo(f"✅ 重判关槽 {slot_id}{forced}：回款 ¥{r['refund']:,.0f}，"
                        f"信号行已清理（槽 closed 坑释放）")
         else:
-            typer.echo(f"✅ 重判重挂 {slot_id}：新带 [{r['band_min']}, {r['band_max']}]"
+            typer.echo(f"✅ 重判重挂 {slot_id}：新带 {_band_txt(r['band_min'], r['band_max'])}"
                        f"（锚 ¥{r['anchor']}）ttl={r['order_ttl']}，槽 → pending_order")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

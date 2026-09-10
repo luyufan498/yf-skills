@@ -161,7 +161,8 @@ def test_v14_fill_rejects_sell_slot(ws):
 
 
 def test_v14_expire_group_closed_requires_group_key(ws):
-    """group_closed 弃单：无 group_key → 拒；有 group_key → pending_rejudge。"""
+    """group_closed 弃单守卫（v14 原版 + v14 补丁）：无 group_key → 拒；
+    有 key 但**组内无成交证据** → 拒（补丁加的库内核验）；有 key 且组内确有已成交槽 → pending_rejudge。"""
     _open_slot(key='ND#936')
     assert _run('sleeve-order-place', 'ND#936', '--anchor', '12.0', '--ttl', _ttl(),
                 '--side', 'sell', '--qty', '333', '--rel', 'ge', '--target', '15'
@@ -174,9 +175,106 @@ def test_v14_expire_group_closed_requires_group_key(ws):
     assert _run('sleeve-order-place', 'ND#937', '--anchor', '12.0', '--ttl', _ttl(),
                 '--side', 'sell', '--qty', '333', '--rel', 'ge', '--target', '15',
                 '--group-key', '测试票:tp').exit_code == 0
+    # v14 补丁：仅"有 group_key"不够 —— 组内必须存在 fill_status='filled' 的兄弟槽
+    r = _run('sleeve-order-expire', 'ND#937', '--reason', 'group_closed')
+    assert r.exit_code == 1, f"组内无成交证据不得用 group_closed：{r.output}"
+    assert _slot(ws, 'ND#937')['status'] == 'pending_order'
+
+    # 造一个同组已成交兄弟槽（= 发起方判定的"成交存在"证据），守卫放行
+    c = _conn(ws)
+    try:
+        with c:
+            c.execute("INSERT INTO event_slots (event_key, status, opened_at, budget, "
+                      "fill_status, side, qty, group_key, batch_id) VALUES "
+                      "('ND#937F','open','2026-09-10T09:30:00',100000,'filled','sell',"
+                      "333,'测试票:tp',1)")
+    finally:
+        c.close()
     r = _run('sleeve-order-expire', 'ND#937', '--reason', 'group_closed')
     assert r.exit_code == 0, r.output
     assert _slot(ws, 'ND#937')['status'] == 'pending_rejudge'
+
+
+# ------------------------------------------------- v14 补丁：校验与守卫补口
+def test_v14_target_without_rel_rejected(ws):
+    """补丁：只给 --target 不配 --rel → 拒（原先静默忽略并按默认 ±5% 双边带落库）。"""
+    _open_slot(key='ND#940')
+    r = _run('sleeve-order-place', 'ND#940', '--anchor', '12.0', '--ttl', _ttl(),
+             '--target', '15')
+    assert r.exit_code == 1, f"只给 --target 必须拒：{r.output}"
+    assert '--rel' in r.output
+    s = _slot(ws, 'ND#940')
+    assert s['status'] == 'open' and s['band_min'] is None, "被拒后槽必须不动"
+
+
+def test_v14_rel_conflicts_with_explicit_band(ws):
+    """补丁：--rel 与显式 --band-min/--band-max 互斥（原先 rel 静默覆盖显式带）。"""
+    _open_slot(key='ND#941')
+    r = _run('sleeve-order-place', 'ND#941', '--anchor', '12.0', '--ttl', _ttl(),
+             '--rel', 'ge', '--target', '15', '--band-min', '5', '--band-max', '8')
+    assert r.exit_code == 1, f"混给必须拒：{r.output}"
+    assert _slot(ws, 'ND#941')['status'] == 'open'
+
+
+def test_v14_place_sell_rejects_fractional_qty_via_api(ws):
+    """补丁：API 层卖单 qty 非整数（1.5 / True）→ 拒（原先 int() 把 1.5 静默截成 1）。"""
+    from paper_trading_v2.sleeve_order import SleeveOrder, next_session_close
+    _open_slot(key='ND#942')
+    ttl = next_session_close().isoformat(timespec='seconds')
+    for bad in (1.5, True):
+        try:
+            SleeveOrder().place('ND#942', 12.0, ttl, side='sell', qty=bad, band_min=15.0)
+            raise AssertionError(f"qty={bad!r} 必须被拒")
+        except ValueError as e:
+            assert 'qty' in str(e), e
+    assert _slot(ws, 'ND#942')['status'] == 'open'
+
+
+def test_v14_expire_band_break_rejects_sell_slot(ws):
+    """补丁：卖单不走 band_break（单边带反向走远由短 TTL 承担，与 watch_scan 口径一致）。"""
+    _open_slot(key='ND#943')
+    assert _run('sleeve-order-place', 'ND#943', '--anchor', '12.0', '--ttl', _ttl(),
+                '--side', 'sell', '--qty', '333', '--rel', 'ge', '--target', '15'
+                ).exit_code == 0
+    r = _run('sleeve-order-expire', 'ND#943', '--reason', 'band_break')
+    assert r.exit_code == 1, f"卖单不得 band_break：{r.output}"
+    assert _slot(ws, 'ND#943')['status'] == 'pending_order'
+
+
+def test_v14_rejudge_keep_rejects_nonpositive_anchor_for_sell(ws):
+    """补丁：卖单 rejudge --keep --anchor 0/负数 → 拒（原先跳过漂移检查后可写脏锚）。"""
+    _open_slot(key='ND#944')
+    assert _run('sleeve-order-place', 'ND#944', '--anchor', '12.0', '--ttl', _ttl(),
+                '--side', 'sell', '--qty', '333', '--rel', 'ge', '--target', '15',
+                '--group-key', '测试票九:tp').exit_code == 0
+    c = _conn(ws)
+    try:
+        with c:
+            c.execute("UPDATE event_slots SET order_ttl='2020-01-01T15:00:00' "
+                      "WHERE event_key='ND#944'")
+    finally:
+        c.close()
+    assert _run('sleeve-order-expire', 'ND#944', '--reason', 'expired').exit_code == 0
+    for bad in ('0', '-5'):
+        r = _run('sleeve-order-rejudge', 'ND#944', '--keep', '--anchor', bad)
+        assert r.exit_code == 1, f"--anchor {bad} 必须拒：{r.output}"
+        assert _slot(ws, 'ND#944')['status'] == 'pending_rejudge'
+
+
+def test_v14_fill_pending_guard_blocks_sell_slot(ws):
+    """补丁：守卫下沉——直连 SleeveOpener.fill_pending(statuses=pending_order) 也不许把
+    卖单槽当买入建段（原先守卫只在 SleeveOrder.fill 一层）。"""
+    from paper_trading_v2.sleeve_open import SleeveOpener
+    _open_slot(key='ND#945')
+    assert _run('sleeve-order-place', 'ND#945', '--anchor', '12.0', '--ttl', _ttl(),
+                '--side', 'sell', '--qty', '333', '--rel', 'ge', '--target', '15'
+                ).exit_code == 0
+    res = SleeveOpener().fill_pending(event_key='ND#945',
+                                      open_prices={'测试票': 13.0}, skip_conditions=True,
+                                      statuses=('pending_order',), only_unordered=False)
+    assert res and not res[0]['filled'], f"卖单槽不得成交：{res}"
+    assert 'sell' in str(res[0]['skipped']), f"应留痕跳过原因：{res}"
+    assert _slot(ws, 'ND#945')['fill_status'] == 'pending', "槽态不得变化"
 
 
 def test_v14_expire_unknown_reason_still_rejected(ws):

@@ -1898,9 +1898,16 @@ def _segment_live_qty(code):
             "ORDER BY id DESC LIMIT 1", (code,)).fetchone()
         if not row:
             return None
+        rows = conn.execute("SELECT operation, quantity FROM trades "
+                            "WHERE account_id=? ORDER BY seq", (row["id"],)).fetchall()
+        if not rows:
+            # v14 补丁（误判修复）：段存在但**零流水** = 不可判定，不等于"持仓归零"。
+            # 原先返回 0 → sync_order_groups 把"新建空段 / 同 code 多段取到无流水段"判成
+            # "段持仓已耗尽"，出行 group_closed 误弃有效挂单（实测：真实持仓 1000 股被判 0）。
+            # 返回 None 与"无 open 段"同语义：消费点 `if live != 0: continue` 不动手。
+            return None
         live = 0
-        for r in conn.execute("SELECT operation, quantity FROM trades "
-                              "WHERE account_id=? ORDER BY seq", (row["id"],)):
+        for r in rows:
             q = r["quantity"] or 0
             live += q if (r["operation"] or "") == "buy" else (
                 -q if (r["operation"] or "") == "sell" else 0)
@@ -1952,6 +1959,7 @@ def _arbitrate_sell_hits(hits):
 
     ordered = sorted(hits, key=_key)
     out, avail = [], {}
+    exec_n = clamp_n = skip_n = 0     # v14 补丁：留痕按"兑现"计数（原先按命中数报，失真）
     for h in ordered:
         code = h["code"]
         if code not in avail:
@@ -1964,20 +1972,34 @@ def _arbitrate_sell_hits(hits):
             out.append(f"[PRICE-ORDER] {h['event_key']} 卖单命中 现价¥{h['px']:.2f} ∈ "
                        f"带[¥{h['band_min']:.2f},¥{h['band_max']:.2f}] 但 qty/段持仓不可判定"
                        f"（qty={qty} 段持仓={left}）→ fail-closed 出行，本轮不执行")
+            skip_n += 1
             continue
         take = min(qty, left)
         avail[code] = left - take
         if take <= 0:
             out.append(f"[PRICE-ORDER] {h['event_key']} 卖单命中但段持仓已耗尽"
                        f"（qty={qty}，剩余 {left}）→ 本轮不执行；同组剩余单应失效")
+            skip_n += 1
             continue
         note = "" if take == qty else f" ⚠clamp {qty}→{take}（段持仓不足/同拍先成交档）"
+        if take != qty:
+            clamp_n += 1
+        exec_n += 1
         out.append(f"[PRICE-ORDER] {h['event_key']} 现价¥{h['px']:.2f} ∈ "
                    f"带[¥{h['band_min']:.2f},¥{h['band_max']:.2f}] → 跑 ptrade2 sell "
                    f"{stock} --qty {take} --price {h['px']:.2f} "
                    f"--event-id {h['event_key']}{note}")
+    # v14 补丁（留痕口径 + 方案 A5 汇总行）：
+    # ① 原「同拍成交 N 档」按**命中数**打印，被 clamp 到 0 的档也算"成交"，与对账口径冲突
+    #    （实测：两档命中、只兑现一张，仍报"同拍成交 2 档…全部兑现"）→ 改为按兑现数；
+    # ② 补 A5 要求的每拍汇总行（命中 N → 兑现 M / 未执行 K / clamp J），供复算对账。
     if len(ordered) > 1:
-        out.append(f"[PRICE-ORDER] 同拍成交 {len(ordered)} 档（卖单并列命中 → 全部兑现，"
+        # 汇总行只在"同拍多档"时出：单档场景每行自带注记（⚠clamp / 不可判定 / 已耗尽），
+        # 保持单档输出与改动前逐字节一致（减少对消费侧 prompt 的影响面）。
+        out.append(f"[PRICE-ORDER] 卖单汇总：命中 {len(ordered)} 单 → 兑现 {exec_n} / "
+                   f"未执行 {skip_n} / clamp {clamp_n}（信息留痕行，无待执行命令）")
+    if exec_n > 1:
+        out.append(f"[PRICE-ORDER] 同拍成交 {exec_n} 档（卖单并列命中 → 全部兑现，"
                    f"按距离近→远：{', '.join(h['event_key'] for h in ordered)}）")
     return out
 

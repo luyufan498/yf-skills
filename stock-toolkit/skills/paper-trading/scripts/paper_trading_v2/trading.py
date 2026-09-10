@@ -410,6 +410,15 @@ class PaperTrader:
         if remaining_qty == 0:
             self._auto_release_on_clear(stock_name, grp=getattr(account, 'grp', None))
 
+        # v14 补丁：卖单槽成交回写（幂等键=槽键；非槽键 event_id 自然 no-op，不阻断卖出）。
+        # 位置刻意放在 release 之后：先保证资金/段状态落定，再回写槽（异常只打印不抛）。
+        try:
+            if self._mark_sell_slot_filled(event_id):
+                print(f"[sell-slot] {event_id} 卖单槽已回写 fill_status='filled'"
+                      f"（组内联动失效的成交证据就位）")
+        except Exception as e:
+            print(f"[sell-slot] 卖单槽回写异常（不阻断卖出）: {e}")
+
         return account
 
     def _auto_release_on_clear(self, stock_name: str, grp: Optional[str] = None):
@@ -472,6 +481,42 @@ class PaperTrader:
             pass  # release 侧拒绝（如仍持仓）——卖出已完成，不阻断
         except Exception as e:
             print(f"[auto-release] {stock_name} 自动释放失败（不影响卖出结果）: {e}")
+
+    def _mark_sell_slot_filled(self, event_id: Optional[str]) -> bool:
+        """v14 补丁：卖单成交后回写槽状态（幂等条件 UPDATE；只命中 side='sell' 挂单槽）。
+
+        背景：卖单出行的命令是 `ptrade2 sell <名称> --qty N --price P --event-id <槽键>`
+        （槽键即幂等键），但卖出成功原先完全不碰 event_slots → 槽永远停在
+        status='pending_order' / fill_status='pending'，导致：
+        ① 价格持续在带内时每拍重复出行同一条 sell 行（靠 trades.event_id 幂等兜底）；
+        ② TTL 到期仍按 expired 弃单 → 把已成交卖单再送 MSG_REJUDGE 重判；
+        ③ 组内联动失效（D10）缺"已成交"证据 → sync_order_groups 永不触发。
+        条件 UPDATE（fill_status='pending' + side='sell'）保证重复/并发调用幂等；
+        非槽键的 event_id（手工单、其它来源）匹配不到行 → 自然 no-op。
+        """
+        eid = (event_id or '').strip()
+        if not eid:
+            return False
+        import sqlite3
+        from paper_trading_v2.config import get_workspace_config
+        db = str(get_workspace_config()['db_path'])
+        if not os.path.exists(db):
+            return False
+        conn = sqlite3.connect(db)
+        try:
+            ts = datetime.now().isoformat(timespec='seconds')
+            cur = conn.execute(
+                "UPDATE event_slots SET fill_status='filled', fill_at=?, status='open', "
+                "note=COALESCE(note,'')||? "
+                "WHERE event_key=? AND fill_status='pending' AND status='pending_order' "
+                "AND COALESCE(side,'buy')='sell'",
+                (ts, f" [卖出成交@{ts}]", eid))
+            conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.OperationalError:
+            return False        # 旧库无 side 列（v14 前）→ no-op，不阻断卖出
+        finally:
+            conn.close()
 
     def _ensure_fifo_pointer(self, account: Account):
         """

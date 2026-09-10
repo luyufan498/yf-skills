@@ -23,6 +23,7 @@ legacy scope 每个 tick（30 分钟，零 LLM 成本）：
 import json
 import os
 import re
+import fcntl
 import sqlite3
 import subprocess
 import sys
@@ -583,6 +584,18 @@ def _write_alert(entity: str, code: str, direction: str, cond_id: int,
     }, ensure_ascii=False)
     conn = _handled_columns_ensure(TASKS_DB)
     try:
+        # F1-⑦ 竞态修复（2026-09-10）：去重检查与 INSERT 必须落在同一个写事务里。
+        # 原实现是 check-then-act（_has_pending_event 只读、随后无条件 INSERT），跨进程
+        # 同刻命中时两侧都判"无 pending"→ 各写一条事件、各带**自己的** event_id 直调 sell
+        # → trades 层按 event_id 的幂等键拦不住 → 真双卖（实测真两进程 20/20 复现）。
+        # 事务内以 BEGIN IMMEDIATE 抢写锁后重判：对侧已写 → rollback + 返回 False 让位，
+        # 本拍不直调；下一拍走既有 pending 重试路径复用同一条事件 id（幂等键恢复有效）。
+        # 事务是进程内毫秒级、异常自动回滚——不持有需要显式释放的锁。
+        conn.execute("BEGIN IMMEDIATE")
+        # 抢到写锁后再判一次（此刻对侧若已写过，必已 commit 可见）
+        if _has_pending_event(entity, direction, cond_id):
+            conn.rollback()
+            return False
         conn.execute(
             "INSERT INTO task_events (type, entity, source, priority, payload, creator) "
             "VALUES ('WATCH_ALERT', ?, 'heartbeat-scan', 1, ?, ?)",
@@ -2378,6 +2391,37 @@ def cleanup_tabs_auto(max_keep: int = 4, trigger: int = 10):
         pass
 
 
+# ======================================================================
+# 整拍互斥（Phase 0 / 执行层方案 2026-09-10）：同一 scope 只允许一份扫描在跑
+# ======================================================================
+_SCAN_LOCK_FH = None
+
+
+def acquire_scan_lock(scope: str, lock_dir: str | None = None):
+    """尝试取该 scope 的整拍锁（非阻塞 flock）。
+
+    取到 → 返回句柄（须存活到进程结束；进程死亡含 SIGKILL 由内核自动释放，
+    不存在"忘记释放"的锁泄露）；取不到 → 返回 None，调用方打印字节稳定的
+    ``IDLE`` 并退出 0（monitor 模式：输出不变 = 不唤醒 agent）。
+
+    作用域按 scope 分开：price 与 news 各自一把锁，互不阻塞。
+    """
+    global _SCAN_LOCK_FH
+    if os.environ.get("WATCH_SCAN_NO_LOCK") == "1":     # 逃生阀（排障/特殊测试）
+        return True
+    d = (lock_dir or os.environ.get("WATCH_SCAN_LOCK_DIR")
+         or os.path.join(os.path.expanduser("~"), ".hermes", "run"))
+    os.makedirs(d, exist_ok=True)
+    fh = open(os.path.join(d, f"watch_scan.{scope}.lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    _SCAN_LOCK_FH = fh
+    return fh
+
+
 def main() -> int:
     # v12 scope 分流（方案 review 修订#7）：
     #   --scope news   → 消息挂单专用心跳 monitor（只检 newsdb 新事件，静默 SLEEVE 与一切 legacy 检测）
@@ -2393,6 +2437,11 @@ def main() -> int:
     if scope not in ("news", "legacy", "price"):
         print(f"❌ --scope 应为 news / legacy / price（收到 {scope!r}）", file=sys.stderr)
         return 2
+    # Phase 0 整拍互斥：取不到锁 = 已有一份同 scope 扫描在跑 → 本拍什么都不做。
+    # 输出必须是字节稳定的 "IDLE"，否则 monitor 会把跳过误判成变化而白唤醒 agent。
+    if acquire_scan_lock(scope) is None:
+        print("IDLE")
+        return 0
     if scope == "news":
         return run_news_scope()
     if scope == "price":

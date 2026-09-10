@@ -853,6 +853,14 @@ def register(app):
                                                 cp_after, ts_after, entry)
                     if _po:
                         entry["protect_order"] = _po
+
+                    # ---- Phase 3：止盈腿（+30%/+50% 各卖剩余 1/3 → 挂单承载）----
+                    # 与保护线同一个每日节拍刷新（否则加仓/减仓后价与量一直停在旧值）；
+                    # 开关 tp_orders.mode（缺省 off）。覆盖式重挂：价量没变=零写入。
+                    _tpo = _ensure_tp_orders(name, account.stock_code, total_qty, avg_cost,
+                                             entry)
+                    if _tpo:
+                        entry["tp_orders"] = _tpo
             except Exception as e:
                 results.append({"stock": name, "status": "error", "reason": str(e)})
 

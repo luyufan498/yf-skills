@@ -267,7 +267,7 @@ ptrade2 sleeve-order-place ND#900 --anchor 12.0 --ttl <下一交易节收盘> \
 按槽键后缀收集）——否则每拍"取价失败"（幽灵唤醒）且**永不触发**（保护失效），2026-09-10 已修。
 
 **Phase 3/4（2026-09-10）**：①止盈腿 `tp:<code>#1|#2`——**涨破卖** `band=[价, 9.9e9]`、无 TTL、
-已成交腿不复活、覆盖式重挂撤旧槽 `reason='superseded'`（`tp-orders-sync` 维护）；②切换一律用
+已成交腿不复活、覆盖式重挂撤旧槽 `reason='superseded'`（每交易日随 `atr-sync` 自动刷新，`tp-orders-sync` 为手动补/排障）；②切换一律用
 **`ptrade2 exec-switch <票> --domain protect|tp --to orders|shadow`**（白名单 + conditions 腿原子切换，
 记录在 `exec_layer.json.switched`）；③conditions **卖出口径缺省 tracker**（只追踪不直调，
 `conditions_sell.mode` / `PTRADE2_COND_SELL=executor` 可回滚；买入类不受影响）。
